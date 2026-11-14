@@ -167,3 +167,37 @@ fn all_themes_and_embedded_fonts_compile_cleanly() {
         assert!(bytes.starts_with(b"%PDF-"));
     }
 }
+
+#[test]
+fn yaml_frontmatter_renders_as_nested_table_and_compiles_to_pdf() {
+    let md = "\
+---
+name: requirements-analysis
+description: Diagnose requirements problems and guide discovery of real needs and constraints
+license: MIT
+metadata:
+  author: jwynia
+  version: \"1.0\"
+  domain: agile-software
+  cluster: software
+  type: diagnostic
+  mode: assistive
+---
+
+# Requirements Analysis
+
+Body content after frontmatter.
+";
+    let typst = markdown_to_typst(md, &DocConvertOptions::default());
+    assert!(typst.contains("#table("));
+    assert!(typst.contains("[#strong[name]]"));
+    assert!(typst.contains("[#strong[metadata]]"));
+    assert!(typst.contains("[#strong[author]], [jwynia]"));
+    assert!(typst.contains("= Requirements Analysis"));
+
+    let (pdf_bytes, pages) =
+        compile_text_to_pdf_bytes(md, DocInputKind::Markdown, None, &DocConvertOptions::default())
+            .unwrap();
+    assert!(pages >= 1);
+    assert!(pdf_bytes.starts_with(b"%PDF-"));
+}

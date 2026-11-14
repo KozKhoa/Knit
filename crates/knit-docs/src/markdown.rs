@@ -177,14 +177,234 @@ pub fn txt_to_typst(txt: &str, opts: &DocConvertOptions) -> String {
     out
 }
 
+#[derive(Debug, Clone)]
+enum YamlVal {
+    Scalar(String),
+    List(Vec<String>),
+    Map(Vec<(String, YamlVal)>),
+}
+
+fn unquote_yaml(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.len() >= 2
+        && ((trimmed.starts_with('"') && trimmed.ends_with('"'))
+            || (trimmed.starts_with('\'') && trimmed.ends_with('\'')))
+    {
+        return trimmed[1..trimmed.len() - 1].to_string();
+    }
+    trimmed.to_string()
+}
+
+fn count_indent_cols(line: &str) -> usize {
+    line.chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .map(|c| if c == '\t' { 2 } else { 1 })
+        .sum()
+}
+
+fn extract_yaml_frontmatter(md: &str) -> Option<(Vec<(String, YamlVal)>, &str)> {
+    let stripped = md.strip_prefix('\u{FEFF}').unwrap_or(md);
+    let mut lines_iter = stripped.split_inclusive('\n');
+    let mut offset = 0usize;
+
+    // Allow optional blank lines before opening `---`
+    let mut found_open = false;
+    for line in &mut lines_iter {
+        offset += line.len();
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if t == "---" {
+            found_open = true;
+            break;
+        }
+        return None;
+    }
+    if !found_open {
+        return None;
+    }
+
+    let mut yaml_lines: Vec<&str> = Vec::new();
+    let mut found_close = false;
+    for line in lines_iter {
+        offset += line.len();
+        let t = line.trim();
+        if t == "---" || t == "..." {
+            found_close = true;
+            break;
+        }
+        yaml_lines.push(line.trim_end_matches(&['\r', '\n'][..]));
+    }
+    if !found_close || yaml_lines.is_empty() {
+        return None;
+    }
+
+    let (entries, _) = parse_yaml_block(&yaml_lines, 0, None);
+    if entries.is_empty() {
+        return None;
+    }
+    Some((entries, &stripped[offset..]))
+}
+
+fn parse_yaml_block(
+    lines: &[&str],
+    start: usize,
+    base_indent: Option<usize>,
+) -> (Vec<(String, YamlVal)>, usize) {
+    let mut entries = Vec::new();
+    let mut i = start;
+    let mut expected_indent = base_indent;
+
+    while i < lines.len() {
+        let raw = lines[i];
+        let trimmed = raw.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            i += 1;
+            continue;
+        }
+        let indent = count_indent_cols(raw);
+        let root_indent = match expected_indent {
+            Some(ind) => {
+                if indent < ind {
+                    break;
+                }
+                ind
+            }
+            None => {
+                expected_indent = Some(indent);
+                indent
+            }
+        };
+        if indent > root_indent {
+            // Indented continuation without a parent key: skip safely
+            i += 1;
+            continue;
+        }
+        if trimmed.starts_with("- ") {
+            break;
+        }
+        let Some((k_raw, v_raw)) = trimmed.split_once(':') else {
+            i += 1;
+            continue;
+        };
+        let key = unquote_yaml(k_raw);
+        let val_trimmed = v_raw.trim();
+        i += 1;
+
+        if !val_trimmed.is_empty() {
+            if val_trimmed.starts_with('[') && val_trimmed.ends_with(']') && val_trimmed.len() >= 2 {
+                let items = val_trimmed[1..val_trimmed.len() - 1]
+                    .split(',')
+                    .map(unquote_yaml)
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                entries.push((key, YamlVal::List(items)));
+            } else {
+                entries.push((key, YamlVal::Scalar(unquote_yaml(val_trimmed))));
+            }
+        } else {
+            // Peek next non-empty line to check if nested map or list
+            let mut peek = i;
+            while peek < lines.len() && (lines[peek].trim().is_empty() || lines[peek].trim().starts_with('#')) {
+                peek += 1;
+            }
+            if peek < lines.len() {
+                let next_indent = count_indent_cols(lines[peek]);
+                let next_trimmed = lines[peek].trim();
+                if next_indent > root_indent {
+                    if next_trimmed.starts_with("- ") {
+                        let mut items = Vec::new();
+                        let mut j = peek;
+                        while j < lines.len() {
+                            let l = lines[j];
+                            let lt = l.trim();
+                            if lt.is_empty() || lt.starts_with('#') {
+                                j += 1;
+                                continue;
+                            }
+                            if count_indent_cols(l) < next_indent || !lt.starts_with("- ") {
+                                break;
+                            }
+                            items.push(unquote_yaml(lt.trim_start_matches("- ").trim()));
+                            j += 1;
+                        }
+                        i = j;
+                        entries.push((key, YamlVal::List(items)));
+                    } else {
+                        let (sub_entries, next_i) = parse_yaml_block(lines, peek, Some(next_indent));
+                        i = next_i;
+                        entries.push((key, YamlVal::Map(sub_entries)));
+                    }
+                    continue;
+                }
+            }
+            entries.push((key, YamlVal::Scalar(String::new())));
+        }
+    }
+
+    (entries, i)
+}
+
+fn render_yaml_val_typst(val: &YamlVal) -> String {
+    match val {
+        YamlVal::Scalar(s) => {
+            if s.is_empty() {
+                "\"\"".to_string()
+            } else {
+                escape_typst_text(s)
+            }
+        }
+        YamlVal::List(items) => {
+            if items.is_empty() {
+                "[]".to_string()
+            } else {
+                items
+                    .iter()
+                    .map(|it| format!("- {}", escape_typst_text(it)))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+        }
+        YamlVal::Map(entries) => render_yaml_table_typst(entries, true),
+    }
+}
+
+fn render_yaml_table_typst(entries: &[(String, YamlVal)], nested: bool) -> String {
+    let mut out = String::new();
+    let stroke = if nested { "0.4pt + rgb(\"#DEE2E6\")" } else { "0.5pt + rgb(\"#CED4DA\")" };
+    let inset = if nested { "4pt" } else { "6pt" };
+    let _ = write!(
+        out,
+        "#table(columns: (auto, 1fr), align: (left, left), stroke: {stroke}, inset: {inset}, fill: (x, _y) => if x == 0 {{ rgb(\"#F8F9FA\") }} else {{ white }}, "
+    );
+    for (k, v) in entries {
+        let _ = write!(
+            out,
+            "[#strong[{}]], [{}], ",
+            escape_typst_text(k),
+            render_yaml_val_typst(v)
+        );
+    }
+    out.push(')');
+    out
+}
+
 pub fn markdown_to_typst(md: &str, opts: &DocConvertOptions) -> String {
     let mut out = typst_preamble(opts);
+    let body_md = if let Some((frontmatter, rest)) = extract_yaml_frontmatter(md) {
+        let _ = writeln!(out, "{}\n", render_yaml_table_typst(&frontmatter, false));
+        rest
+    } else {
+        md
+    };
+
     let mut cm_opts = Options::empty();
     cm_opts.insert(Options::ENABLE_TABLES);
     cm_opts.insert(Options::ENABLE_STRIKETHROUGH);
     cm_opts.insert(Options::ENABLE_TASKLISTS);
 
-    let parser = Parser::new_ext(md, cm_opts);
+    let parser = Parser::new_ext(body_md, cm_opts);
 
     let mut list_stack: Vec<Option<u64>> = Vec::new();
     let mut in_code_block = false;

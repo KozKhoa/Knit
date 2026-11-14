@@ -4,7 +4,7 @@ pub mod models;
 pub mod office;
 pub mod world;
 
-pub use html_epub::{convert_epub_to_pdf, html_to_typst};
+pub use html_epub::{compile_epub_to_pdf_bytes, convert_epub_to_pdf, html_to_typst};
 pub use markdown::{markdown_to_typst, txt_to_typst};
 pub use models::{
     DocConvertOptions, DocConvertResult, DocFont, DocInputKind, DocTheme, EngineStatus,

@@ -6,9 +6,9 @@ use knit_core::{
     app_config_dir, CancellationToken, JobLogLevel, JobProgress, JobReporter, NoopReporter,
 };
 use knit_docs::{
-    compile_text_to_pdf_bytes, convert_document_to_pdf, convert_text_to_pdf, detect_libreoffice,
-    read_utf8_text, write_utf8_text, DocConvertOptions, DocConvertResult, DocInputKind,
-    EngineStatus,
+    compile_epub_to_pdf_bytes, compile_text_to_pdf_bytes, convert_document_to_pdf,
+    convert_text_to_pdf, detect_libreoffice, read_utf8_text, write_utf8_text, DocConvertOptions,
+    DocConvertResult, DocInputKind, EngineStatus,
 };
 use knit_manga::{default_output_name, pack_stories, scan_stories, MangaPackOptions, MangaPackSummary, MangaScanMode, Story};
 use knit_pdf::{
@@ -412,6 +412,39 @@ async fn docs_write_text_file(path: PathBuf, content: String) -> Result<(), Stri
 }
 
 #[tauri::command]
+async fn docs_preview_pdf_bytes(
+    content: Option<String>,
+    input_path: Option<PathBuf>,
+    input_kind: DocInputKind,
+    base_dir: Option<PathBuf>,
+    options: DocConvertOptions,
+) -> Result<tauri::ipc::Response, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (pdf_bytes, _) = match input_kind {
+            DocInputKind::Epub => {
+                let path = input_path
+                    .ok_or_else(|| "Thieu duong dan EPUB de xem truoc".to_string())?;
+                compile_epub_to_pdf_bytes(&path, &options, &CancellationToken::new(), &NoopReporter)
+                    .map_err(|e| e.to_string())?
+            }
+            DocInputKind::Markdown | DocInputKind::PlainText | DocInputKind::Html => {
+                let text = content.unwrap_or_default();
+                compile_text_to_pdf_bytes(&text, input_kind, base_dir.as_deref(), &options)
+                    .map_err(|e| e.to_string())?
+            }
+            _ => {
+                return Err(
+                    "Chi ho tro xem truoc PDF cho Markdown, Plain Text, HTML va EPUB".to_string(),
+                )
+            }
+        };
+        Ok(tauri::ipc::Response::new(pdf_bytes))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 async fn docs_preview_markdown(
     content: String,
     input_kind: DocInputKind,
@@ -650,6 +683,7 @@ pub fn run() {
             docs_convert_to_pdf,
             docs_read_text_file,
             docs_write_text_file,
+            docs_preview_pdf_bytes,
             docs_preview_markdown,
             docs_convert_content_to_pdf,
             archive_pack,

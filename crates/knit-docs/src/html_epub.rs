@@ -141,13 +141,12 @@ pub fn html_fragment_to_typst(html: &str, virtual_img_prefix: Option<&str>) -> S
     re_nl.replace_all(escaped.trim(), "\n\n").into_owned()
 }
 
-pub fn convert_epub_to_pdf(
+pub fn compile_epub_to_pdf_bytes(
     input_path: &Path,
-    output_path: &Path,
     opts: &DocConvertOptions,
     cancel: &CancellationToken,
     reporter: &dyn JobReporter,
-) -> Result<DocConvertResult> {
+) -> Result<(Vec<u8>, usize)> {
     reporter.info("Dang giai nen va doc cau truc EPUB");
     let mut doc = EpubDoc::new(input_path)
         .map_err(|e| KnitError::InvalidInput(format!("Loi mo EPUB {}: {e}", input_path.display())))?;
@@ -206,7 +205,17 @@ pub fn convert_epub_to_pdf(
     }
 
     reporter.info("Dang bien dich EPUB sang PDF (Typst)");
-    let (pdf_bytes, pages) = compile_typst_to_pdf(&markup, None, &virtual_files)?;
+    compile_typst_to_pdf(&markup, None, &virtual_files)
+}
+
+pub fn convert_epub_to_pdf(
+    input_path: &Path,
+    output_path: &Path,
+    opts: &DocConvertOptions,
+    cancel: &CancellationToken,
+    reporter: &dyn JobReporter,
+) -> Result<DocConvertResult> {
+    let (pdf_bytes, pages) = compile_epub_to_pdf_bytes(input_path, opts, cancel, reporter)?;
     atomic_write_file(output_path, |f| Ok(f.write_all(&pdf_bytes)?))?;
 
     Ok(DocConvertResult {
