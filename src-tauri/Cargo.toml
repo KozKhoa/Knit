@@ -1,0 +1,26 @@
+[package]
+name = "knit-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "knit_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+knit-core = { path = "../crates/knit-core" }
+knit-pdf = { path = "../crates/knit-pdf" }
+knit-docs = { path = "../crates/knit-docs" }
+knit-archive = { path = "../crates/knit-archive" }
+knit-manga = { path = "../crates/knit-manga" }
+knit-renamer = { path = "../crates/knit-renamer" }
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-dialog = { version = "2", default-features = false, features = ["xdg-portal"] }
+tauri-plugin-opener = "2"
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
