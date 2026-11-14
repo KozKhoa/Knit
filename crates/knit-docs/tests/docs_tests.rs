@@ -203,3 +203,66 @@ Body content after frontmatter.
     assert!(pages >= 1);
     assert!(pdf_bytes.starts_with(b"%PDF-"));
 }
+
+#[test]
+fn hw03_placeholder_tags_and_emph_dot_zip_compile_cleanly() {
+    let md = "- Filename format: <StudentID>_HW03_AI_GUIUsability_<SelfAssessedGrade>.zip\n\n**bold**.zip and `code`.zip and *emph*.png\n";
+    let typst = markdown_to_typst(md, &DocConvertOptions::default());
+    assert!(typst.contains("\\<StudentID\\>"));
+    assert!(typst.contains("\\<SelfAssessedGrade\\>"));
+    assert!(typst.contains("];.zip"));
+
+    let (pdf_bytes, pages) =
+        compile_text_to_pdf_bytes(md, DocInputKind::Markdown, None, &DocConvertOptions::default())
+            .unwrap();
+    assert!(pages >= 1);
+    assert!(pdf_bytes.starts_with(b"%PDF-"));
+
+    let hw03 = std::path::Path::new("/home/khoa/Downloads/2026.HW03.md");
+    if hw03.is_file() {
+        let content = knit_docs::read_utf8_text(hw03).unwrap();
+        let (hw_bytes, hw_pages) = compile_text_to_pdf_bytes(
+            &content,
+            DocInputKind::Markdown,
+            hw03.parent(),
+            &DocConvertOptions::default(),
+        )
+        .unwrap();
+        assert!(hw_pages >= 1);
+        assert!(hw_bytes.starts_with(b"%PDF-"));
+    }
+}
+
+#[test]
+fn task_lists_emojis_inline_triple_backticks_and_mermaid_svg_compile_cleanly() {
+    let md = "\
+### **Definition of Done (DoD)**
+
+* [ ] Dữ liệu sinh viên FIT HCMUS 📋
+* [x] Bộ đếm SLA ✅ 🚀 🔥
+
+Inline ```text some random text ``` section.
+
+```mermaid
+graph TD
+A[Start] --> B[End]
+```
+";
+    let mut mermaid_svgs = std::collections::HashMap::new();
+    mermaid_svgs.insert(
+        "graph TD\nA[Start] --> B[End]".to_string(),
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60" viewBox="0 0 120 60"><rect width="120" height="60" fill="#eef2ff"/><text x="12" y="34" font-size="14">Start to End</text></svg>"##.to_string(),
+    );
+    let opts = DocConvertOptions {
+        mermaid_svgs,
+        ..DocConvertOptions::default()
+    };
+    let (typst, assets) = knit_docs::markdown_to_typst_with_assets(md, &opts);
+    assert!(typst.contains("line(end: (0.18em, 0.18em)"));
+    assert!(typst.contains("__knit_mermaid_0.svg"));
+    assert_eq!(assets.len(), 1);
+
+    let (pdf_bytes, pages) = compile_text_to_pdf_bytes(md, DocInputKind::Markdown, None, &opts).unwrap();
+    assert!(pages >= 1);
+    assert!(pdf_bytes.starts_with(b"%PDF-"));
+}

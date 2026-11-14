@@ -5,7 +5,7 @@ pub mod office;
 pub mod world;
 
 pub use html_epub::{compile_epub_to_pdf_bytes, convert_epub_to_pdf, html_to_typst};
-pub use markdown::{markdown_to_typst, txt_to_typst};
+pub use markdown::{markdown_to_typst, markdown_to_typst_with_assets, txt_to_typst};
 pub use models::{
     DocConvertOptions, DocConvertResult, DocFont, DocInputKind, DocTheme, EngineStatus,
     PageSizePreset,
@@ -17,14 +17,19 @@ use knit_core::{
     atomic_write_file, ensure_disk_space, CancellationToken, JobProgress, JobReporter,
     JobReporterExt, KnitError, Result,
 };
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-fn build_typst_markup(content: &str, kind: DocInputKind, opts: &DocConvertOptions) -> Result<String> {
+fn build_typst_markup_with_assets(
+    content: &str,
+    kind: DocInputKind,
+    opts: &DocConvertOptions,
+) -> Result<(String, HashMap<String, Vec<u8>>)> {
     match kind {
-        DocInputKind::Markdown => Ok(markdown_to_typst(content, opts)),
-        DocInputKind::PlainText => Ok(txt_to_typst(content, opts)),
-        DocInputKind::Html => Ok(html_to_typst(content, opts)),
+        DocInputKind::Markdown => Ok(markdown_to_typst_with_assets(content, opts)),
+        DocInputKind::PlainText => Ok((txt_to_typst(content, opts), HashMap::new())),
+        DocInputKind::Html => Ok((html_to_typst(content, opts), HashMap::new())),
         _ => Err(KnitError::InvalidInput(
             "Chi ho tro bien dich noi dung van ban cho Markdown, Plain Text hoac HTML".into(),
         )),
@@ -38,12 +43,12 @@ pub fn compile_text_to_pdf_bytes(
     base_dir: Option<&Path>,
     opts: &DocConvertOptions,
 ) -> Result<(Vec<u8>, usize)> {
-    let markup = build_typst_markup(content, kind, opts)?;
+    let (markup, assets) = build_typst_markup_with_assets(content, kind, opts)?;
     let effective_base = match kind {
         DocInputKind::Markdown | DocInputKind::Html => base_dir,
         _ => None,
     };
-    compile_typst_to_pdf(&markup, effective_base, &Default::default())
+    compile_typst_to_pdf(&markup, effective_base, &assets)
 }
 
 /// Chuyển nội dung văn bản trong bộ nhớ thành file PDF (dùng cho editor có chỉnh sửa trực tiếp).

@@ -1,6 +1,8 @@
 import React from "react";
-import { EditorState } from "@codemirror/state";
+import { EditorState, StateEffect, StateField } from "@codemirror/state";
 import {
+  Decoration,
+  type DecorationSet,
   EditorView,
   highlightActiveLine,
   highlightActiveLineGutter,
@@ -12,13 +14,50 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirro
 import { markdown } from "@codemirror/lang-markdown";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
+import type { SourceRange } from "../lib/markdownSearch";
+
+export interface MarkdownCodeEditorHandle {
+  jumpToRange: (from: number, to: number, focus?: boolean) => void;
+  setSearchHighlights: (ranges: SourceRange[], activeIndex: number | null) => void;
+}
 
 interface MarkdownCodeEditorProps {
   value: string;
   onChange: (value: string) => void;
   onSave?: () => void;
+  onOpenFind?: () => void;
   placeholder?: string;
 }
+
+const setSearchDecoEffect = StateEffect.define<{
+  ranges: SourceRange[];
+  activeIndex: number | null;
+}>();
+
+const searchMatchMark = Decoration.mark({ class: "cm-knit-search-match" });
+const searchActiveMark = Decoration.mark({ class: "cm-knit-search-match-active" });
+
+const searchHighlightField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(deco, tr) {
+    for (const eff of tr.effects) {
+      if (eff.is(setSearchDecoEffect)) {
+        const docLen = tr.state.doc.length;
+        const marks = eff.value.ranges
+          .filter((r) => r.from >= 0 && r.to > r.from && r.to <= docLen)
+          .map((r, idx) =>
+            (eff.value.activeIndex === idx ? searchActiveMark : searchMatchMark).range(r.from, r.to),
+          );
+        return Decoration.set(marks, true);
+      }
+    }
+    if (tr.docChanged) {
+      return deco.map(tr.changes);
+    }
+    return deco;
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
 
 const vsCodeLightHighlight = HighlightStyle.define([
   { tag: [tags.heading, tags.heading1, tags.heading2, tags.heading3], color: "#0451A5", fontWeight: "700" },
@@ -82,18 +121,26 @@ const editorBaseTheme = EditorView.theme({
   ".cm-selectionBackground, ::selection": {
     backgroundColor: "#CFE2FF !important",
   },
+  ".cm-knit-search-match": {
+    backgroundColor: "#FFF3CD",
+    borderRadius: "2px",
+  },
+  ".cm-knit-search-match-active": {
+    backgroundColor: "#FFC107",
+    outline: "1px solid #D97706",
+    borderRadius: "2px",
+  },
 });
 
-export const MarkdownCodeEditor: React.FC<MarkdownCodeEditorProps> = ({
-  value,
-  onChange,
-  onSave,
-  placeholder = "",
-}) => {
+export const MarkdownCodeEditor = React.forwardRef<
+  MarkdownCodeEditorHandle,
+  MarkdownCodeEditorProps
+>(({ value, onChange, onSave, onOpenFind, placeholder = "" }, ref) => {
   const hostRef = React.useRef<HTMLDivElement | null>(null);
   const viewRef = React.useRef<EditorView | null>(null);
   const onChangeRef = React.useRef(onChange);
   const onSaveRef = React.useRef(onSave);
+  const onOpenFindRef = React.useRef(onOpenFind);
 
   React.useEffect(() => {
     onChangeRef.current = onChange;
@@ -104,14 +151,58 @@ export const MarkdownCodeEditor: React.FC<MarkdownCodeEditorProps> = ({
   }, [onSave]);
 
   React.useEffect(() => {
+    onOpenFindRef.current = onOpenFind;
+  }, [onOpenFind]);
+
+  React.useImperativeHandle(
+    ref,
+    () => ({
+      jumpToRange: (from: number, to: number, focus = true) => {
+        const view = viewRef.current;
+        if (!view) return;
+        const max = view.state.doc.length;
+        const safeFrom = Math.max(0, Math.min(from, max));
+        const safeTo = Math.max(safeFrom, Math.min(to, max));
+        view.dispatch({
+          selection: { anchor: safeFrom, head: safeTo },
+          effects: EditorView.scrollIntoView(safeFrom, { y: "center" }),
+        });
+        if (focus) {
+          view.focus();
+        }
+      },
+      setSearchHighlights: (ranges: SourceRange[], activeIndex: number | null) => {
+        const view = viewRef.current;
+        if (!view) return;
+        const effects: StateEffect<unknown>[] = [
+          setSearchDecoEffect.of({ ranges, activeIndex }),
+        ];
+        if (activeIndex !== null && ranges[activeIndex]) {
+          const target = ranges[activeIndex];
+          effects.push(EditorView.scrollIntoView(target.from, { y: "center" }));
+        }
+        view.dispatch({ effects });
+      },
+    }),
+    [],
+  );
+
+  React.useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
 
-    const saveKeymap = keymap.of([
+    const customKeymap = keymap.of([
       {
         key: "Mod-s",
         run: () => {
           onSaveRef.current?.();
+          return true;
+        },
+      },
+      {
+        key: "Mod-f",
+        run: () => {
+          onOpenFindRef.current?.();
           return true;
         },
       },
@@ -126,9 +217,10 @@ export const MarkdownCodeEditor: React.FC<MarkdownCodeEditorProps> = ({
         history(),
         markdown(),
         syntaxHighlighting(vsCodeLightHighlight),
+        searchHighlightField,
         EditorView.lineWrapping,
         cmPlaceholder(placeholder),
-        saveKeymap,
+        customKeymap,
         keymap.of([indentWithTab, ...defaultKeymap, ...historyKeymap]),
         editorBaseTheme,
         EditorView.updateListener.of((update) => {
@@ -168,4 +260,6 @@ export const MarkdownCodeEditor: React.FC<MarkdownCodeEditorProps> = ({
       className="h-full min-h-0 w-full flex-1 overflow-hidden bg-white"
     />
   );
-};
+});
+
+MarkdownCodeEditor.displayName = "MarkdownCodeEditor";

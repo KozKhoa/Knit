@@ -25,10 +25,85 @@ const LORA_REGULAR_TTF: &[u8] =
     include_bytes!("../../../src/assets/fonts/Lora-VariableFont_wght.ttf");
 const LORA_ITALIC_TTF: &[u8] =
     include_bytes!("../../../src/assets/fonts/Lora-Italic-VariableFont_wght.ttf");
+const NOTO_EMOJI_TTF: &[u8] =
+    include_bytes!("../../../src/assets/fonts/NotoEmoji-Regular.ttf");
+const NOTO_SYMBOLS_TTF: &[u8] =
+    include_bytes!("../../../src/assets/fonts/NotoSansSymbols[wght].ttf");
+const NOTO_SYMBOLS2_TTF: &[u8] =
+    include_bytes!("../../../src/assets/fonts/NotoSansSymbols2-Regular.ttf");
 
 struct FontCatalog {
     book: LazyHash<FontBook>,
     fonts: Vec<Font>,
+}
+
+fn push_font_bytes(book: &mut FontBook, fonts: &mut Vec<Font>, data: Vec<u8>) {
+    let bytes = Bytes::new(data);
+    for font in Font::iter(bytes) {
+        book.push(font.info().clone());
+        fonts.push(font);
+    }
+}
+
+fn load_system_emoji_fonts(book: &mut FontBook, fonts: &mut Vec<Font>) {
+    let mut dirs_to_scan: Vec<PathBuf> = vec![
+        PathBuf::from("/usr/share/fonts"),
+        PathBuf::from("/usr/local/share/fonts"),
+        PathBuf::from("/System/Library/Fonts"),
+        PathBuf::from("/Library/Fonts"),
+        PathBuf::from("C:\\Windows\\Fonts"),
+    ];
+    if let Ok(home) = std::env::var("HOME") {
+        let home_path = PathBuf::from(home);
+        dirs_to_scan.push(home_path.join(".local/share/fonts"));
+        dirs_to_scan.push(home_path.join(".fonts"));
+        dirs_to_scan.push(home_path.join("Library/Fonts"));
+    }
+
+    let mut stack = dirs_to_scan;
+    let mut loaded = 0usize;
+    while let Some(dir) = stack.pop() {
+        if loaded >= 16 || !dir.is_dir() {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+                continue;
+            };
+            let ext_lower = ext.to_ascii_lowercase();
+            if ext_lower != "ttf" && ext_lower != "otf" && ext_lower != "ttc" {
+                continue;
+            }
+            let name_lower = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.to_ascii_lowercase())
+                .unwrap_or_default();
+            let is_emoji_or_symbol = name_lower.contains("emoji")
+                || name_lower.contains("seguiemj")
+                || name_lower.contains("seguisym")
+                || name_lower.contains("twemoji")
+                || name_lower.contains("symbola");
+            if !is_emoji_or_symbol {
+                continue;
+            }
+            if let Ok(raw) = std::fs::read(&path) {
+                push_font_bytes(book, fonts, raw);
+                loaded += 1;
+                if loaded >= 16 {
+                    break;
+                }
+            }
+        }
+    }
 }
 
 fn shared_fonts() -> &'static FontCatalog {
@@ -38,11 +113,7 @@ fn shared_fonts() -> &'static FontCatalog {
         let mut fonts = Vec::new();
 
         for data in typst_assets::fonts() {
-            let bytes = Bytes::new(data.to_vec());
-            for font in Font::iter(bytes) {
-                book.push(font.info().clone());
-                fonts.push(font);
-            }
+            push_font_bytes(&mut book, &mut fonts, data.to_vec());
         }
 
         for embedded in [
@@ -52,13 +123,14 @@ fn shared_fonts() -> &'static FontCatalog {
             ROBOTO_ITALIC_TTF,
             LORA_REGULAR_TTF,
             LORA_ITALIC_TTF,
+            NOTO_EMOJI_TTF,
+            NOTO_SYMBOLS2_TTF,
+            NOTO_SYMBOLS_TTF,
         ] {
-            let bytes = Bytes::new(embedded.to_vec());
-            for font in Font::iter(bytes) {
-                book.push(font.info().clone());
-                fonts.push(font);
-            }
+            push_font_bytes(&mut book, &mut fonts, embedded.to_vec());
         }
+
+        load_system_emoji_fonts(&mut book, &mut fonts);
 
         FontCatalog {
             book: LazyHash::new(book),

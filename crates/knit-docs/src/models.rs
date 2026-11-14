@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -89,6 +90,8 @@ pub struct DocConvertOptions {
     pub theme: DocTheme,
     #[serde(default)]
     pub font: DocFont,
+    #[serde(default)]
+    pub mermaid_svgs: HashMap<String, String>,
 }
 
 impl Default for DocConvertOptions {
@@ -101,6 +104,7 @@ impl Default for DocConvertOptions {
             include_toc: false,
             theme: DocTheme::GitHub,
             font: DocFont::Default,
+            mermaid_svgs: HashMap::new(),
         }
     }
 }

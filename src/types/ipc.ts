@@ -196,6 +196,7 @@ export interface DocConvertOptions {
   include_toc: boolean;
   theme: DocTheme;
   font: DocFont;
+  mermaid_svgs?: Record<string, string>;
 }
 
 export interface MarkdownPreviewResult {

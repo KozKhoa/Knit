@@ -49,6 +49,11 @@ export const ImageCanvasEditorModal: React.FC<ImageCanvasEditorModalProps> = ({
 
   const [imgEl, setImgEl] = React.useState<HTMLImageElement | null>(null);
   const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
+  const workspaceRef = React.useRef<HTMLDivElement | null>(null);
+  const [workspaceSize, setWorkspaceSize] = React.useState<{ width: number; height: number }>({
+    width: 1120,
+    height: 700,
+  });
 
   const [activeStroke, setActiveStroke] = React.useState<[number, number][] | null>(null);
   const [cropDragStart, setCropDragStart] = React.useState<[number, number] | null>(null);
@@ -59,6 +64,28 @@ export const ImageCanvasEditorModal: React.FC<ImageCanvasEditorModalProps> = ({
     img.onload = () => setImgEl(img);
     img.src = imageSrc;
   }, [imageSrc]);
+
+  React.useEffect(() => {
+    const el = workspaceRef.current;
+    if (!el) return;
+    const updateSize = () => {
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        setWorkspaceSize({
+          width: Math.max(780, Math.floor(rect.width - 32)),
+          height: Math.max(520, Math.floor(rect.height - 32)),
+        });
+      }
+    };
+    updateSize();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", updateSize);
+      return () => window.removeEventListener("resize", updateSize);
+    }
+    const ro = new ResizeObserver(updateSize);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   const drawPreview = React.useCallback(() => {
     const canvas = canvasRef.current;
@@ -77,9 +104,9 @@ export const ImageCanvasEditorModal: React.FC<ImageCanvasEditorModalProps> = ({
     const logicalW = showFullForCrop ? imgEl.width : swapped ? srcH : srcW;
     const logicalH = showFullForCrop ? imgEl.height : swapped ? srcW : srcH;
 
-    const maxW = 780;
-    const maxH = 520;
-    const scale = Math.min(maxW / logicalW, maxH / logicalH, 1.5);
+    const maxW = workspaceSize.width;
+    const maxH = workspaceSize.height;
+    const scale = Math.min(maxW / logicalW, maxH / logicalH, 2.0);
     const cw = Math.max(100, Math.round(logicalW * scale));
     const ch = Math.max(100, Math.round(logicalH * scale));
     canvas.width = cw;
@@ -180,6 +207,8 @@ export const ImageCanvasEditorModal: React.FC<ImageCanvasEditorModalProps> = ({
     cropDragCurr,
     colorHex,
     strokeWidthRatio,
+    workspaceSize.width,
+    workspaceSize.height,
   ]);
 
   React.useEffect(() => {
@@ -266,8 +295,8 @@ export const ImageCanvasEditorModal: React.FC<ImageCanvasEditorModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="flex max-h-[92vh] w-full max-w-5xl flex-col rounded-[4px] border border-[#CED4DA] bg-white">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-3">
+      <div className="flex h-[94vh] w-[96vw] max-w-[1440px] flex-col rounded-[4px] border border-[#CED4DA] bg-white shadow-xl">
         <div className="flex items-center justify-between border-b border-[#DEE2E6] px-4 py-2.5">
           <div>
             <div className="text-base font-bold text-[#212529]">
@@ -422,7 +451,10 @@ export const ImageCanvasEditorModal: React.FC<ImageCanvasEditorModalProps> = ({
         </div>
 
         {/* Canvas Workspace */}
-        <div className="flex flex-1 items-center justify-center overflow-auto bg-[#E9ECEF] p-4">
+        <div
+          ref={workspaceRef}
+          className="flex flex-1 items-center justify-center overflow-auto bg-[#E9ECEF] p-4"
+        >
           {!imgEl ? (
             <div className="text-sm text-[#6C757D]">{t.canvasEditor.loadingPreview}</div>
           ) : (

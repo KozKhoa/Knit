@@ -1,22 +1,26 @@
 use crate::models::{DocConvertOptions, DocFont, DocTheme};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use std::collections::HashMap;
 use std::fmt::Write as _;
 
-fn typst_font_tuple(font: DocFont, theme: DocTheme) -> &'static str {
-    match font {
-        DocFont::Afacad => "(\"Afacad\", \"Roboto\", \"Libertinus Serif\")",
-        DocFont::Roboto => "(\"Roboto\", \"Afacad\", \"Libertinus Serif\")",
-        DocFont::Lora => "(\"Lora\", \"Libertinus Serif\", \"New Computer Modern\")",
-        DocFont::LibertinusSerif => "(\"Libertinus Serif\", \"New Computer Modern\")",
-        DocFont::NewComputerModern => "(\"New Computer Modern\", \"Libertinus Serif\")",
-        DocFont::DejaVuSansMono => "(\"DejaVu Sans Mono\", \"Libertinus Serif\")",
+const EMOJI_FALLBACK_FONTS: &str = "\"Noto Emoji\", \"Noto Sans Symbols 2\", \"Noto Sans Symbols\", \"Noto Color Emoji\", \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Twemoji Mozilla\"";
+
+fn typst_font_tuple(font: DocFont, theme: DocTheme) -> String {
+    let primary = match font {
+        DocFont::Afacad => "\"Afacad\", \"Roboto\", \"Libertinus Serif\"",
+        DocFont::Roboto => "\"Roboto\", \"Afacad\", \"Libertinus Serif\"",
+        DocFont::Lora => "\"Lora\", \"Libertinus Serif\", \"New Computer Modern\"",
+        DocFont::LibertinusSerif => "\"Libertinus Serif\", \"New Computer Modern\"",
+        DocFont::NewComputerModern => "\"New Computer Modern\", \"Libertinus Serif\"",
+        DocFont::DejaVuSansMono => "\"DejaVu Sans Mono\", \"Libertinus Serif\"",
         DocFont::Default => match theme {
-            DocTheme::GitHub | DocTheme::VsCodeLight => "(\"Roboto\", \"Afacad\", \"Libertinus Serif\")",
-            DocTheme::Modern | DocTheme::Obsidian => "(\"Afacad\", \"Roboto\", \"Libertinus Serif\")",
-            DocTheme::Resume => "(\"Roboto\", \"Libertinus Serif\")",
-            DocTheme::Academic | DocTheme::Minimal => "(\"Libertinus Serif\", \"New Computer Modern\")",
+            DocTheme::GitHub | DocTheme::VsCodeLight => "\"Roboto\", \"Afacad\", \"Libertinus Serif\"",
+            DocTheme::Modern | DocTheme::Obsidian => "\"Afacad\", \"Roboto\", \"Libertinus Serif\"",
+            DocTheme::Resume => "\"Roboto\", \"Libertinus Serif\"",
+            DocTheme::Academic | DocTheme::Minimal => "\"Libertinus Serif\", \"New Computer Modern\"",
         },
-    }
+    };
+    format!("({primary}, {EMOJI_FALLBACK_FONTS})")
 }
 
 pub(crate) fn typst_preamble(opts: &DocConvertOptions) -> String {
@@ -49,7 +53,7 @@ pub(crate) fn typst_preamble(opts: &DocConvertOptions) -> String {
                 "#show heading.where(level: 2): it => block(below: 0.55em, above: 0.95em, width: 100%, stroke: (bottom: 0.5pt + rgb(\"#D8DEE4\")), inset: (bottom: 0.25em), text(size: 1.2em, weight: \"semibold\", fill: rgb(\"#1F2328\"), it.body))"
             );
             let _ = writeln!(s, "#show link: set text(fill: rgb(\"#0969DA\"))");
-            let _ = writeln!(s, "#show raw.where(block: false): it => box(fill: rgb(\"#EFF1F3\"), inset: (x: 3pt, y: 1.5pt), radius: 3pt, it)");
+            let _ = writeln!(s, "#show raw.where(block: false): it => highlight(fill: rgb(\"#EAECEF\"), stroke: 0.4pt + rgb(\"#D0D7DE\"), extent: 2pt, radius: 3pt, it)");
         }
         DocTheme::Academic => {
             let _ = writeln!(
@@ -64,6 +68,7 @@ pub(crate) fn typst_preamble(opts: &DocConvertOptions) -> String {
             );
             let _ = writeln!(s, "#show heading.where(level: 2): set text(size: 1.15em, weight: \"bold\")");
             let _ = writeln!(s, "#show link: set text(fill: rgb(\"#1D4ED8\"))");
+            let _ = writeln!(s, "#show raw.where(block: false): it => highlight(fill: rgb(\"#F3F4F6\"), stroke: 0.4pt + rgb(\"#D1D5DB\"), extent: 2pt, radius: 3pt, it)");
         }
         DocTheme::Minimal => {
             let _ = writeln!(
@@ -81,6 +86,7 @@ pub(crate) fn typst_preamble(opts: &DocConvertOptions) -> String {
                 "#show heading.where(level: 2): it => block(below: 0.55em, above: 1.0em, text(size: 1.12em, weight: \"medium\", fill: rgb(\"#495057\"), it.body))"
             );
             let _ = writeln!(s, "#show link: set text(fill: rgb(\"#495057\"))");
+            let _ = writeln!(s, "#show raw.where(block: false): it => highlight(fill: rgb(\"#F1F3F5\"), stroke: 0.4pt + rgb(\"#DEE2E6\"), extent: 2pt, radius: 3pt, it)");
         }
         DocTheme::Modern => {
             let _ = writeln!(
@@ -98,7 +104,7 @@ pub(crate) fn typst_preamble(opts: &DocConvertOptions) -> String {
                 "#show heading.where(level: 2): it => block(below: 0.5em, above: 0.95em, text(size: 1.18em, weight: \"bold\", fill: rgb(\"#0069D9\"), it.body))"
             );
             let _ = writeln!(s, "#show link: set text(fill: rgb(\"#007BFF\"))");
-            let _ = writeln!(s, "#show raw.where(block: false): it => box(fill: rgb(\"#EFF6FF\"), inset: (x: 3pt, y: 1.5pt), radius: 3pt, text(fill: rgb(\"#1E40AF\"), it))");
+            let _ = writeln!(s, "#show raw.where(block: false): it => highlight(fill: rgb(\"#DBEAFE\"), stroke: 0.4pt + rgb(\"#93C5FD\"), extent: 2pt, radius: 3pt, text(fill: rgb(\"#1E3A8A\"), it))");
         }
         DocTheme::Resume => {
             let _ = writeln!(
@@ -116,6 +122,7 @@ pub(crate) fn typst_preamble(opts: &DocConvertOptions) -> String {
                 "#show heading.where(level: 2): it => block(below: 0.4em, above: 0.8em, width: 100%, stroke: (bottom: 0.75pt + rgb(\"#007BFF\")), inset: (bottom: 0.15em), text(size: 1.08em, weight: \"bold\", fill: rgb(\"#0069D9\"), upper(it.body)))"
             );
             let _ = writeln!(s, "#show link: set text(fill: rgb(\"#007BFF\"))");
+            let _ = writeln!(s, "#show raw.where(block: false): it => highlight(fill: rgb(\"#E9ECEF\"), stroke: 0.4pt + rgb(\"#CED4DA\"), extent: 2pt, radius: 3pt, it)");
         }
         DocTheme::VsCodeLight => {
             let _ = writeln!(
@@ -139,7 +146,7 @@ pub(crate) fn typst_preamble(opts: &DocConvertOptions) -> String {
             );
             let _ = writeln!(
                 s,
-                "#show raw.where(block: false): it => box(fill: rgb(\"#F3F3F3\"), stroke: 0.4pt + rgb(\"#E1E4E8\"), inset: (x: 3pt, y: 1.5pt), radius: 3pt, text(fill: rgb(\"#A31515\"), it))"
+                "#show raw.where(block: false): it => highlight(fill: rgb(\"#EDEDED\"), stroke: 0.4pt + rgb(\"#D4D4D4\"), extent: 2pt, radius: 3pt, text(fill: rgb(\"#A31515\"), it))"
             );
         }
         DocTheme::Obsidian => {
@@ -168,7 +175,7 @@ pub(crate) fn typst_preamble(opts: &DocConvertOptions) -> String {
             );
             let _ = writeln!(
                 s,
-                "#show raw.where(block: false): it => box(fill: rgb(\"#F5F3FF\"), inset: (x: 3.5pt, y: 1.5pt), radius: 3pt, text(fill: rgb(\"#6D28D9\"), it))"
+                "#show raw.where(block: false): it => highlight(fill: rgb(\"#EDE9FE\"), stroke: 0.4pt + rgb(\"#C4B5FD\"), extent: 2pt, radius: 3pt, text(fill: rgb(\"#5B21B6\"), it))"
             );
         }
     }
@@ -217,7 +224,7 @@ pub fn txt_to_typst(txt: &str, opts: &DocConvertOptions) -> String {
     let mut out = typst_preamble(opts);
     let _ = writeln!(
         out,
-        "#set text(font: (\"DejaVu Sans Mono\", \"Libertinus Serif\"), size: {}pt)",
+        "#set text(font: (\"DejaVu Sans Mono\", \"Libertinus Serif\", {EMOJI_FALLBACK_FONTS}), size: {}pt)",
         (opts.font_size_pt - 1.0).clamp(7.0, 20.0)
     );
     for line in txt.lines() {
@@ -444,8 +451,69 @@ fn render_yaml_table_typst(entries: &[(String, YamlVal)], nested: bool) -> Strin
     out
 }
 
+fn checkbox_typst(checked: bool) -> &'static str {
+    if checked {
+        "#box(width: 0.85em, height: 0.85em, baseline: 12%, radius: 2pt, fill: rgb(\"#0969DA\"), stroke: 0.9pt + rgb(\"#0969DA\"), { place(dx: 0.16em, dy: 0.45em, line(end: (0.18em, 0.18em), stroke: 1.3pt + white)); place(dx: 0.34em, dy: 0.63em, line(end: (0.34em, -0.36em), stroke: 1.3pt + white)) });#h(0.4em);"
+    } else {
+        "#box(width: 0.85em, height: 0.85em, baseline: 12%, radius: 2pt, stroke: 0.9pt + rgb(\"#6C757D\"));#h(0.4em);"
+    }
+}
+
+fn handle_inline_html(html: &str) -> String {
+    let trimmed = html.trim();
+    if trimmed.is_empty() || trimmed.starts_with("<!--") {
+        return String::new();
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if matches!(lower.as_str(), "<br>" | "<br/>" | "<br />") {
+        return "\\\n".to_string();
+    }
+    if matches!(lower.as_str(), "<hr>" | "<hr/>" | "<hr />") {
+        return "\n#line(length: 100%, stroke: 0.5pt + rgb(\"#DEE2E6\"))\n\n".to_string();
+    }
+    if matches!(lower.as_str(), "<b>" | "<strong>") {
+        return "#strong[".to_string();
+    }
+    if matches!(lower.as_str(), "</b>" | "</strong>") {
+        return "];".to_string();
+    }
+    if matches!(lower.as_str(), "<i>" | "<em>") {
+        return "#emph[".to_string();
+    }
+    if matches!(lower.as_str(), "</i>" | "</em>") {
+        return "];".to_string();
+    }
+    let inner = lower
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .trim_start_matches('/')
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim_end_matches('/');
+    const KNOWN_HTML_TAGS: &[&str] = &[
+        "u", "s", "del", "ins", "code", "kbd", "sup", "sub", "mark", "small", "span", "div", "p",
+        "a", "img", "table", "thead", "tbody", "tr", "td", "th", "ul", "ol", "li", "h1", "h2",
+        "h3", "h4", "h5", "h6", "details", "summary", "center", "blockquote", "pre", "font",
+    ];
+    if KNOWN_HTML_TAGS.contains(&inner) {
+        return String::new();
+    }
+    // Literal placeholder like <StudentID> or <SelfAssessedGrade>
+    escape_typst_text(html)
+}
+
 pub fn markdown_to_typst(md: &str, opts: &DocConvertOptions) -> String {
+    markdown_to_typst_with_assets(md, opts).0
+}
+
+pub fn markdown_to_typst_with_assets(
+    md: &str,
+    opts: &DocConvertOptions,
+) -> (String, HashMap<String, Vec<u8>>) {
     let mut out = typst_preamble(opts);
+    let mut assets: HashMap<String, Vec<u8>> = HashMap::new();
+    let mut mermaid_idx = 0usize;
     let body_md = if let Some((frontmatter, rest)) = extract_yaml_frontmatter(md) {
         let _ = writeln!(out, "{}\n", render_yaml_table_typst(&frontmatter, false));
         rest
@@ -483,16 +551,35 @@ pub fn markdown_to_typst(md: &str, opts: &DocConvertOptions) -> String {
                 Event::SoftBreak | Event::HardBreak => code_buf.push('\n'),
                 Event::End(TagEnd::CodeBlock) => {
                     in_code_block = false;
-                    let lang_arg = code_lang
-                        .as_deref()
-                        .filter(|l| !l.trim().is_empty())
-                        .map(|l| format!(", lang: {}", typst_string_literal(l.trim())))
-                        .unwrap_or_default();
-                    let _ = writeln!(
-                        out,
-                        "\n#block(fill: rgb(\"#F8F9FA\"), stroke: 0.5pt + rgb(\"#DEE2E6\"), inset: 8pt, radius: 4pt, width: 100%)[#raw(block: true{lang_arg}, {})]\n",
-                        typst_string_literal(code_buf.trim_end_matches('\n'))
-                    );
+                    let lang_trimmed = code_lang.as_deref().map(str::trim).unwrap_or("");
+                    if lang_trimmed.eq_ignore_ascii_case("mermaid") {
+                        let key = code_buf.replace("\r\n", "\n").trim().to_string();
+                        if let Some(svg_content) = opts.mermaid_svgs.get(&key) {
+                            let vname = format!("__knit_mermaid_{mermaid_idx}.svg");
+                            mermaid_idx += 1;
+                            assets.insert(vname.clone(), svg_content.as_bytes().to_vec());
+                            let _ = writeln!(
+                                out,
+                                "\n#figure(image({}, width: 92%))\n",
+                                typst_string_literal(&vname)
+                            );
+                        } else {
+                            let _ = writeln!(
+                                out,
+                                "\n#block(fill: rgb(\"#F1F5F9\"), stroke: 0.6pt + rgb(\"#CBD5E1\"), inset: 9pt, radius: 4pt, width: 100%, breakable: true)[#raw(block: true, lang: \"mermaid\", {})]\n",
+                                typst_string_literal(code_buf.trim_end_matches('\n'))
+                            );
+                        }
+                    } else {
+                        let lang_arg = (!lang_trimmed.is_empty())
+                            .then(|| format!(", lang: {}", typst_string_literal(lang_trimmed)))
+                            .unwrap_or_default();
+                        let _ = writeln!(
+                            out,
+                            "\n#block(fill: rgb(\"#F1F5F9\"), stroke: 0.6pt + rgb(\"#CBD5E1\"), inset: 9pt, radius: 4pt, width: 100%, breakable: true)[#raw(block: true{lang_arg}, {})]\n",
+                            typst_string_literal(code_buf.trim_end_matches('\n'))
+                        );
+                    }
                     code_buf.clear();
                     code_lang = None;
                 }
@@ -540,13 +627,14 @@ pub fn markdown_to_typst(md: &str, opts: &DocConvertOptions) -> String {
             match event {
                 Event::Text(t) => link_text.push_str(&escape_typst_text(&t)),
                 Event::Code(t) => {
-                    let _ = write!(link_text, "#raw({})", typst_string_literal(&t));
+                    let _ = write!(link_text, "#raw({});", typst_string_literal(&t));
                 }
+                Event::InlineHtml(html) => link_text.push_str(&handle_inline_html(&html)),
                 Event::End(TagEnd::Link) => {
                     in_link = false;
                     let target = if link_url.starts_with("http://") || link_url.starts_with("https://") {
                         format!(
-                            "#link({})[{}]",
+                            "#link({})[{}];",
                             typst_string_literal(&link_url),
                             link_text
                         )
@@ -647,7 +735,7 @@ pub fn markdown_to_typst(md: &str, opts: &DocConvertOptions) -> String {
                         out.push_str("\n\n");
                     }
                 }
-                TagEnd::BlockQuote(_) => out.push_str("]\n\n"),
+                TagEnd::BlockQuote(_) => out.push_str("];\n\n"),
                 TagEnd::List(_) => {
                     list_stack.pop();
                     if list_stack.is_empty() {
@@ -657,7 +745,7 @@ pub fn markdown_to_typst(md: &str, opts: &DocConvertOptions) -> String {
                 TagEnd::Item => {}
                 TagEnd::Strong | TagEnd::Emphasis | TagEnd::Strikethrough => {
                     let buf = if in_cell { &mut current_cell } else { &mut out };
-                    buf.push(']');
+                    buf.push_str("];");
                 }
                 TagEnd::TableCell => {
                     in_cell = false;
@@ -689,11 +777,19 @@ pub fn markdown_to_typst(md: &str, opts: &DocConvertOptions) -> String {
                 }
             }
             Event::Code(code) => {
-                let raw = format!("#raw({})", typst_string_literal(&code));
+                let raw = format!("#raw({});", typst_string_literal(&code));
                 if in_cell {
                     current_cell.push_str(&raw);
                 } else {
                     out.push_str(&raw);
+                }
+            }
+            Event::InlineHtml(html) => {
+                let rendered = handle_inline_html(&html);
+                if in_cell {
+                    current_cell.push_str(&rendered);
+                } else {
+                    out.push_str(&rendered);
                 }
             }
             Event::SoftBreak => {
@@ -712,11 +808,16 @@ pub fn markdown_to_typst(md: &str, opts: &DocConvertOptions) -> String {
             }
             Event::Rule => out.push_str("\n#line(length: 100%, stroke: 0.5pt + rgb(\"#DEE2E6\"))\n\n"),
             Event::TaskListMarker(checked) => {
-                out.push_str(if checked { "[x] " } else { "[ ] " });
+                let marker = checkbox_typst(checked);
+                if in_cell {
+                    current_cell.push_str(marker);
+                } else {
+                    out.push_str(marker);
+                }
             }
             _ => {}
         }
     }
 
-    out
+    (out, assets)
 }

@@ -79,6 +79,8 @@ export interface Translations {
     savePdfDialog: string;
     gridColumnsLabel: string;
     dragHint: string;
+    toggleBookmarksShow: string;
+    toggleBookmarksHide: string;
     dropSlotHint: string;
     moveUpTitle: string;
     moveDownTitle: string;
@@ -185,6 +187,15 @@ export interface Translations {
     titleAndTocLabel: string;
     titlePlaceholder: string;
     includeTocLabel: string;
+    mermaidThemeLabel: string;
+    mermaidThemes: Record<"default" | "neutral" | "forest" | "dark" | "base", string>;
+    findPlaceholder: string;
+    findPrevTitle: string;
+    findNextTitle: string;
+    findEditorCount: (n: number) => string;
+    findPreviewCount: (n: number) => string;
+    gotoInEditor: string;
+    gotoNotFound: string;
     editorTitle: string;
     previewTitle: string;
     saveMdBtn: string;
