@@ -1,0 +1,19 @@
+[package]
+name = "knit-docs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+knit-core = { path = "../knit-core" }
+serde.workspace = true
+serde_json.workspace = true
+image.workspace = true
+pulldown-cmark.workspace = true
+typst.workspace = true
+typst-layout.workspace = true
+typst-pdf.workspace = true
+typst-assets.workspace = true
+epub.workspace = true
+regex.workspace = true
+tempfile.workspace = true

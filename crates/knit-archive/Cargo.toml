@@ -1,0 +1,17 @@
+[package]
+name = "knit-archive"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+flate2.workspace = true
+knit-core = { path = "../knit-core" }
+serde.workspace = true
+tar.workspace = true
+walkdir.workspace = true
+zip.workspace = true
+zstd.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

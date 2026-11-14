@@ -1,0 +1,479 @@
+use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
+use knit_core::{CancellationToken, NoopReporter};
+use knit_pdf::{
+    build_pdf_from_drafts, inspect_image_dimensions, inspect_pdf, merge_pdfs, parse_page_ranges,
+    remap_tree, render_pdf_thumbnail, scan_image_folder, split_pdf, AnimatedImagePolicy,
+    AnnotationLayer, BookmarkNode, CropRect, Image2PdfConfig, PageDraft, PageLayoutPolicy,
+    PageSelection, PageSource, PdfMergeConfig, PdfSplitRule, StrokeAnnotation, TextAnnotation,
+};
+use std::io::Cursor;
+use tempfile::tempdir;
+
+fn make_sample_png(path: &std::path::Path, w: u32, h: u32, rgba: [u8; 4]) {
+    let img = RgbaImage::from_fn(w, h, |_, _| Rgba(rgba));
+    DynamicImage::ImageRgba8(img)
+        .write_to(&mut std::fs::File::create(path).unwrap(), ImageFormat::Png)
+        .unwrap();
+}
+
+fn make_sample_jpg(path: &std::path::Path, w: u32, h: u32, rgb: [u8; 3]) {
+    let img = image::RgbImage::from_fn(w, h, |_, _| image::Rgb(rgb));
+    DynamicImage::ImageRgb8(img)
+        .write_to(&mut std::fs::File::create(path).unwrap(), ImageFormat::Jpeg)
+        .unwrap();
+}
+
+#[test]
+fn image2pdf_passthrough_jpg_and_avif_webp_and_bookmarks() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path().join("album");
+    let ch1 = root.join("Chapter 1");
+    let ch2 = root.join("Chapter 2");
+    std::fs::create_dir_all(&ch1).unwrap();
+    std::fs::create_dir_all(&ch2).unwrap();
+
+    make_sample_jpg(&root.join("cover.jpg"), 200, 300, [240, 200, 180]);
+    make_sample_png(&ch1.join("01.png"), 120, 160, [100, 180, 220, 128]); // transparent PNG -> white bg
+    make_sample_jpg(&ch2.join("01.jpg"), 180, 240, [40, 120, 90]);
+
+    // Also create a real AVIF image inside Chapter 2
+    let avif_rgba = RgbaImage::from_fn(64, 64, |x, y| Rgba([x as u8 * 3, y as u8 * 3, 200, 255]));
+    let avif_bytes = oxideav_avif::encode_rgba8(
+        64,
+        64,
+        avif_rgba.as_raw(),
+        &oxideav_avif::EncodeOptions::default().with_quality(80),
+    )
+    .unwrap();
+    std::fs::write(ch2.join("02.avif"), avif_bytes).unwrap();
+
+    let scan = scan_image_folder(&root, AnimatedImagePolicy::FirstFrameOnly).unwrap();
+    assert_eq!(scan.pages.len(), 4);
+    assert_eq!(scan.bookmarks.len(), 3);
+    assert_eq!(scan.bookmarks[0].title, "Cover");
+
+    let out_pdf = tmp.path().join("album.pdf");
+    let res = build_pdf_from_drafts(
+        &scan.pages,
+        &scan.bookmarks,
+        &Image2PdfConfig {
+            output_path: out_pdf.clone(),
+            layout: PageLayoutPolicy::OriginalSize { dpi: 72.0 },
+            jpeg_quality: 85,
+            lossless_passthrough: true,
+            animated_policy: AnimatedImagePolicy::FirstFrameOnly,
+            max_mb: None,
+        },
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+
+    assert_eq!(res.output_files.len(), 1);
+    assert_eq!(res.total_pages, 4);
+    assert_eq!(res.passthrough_pages, 2); // 2 JPEGs passed through without re-encoding
+
+    let info = inspect_pdf(&out_pdf).unwrap();
+    assert_eq!(info.page_count, 4);
+    assert_eq!(info.bookmarks.len(), 3);
+
+    // Verify hayro can render a PNG thumbnail of page 1
+    let thumb_png = render_pdf_thumbnail(&out_pdf, 1, 100).unwrap();
+    let decoded_thumb = image::load_from_memory(&thumb_png).unwrap();
+    assert!(decoded_thumb.width() > 0 && decoded_thumb.height() > 0);
+}
+
+#[test]
+fn non_destructive_crop_rotate_text_and_draw_render_into_pdf() {
+    let tmp = tempdir().unwrap();
+    let src_img = tmp.path().join("photo.png");
+    make_sample_png(&src_img, 400, 300, [255, 255, 255, 255]);
+    assert_eq!(inspect_image_dimensions(&src_img).unwrap(), (400, 300));
+
+    let draft = PageDraft {
+        id: "p1".into(),
+        source: PageSource::ImageFile { path: src_img },
+        rotation_deg: 90,
+        crop: Some(CropRect {
+            x: 0.1,
+            y: 0.1,
+            width: 0.5,
+            height: 0.5,
+        }), // cropped 200x150 -> rotated 90deg -> 150x200
+        annotations: AnnotationLayer {
+            texts: vec![TextAnnotation {
+                id: "t1".into(),
+                text: "Tiếng Việt UTF-8".into(),
+                x: 0.05,
+                y: 0.1,
+                font_size_ratio: 0.12,
+                color_hex: "#007BFF".into(),
+            }],
+            strokes: vec![StrokeAnnotation {
+                id: "s1".into(),
+                points: vec![[0.1, 0.5], [0.9, 0.5]],
+                stroke_width_ratio: 0.03,
+                color_hex: "#DC3545".into(),
+            }],
+        },
+        duration_ms: None,
+        label: "photo.png".into(),
+        width_px: 400,
+        height_px: 300,
+    };
+
+    let out_pdf = tmp.path().join("edited.pdf");
+    build_pdf_from_drafts(
+        &[draft],
+        &[],
+        &Image2PdfConfig {
+            output_path: out_pdf.clone(),
+            layout: PageLayoutPolicy::OriginalSize { dpi: 72.0 },
+            jpeg_quality: 90,
+            lossless_passthrough: true,
+            animated_policy: AnimatedImagePolicy::FirstFrameOnly,
+            max_mb: None,
+        },
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+
+    // Render with hayro and verify dimensions match cropped + 90° rotated aspect (150x200) and red stroke pixel exists
+    let thumb = render_pdf_thumbnail(&out_pdf, 0, 150).unwrap();
+    let rendered = image::load_from_memory(&thumb).unwrap().to_rgb8();
+    assert_eq!(rendered.width(), 150);
+    assert_eq!(rendered.height(), 200);
+    let has_red_stroke = rendered.pixels().any(|p| p[0] > 180 && p[1] < 100 && p[2] < 110);
+    assert!(has_red_stroke, "expected drawn stroke to appear in PDF");
+}
+
+#[test]
+fn pdf_merge_and_split_preserve_outlines_and_page_selection() {
+    let tmp = tempdir().unwrap();
+    let img1 = tmp.path().join("a.jpg");
+    let img2 = tmp.path().join("b.jpg");
+    make_sample_jpg(&img1, 100, 100, [10, 20, 30]);
+    make_sample_jpg(&img2, 100, 100, [200, 30, 40]);
+
+    let pdf_a = tmp.path().join("a.pdf");
+    let pdf_b = tmp.path().join("b.pdf");
+    let cfg = |p| Image2PdfConfig {
+        output_path: p,
+        layout: PageLayoutPolicy::FitA4 {
+            margin_pt: 20.0,
+            background: knit_pdf::PageBackground::default(),
+        },
+        jpeg_quality: 80,
+        lossless_passthrough: true,
+        animated_policy: AnimatedImagePolicy::FirstFrameOnly,
+        max_mb: None,
+    };
+
+    let d1 = PageDraft {
+        id: "1".into(),
+        source: PageSource::ImageFile { path: img1 },
+        rotation_deg: 0,
+        crop: None,
+        annotations: AnnotationLayer::default(),
+        duration_ms: None,
+        label: "a".into(),
+        width_px: 100,
+        height_px: 100,
+    };
+    let d2 = PageDraft {
+        id: "2".into(),
+        source: PageSource::ImageFile { path: img2 },
+        rotation_deg: 0,
+        crop: None,
+        annotations: AnnotationLayer::default(),
+        duration_ms: None,
+        label: "b".into(),
+        width_px: 100,
+        height_px: 100,
+    };
+
+    build_pdf_from_drafts(
+        &[d1.clone(), d2.clone()],
+        &[BookmarkNode {
+            title: "Chương Một".into(),
+            target_page_index: 0,
+            children: vec![BookmarkNode {
+                title: "Mục 1.1".into(),
+                target_page_index: 1,
+                children: vec![],
+            }],
+        }],
+        &cfg(pdf_a.clone()),
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+
+    build_pdf_from_drafts(
+        &[d2],
+        &[BookmarkNode {
+            title: "Chương Hai".into(),
+            target_page_index: 0,
+            children: vec![],
+        }],
+        &cfg(pdf_b.clone()),
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+
+    let merged = tmp.path().join("merged.pdf");
+    let merge_res = merge_pdfs(
+        &PdfMergeConfig {
+            inputs: vec![pdf_a, pdf_b],
+            selected_pages: Some(vec![
+                PageSelection { file_index: 0, page_index: 1, rotation_deg: 90 },
+                PageSelection { file_index: 1, page_index: 0, rotation_deg: 0 },
+                PageSelection { file_index: 0, page_index: 0, rotation_deg: 0 },
+            ]),
+            output_path: merged.clone(),
+            preserve_bookmarks: true,
+        },
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+    assert_eq!(merge_res.total_pages, 3);
+
+    let merged_info = inspect_pdf(&merged).unwrap();
+    assert_eq!(merged_info.page_count, 3);
+    assert_eq!(merged_info.bookmarks[0].title, "Chương Một");
+    assert_eq!(merged_info.bookmarks[0].target_page_index, 2); // page 0 of pdf_a moved to index 2!
+    assert_eq!(merged_info.bookmarks[1].title, "Chương Hai");
+    assert_eq!(merged_info.bookmarks[1].target_page_index, 1);
+
+    let split_dir = tmp.path().join("split_out");
+    let split_res = split_pdf(
+        &merged,
+        &split_dir,
+        "test",
+        &PdfSplitRule::EveryNPages { n: 2 },
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+    assert_eq!(split_res.output_files.len(), 2);
+    assert_eq!(inspect_pdf(&split_res.output_files[0]).unwrap().page_count, 2);
+    assert_eq!(inspect_pdf(&split_res.output_files[1]).unwrap().page_count, 1);
+
+    // Check parse_page_ranges + remap_tree
+    assert_eq!(parse_page_ranges("1-2, 3", 3).unwrap(), vec![0, 1, 2]);
+    let remapped = remap_tree(&merged_info.bookmarks, 1, 3);
+    assert_eq!(remapped.len(), 2);
+    assert_eq!(remapped[0].target_page_index, 1); // original 2 - start 1 = 1
+    assert_eq!(remapped[1].target_page_index, 0); // original 1 - start 1 = 0
+}
+
+#[test]
+fn iso_32000_page_bounds_clamp() {
+    let huge = knit_pdf::packer::compute_page_box(
+        30000,
+        10000,
+        PageLayoutPolicy::OriginalSize { dpi: 72.0 },
+    );
+    assert!((huge.0 - 14400.0).abs() < 0.01);
+    assert!((huge.1 - 4800.0).abs() < 0.01);
+
+    let tiny = knit_pdf::packer::compute_page_box(
+        1,
+        2,
+        PageLayoutPolicy::OriginalSize { dpi: 72.0 },
+    );
+    assert!(tiny.0 >= 3.0 && tiny.1 >= 3.0);
+}
+
+#[test]
+fn animated_gif_unpacks_frames_with_duration() {
+    use image::codecs::gif::{GifEncoder, Repeat};
+    use image::{Delay, Frame};
+
+    let tmp = tempdir().unwrap();
+    let gif_path = tmp.path().join("anim.gif");
+    {
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut enc = GifEncoder::new(&mut buf);
+            enc.set_repeat(Repeat::Infinite).unwrap();
+            let f1 = Frame::from_parts(
+                RgbaImage::from_pixel(32, 32, Rgba([255, 0, 0, 255])),
+                0,
+                0,
+                Delay::from_numer_denom_ms(120, 1),
+            );
+            let f2 = Frame::from_parts(
+                RgbaImage::from_pixel(32, 32, Rgba([0, 255, 0, 255])),
+                0,
+                0,
+                Delay::from_numer_denom_ms(240, 1),
+            );
+            enc.encode_frames([f1, f2]).unwrap();
+        }
+        std::fs::write(&gif_path, buf.into_inner()).unwrap();
+    }
+
+    let scan = knit_pdf::scan_image_files(&[gif_path], AnimatedImagePolicy::UnpackAllFrames).unwrap();
+    assert_eq!(scan.pages.len(), 2);
+    assert_eq!(scan.pages[0].duration_ms, Some(120));
+    assert_eq!(scan.pages[1].duration_ms, Some(240));
+
+    let out_pdf = tmp.path().join("anim.pdf");
+    build_pdf_from_drafts(
+        &scan.pages,
+        &[],
+        &Image2PdfConfig {
+            output_path: out_pdf.clone(),
+            layout: PageLayoutPolicy::OriginalSize { dpi: 72.0 },
+            jpeg_quality: 85,
+            lossless_passthrough: true,
+            animated_policy: AnimatedImagePolicy::UnpackAllFrames,
+            max_mb: None,
+        },
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+    assert_eq!(inspect_pdf(&out_pdf).unwrap().page_count, 2);
+}
+
+#[test]
+fn a4_background_colors_and_padding_render_correctly() {
+    use knit_pdf::PageBackground;
+
+    let tmp = tempdir().unwrap();
+    let img_path = tmp.path().join("red.png");
+    let mut img = RgbaImage::new(100, 100);
+    for px in img.pixels_mut() {
+        *px = Rgba([220, 40, 40, 255]);
+    }
+    img.save(&img_path).unwrap();
+
+    let scan = knit_pdf::scan_image_files(&[img_path], AnimatedImagePolicy::FirstFrameOnly).unwrap();
+    let black_pdf = tmp.path().join("a4_black.pdf");
+    build_pdf_from_drafts(
+        &scan.pages,
+        &[],
+        &Image2PdfConfig {
+            output_path: black_pdf.clone(),
+            layout: PageLayoutPolicy::FitA4 {
+                margin_pt: 56.7,
+                background: PageBackground::Black,
+            },
+            jpeg_quality: 90,
+            lossless_passthrough: true,
+            animated_policy: AnimatedImagePolicy::FirstFrameOnly,
+            max_mb: None,
+        },
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+
+    // Render thumbnail and check top-left margin corner pixel is dark (from PageBackground::Black)
+    let png_bytes = render_pdf_thumbnail(&black_pdf, 0, 180).unwrap();
+    let rendered = image::load_from_memory(&png_bytes).unwrap().to_rgba8();
+    let corner = rendered.get_pixel(2, 2);
+    assert!(
+        corner[0] < 20 && corner[1] < 20 && corner[2] < 20,
+        "expected black margin corner pixel, got {:?}",
+        corner
+    );
+
+    // Check Transparent omits background rectangle
+    let trans_pdf = tmp.path().join("a4_trans.pdf");
+    build_pdf_from_drafts(
+        &scan.pages,
+        &[],
+        &Image2PdfConfig {
+            output_path: trans_pdf.clone(),
+            layout: PageLayoutPolicy::FitA4 {
+                margin_pt: 24.0,
+                background: PageBackground::Transparent,
+            },
+            jpeg_quality: 90,
+            lossless_passthrough: true,
+            animated_policy: AnimatedImagePolicy::FirstFrameOnly,
+            max_mb: None,
+        },
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+    assert_eq!(inspect_pdf(&trans_pdf).unwrap().page_count, 1);
+}
+
+#[test]
+fn split_pdf_custom_groups_supports_reordering_duplication_and_rotation() {
+    let tmp = tempdir().unwrap();
+    let mut img = RgbaImage::new(60, 80);
+    for px in img.pixels_mut() {
+        *px = Rgba([30, 144, 255, 255]);
+    }
+    let img1 = tmp.path().join("p1.png");
+    let img2 = tmp.path().join("p2.png");
+    let img3 = tmp.path().join("p3.png");
+    img.save(&img1).unwrap();
+    img.save(&img2).unwrap();
+    img.save(&img3).unwrap();
+
+    let scan = knit_pdf::scan_image_files(&[img1, img2, img3], AnimatedImagePolicy::FirstFrameOnly).unwrap();
+    let src_pdf = tmp.path().join("source.pdf");
+    build_pdf_from_drafts(
+        &scan.pages,
+        &[],
+        &Image2PdfConfig {
+            output_path: src_pdf.clone(),
+            layout: PageLayoutPolicy::OriginalSize { dpi: 72.0 },
+            jpeg_quality: 90,
+            lossless_passthrough: true,
+            animated_policy: AnimatedImagePolicy::FirstFrameOnly,
+            max_mb: None,
+        },
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+
+    let split_dir = tmp.path().join("sections_out");
+    let res = knit_pdf::split_pdf(
+        &src_pdf,
+        &split_dir,
+        "source",
+        &knit_pdf::PdfSplitRule::CustomGroups {
+            groups: vec![
+                knit_pdf::PdfSplitGroup {
+                    name: "chapter_one".into(),
+                    pages: vec![
+                        knit_pdf::PageSelection { file_index: 0, page_index: 2, rotation_deg: 90 },
+                        knit_pdf::PageSelection { file_index: 0, page_index: 0, rotation_deg: 0 },
+                    ],
+                },
+                knit_pdf::PdfSplitGroup {
+                    name: "chapter_two".into(),
+                    pages: vec![
+                        knit_pdf::PageSelection { file_index: 0, page_index: 0, rotation_deg: 0 },
+                        knit_pdf::PageSelection { file_index: 0, page_index: 1, rotation_deg: 180 },
+                    ],
+                },
+            ],
+        },
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+
+    assert_eq!(res.output_files.len(), 2);
+    assert_eq!(res.total_pages, 4);
+    assert_eq!(inspect_pdf(&res.output_files[0]).unwrap().page_count, 2);
+    assert_eq!(inspect_pdf(&res.output_files[1]).unwrap().page_count, 2);
+
+    let thumb_bytes = std::fs::read(&res.output_files[0]).unwrap();
+    let (count, thumbs) = knit_pdf::render_pdf_bytes_thumbnails(&thumb_bytes, Some(2), 160).unwrap();
+    assert_eq!(count, 2);
+    assert_eq!(thumbs.len(), 2);
+}

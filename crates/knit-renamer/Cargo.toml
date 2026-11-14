@@ -1,0 +1,18 @@
+[package]
+name = "knit-renamer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+globset.workspace = true
+knit-core = { path = "../knit-core" }
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
