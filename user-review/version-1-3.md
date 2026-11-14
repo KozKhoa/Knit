@@ -1,0 +1,9 @@
+- Trong tool md to pdf thì phần markdown edit bên trái bổ sung thêm đánh số dòng
+- Tront tool md to pdf thì phần markdown edit thì bổ sung thêm màu đi (như là trong vs code)
+- Trong tool md to pdf, bổ sung thêm theme trong vs code light + và obsidian
+- Hiện tại trong component number input thì bổ sung thêm tính năng khi hover lên trên đó và tiến hành scroll thì có thể thay đổi (tăng/giảm) giá trị
+- Trong component number input thì có lỗi giao điện: mũi tên tăng giảm giá trị vẫn đang là màu đen (theo màu của hệ thống) chứ không phải là app (Nếu như number input đang dùng mặc định thì tự custom thêm một number input)
+- Trong tool image2pdf, bỏ đi cái placeholder mà user-review/version-1-0.md mà tôi bảo bạn làm, thay bằng một cái thanh cột dọc chèn vào giữa vị trí 2 ảnh mà đối tượng đang kéo thả sẽ dược thả vào
+- Trong tool image2pdf, bỏ đi cái button đưa ảnh lên vị trí trước/sau đi.
+- Trong tool image2pdf, có lỗi khi tiên hành xoay ảnh thì bức ảnh được xoay sẽ đè lên trên cả tên của ảnh
+- Thay thanh trượt mặc định đang dùng bằng Component custom riêng.

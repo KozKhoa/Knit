@@ -127,7 +127,7 @@ fn markdown_decodes_png_saved_with_jpg_extension_without_error() {
 
 #[test]
 fn all_themes_and_embedded_fonts_compile_cleanly() {
-    let sample_md = "# Tiêu đề Chính\n\n## Mục Con\n\nĐoạn văn mẫu tiếng Việt **in đậm**, *in nghiêng*, `inline code`.\n";
+    let sample_md = "# Tiêu đề Chính\n\n## Mục Con\n\nĐoạn văn mẫu tiếng Việt **in đậm**, *in nghiêng*, `inline code`, [liên kết](https://example.com).\n\n> Trích dẫn kiểm thử theme.\n";
 
     let themes = [
         DocTheme::GitHub,
@@ -135,6 +135,8 @@ fn all_themes_and_embedded_fonts_compile_cleanly() {
         DocTheme::Minimal,
         DocTheme::Modern,
         DocTheme::Resume,
+        DocTheme::VsCodeLight,
+        DocTheme::Obsidian,
     ];
     for theme in themes {
         let opts = DocConvertOptions {

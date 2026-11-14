@@ -11,8 +11,8 @@ fn typst_font_tuple(font: DocFont, theme: DocTheme) -> &'static str {
         DocFont::NewComputerModern => "(\"New Computer Modern\", \"Libertinus Serif\")",
         DocFont::DejaVuSansMono => "(\"DejaVu Sans Mono\", \"Libertinus Serif\")",
         DocFont::Default => match theme {
-            DocTheme::GitHub => "(\"Roboto\", \"Afacad\", \"Libertinus Serif\")",
-            DocTheme::Modern => "(\"Afacad\", \"Roboto\", \"Libertinus Serif\")",
+            DocTheme::GitHub | DocTheme::VsCodeLight => "(\"Roboto\", \"Afacad\", \"Libertinus Serif\")",
+            DocTheme::Modern | DocTheme::Obsidian => "(\"Afacad\", \"Roboto\", \"Libertinus Serif\")",
             DocTheme::Resume => "(\"Roboto\", \"Libertinus Serif\")",
             DocTheme::Academic | DocTheme::Minimal => "(\"Libertinus Serif\", \"New Computer Modern\")",
         },
@@ -116,6 +116,60 @@ pub(crate) fn typst_preamble(opts: &DocConvertOptions) -> String {
                 "#show heading.where(level: 2): it => block(below: 0.4em, above: 0.8em, width: 100%, stroke: (bottom: 0.75pt + rgb(\"#007BFF\")), inset: (bottom: 0.15em), text(size: 1.08em, weight: \"bold\", fill: rgb(\"#0069D9\"), upper(it.body)))"
             );
             let _ = writeln!(s, "#show link: set text(fill: rgb(\"#007BFF\"))");
+        }
+        DocTheme::VsCodeLight => {
+            let _ = writeln!(
+                s,
+                "#set text(font: {font_tuple}, size: {font_size}pt, fill: rgb(\"#242424\"))"
+            );
+            let _ = writeln!(s, "#set par(justify: false, leading: 0.65em, spacing: 0.9em)");
+            let _ = writeln!(s, "#set heading(numbering: none)");
+            let _ = writeln!(
+                s,
+                "#show heading.where(level: 1): it => block(below: 0.65em, above: 1.05em, width: 100%, stroke: (bottom: 0.75pt + rgb(\"#E1E4E8\")), inset: (bottom: 0.28em), text(size: 1.48em, weight: \"semibold\", fill: rgb(\"#1B1F23\"), it.body))"
+            );
+            let _ = writeln!(
+                s,
+                "#show heading.where(level: 2): it => block(below: 0.5em, above: 0.9em, width: 100%, stroke: (bottom: 0.5pt + rgb(\"#EAECEF\")), inset: (bottom: 0.22em), text(size: 1.22em, weight: \"semibold\", fill: rgb(\"#1B1F23\"), it.body))"
+            );
+            let _ = writeln!(s, "#show link: set text(fill: rgb(\"#006AB1\"))");
+            let _ = writeln!(
+                s,
+                "#show quote: it => block(inset: (left: 10pt, y: 4pt, right: 6pt), stroke: (left: 3pt + rgb(\"#007ACC\")), fill: rgb(\"#F3F8FD\"), it.body)"
+            );
+            let _ = writeln!(
+                s,
+                "#show raw.where(block: false): it => box(fill: rgb(\"#F3F3F3\"), stroke: 0.4pt + rgb(\"#E1E4E8\"), inset: (x: 3pt, y: 1.5pt), radius: 3pt, text(fill: rgb(\"#A31515\"), it))"
+            );
+        }
+        DocTheme::Obsidian => {
+            let _ = writeln!(
+                s,
+                "#set text(font: {font_tuple}, size: {font_size}pt, fill: rgb(\"#222222\"))"
+            );
+            let _ = writeln!(s, "#set par(justify: false, leading: 0.68em, spacing: 0.95em)");
+            let _ = writeln!(s, "#set heading(numbering: none)");
+            let _ = writeln!(
+                s,
+                "#show heading.where(level: 1): it => block(below: 0.7em, above: 1.15em, text(size: 1.5em, weight: \"bold\", fill: rgb(\"#5B21B6\"), it.body))"
+            );
+            let _ = writeln!(
+                s,
+                "#show heading.where(level: 2): it => block(below: 0.55em, above: 0.95em, text(size: 1.24em, weight: \"semibold\", fill: rgb(\"#7C3AED\"), it.body))"
+            );
+            let _ = writeln!(
+                s,
+                "#show heading.where(level: 3): it => block(below: 0.45em, above: 0.8em, text(size: 1.08em, weight: \"semibold\", fill: rgb(\"#6D28D9\"), it.body))"
+            );
+            let _ = writeln!(s, "#show link: set text(fill: rgb(\"#7C3AED\"))");
+            let _ = writeln!(
+                s,
+                "#show quote: it => block(inset: (left: 10pt, y: 5pt, right: 8pt), stroke: (left: 3pt + rgb(\"#7C3AED\")), fill: rgb(\"#F5F3FF\"), radius: (right: 4pt), it.body)"
+            );
+            let _ = writeln!(
+                s,
+                "#show raw.where(block: false): it => box(fill: rgb(\"#F5F3FF\"), inset: (x: 3.5pt, y: 1.5pt), radius: 3pt, text(fill: rgb(\"#6D28D9\"), it))"
+            );
         }
     }
 

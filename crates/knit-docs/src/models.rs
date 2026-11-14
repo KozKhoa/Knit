@@ -56,6 +56,8 @@ pub enum DocTheme {
     Minimal,
     Modern,
     Resume,
+    VsCodeLight,
+    Obsidian,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]

@@ -189,6 +189,8 @@ export const vi: Translations = {
       minimal: "Minimal (Tối giản, thoáng)",
       modern: "Modern (Hiện đại, điểm nhấn xanh)",
       resume: "Resume (CV / Hồ sơ gọn)",
+      vs_code_light: "VS Code Light+ (Preview chuẩn VS Code)",
+      obsidian: "Obsidian Light (Ghi chú, nhấn tím)",
     },
     pdfFontLabel: "Font PDF",
     fonts: {

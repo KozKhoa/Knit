@@ -170,7 +170,14 @@ export type DocInputKind =
 
 export type PageSizePreset = "a4" | "letter" | "a5";
 
-export type DocTheme = "github" | "academic" | "minimal" | "modern" | "resume";
+export type DocTheme =
+  | "github"
+  | "academic"
+  | "minimal"
+  | "modern"
+  | "resume"
+  | "vs_code_light"
+  | "obsidian";
 
 export type DocFont =
   | "default"

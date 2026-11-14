@@ -189,6 +189,8 @@ export const en: Translations = {
       minimal: "Minimal (Airy & understated)",
       modern: "Modern (Crisp accent bars)",
       resume: "Resume (Compact CV layout)",
+      vs_code_light: "VS Code Light+ (VS Code Preview style)",
+      obsidian: "Obsidian Light (Purple accent notes)",
     },
     pdfFontLabel: "PDF Font",
     fonts: {
