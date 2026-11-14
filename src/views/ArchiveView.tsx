@@ -1,6 +1,7 @@
 import React from "react";
 import { Archive, Lock, Trash2 } from "lucide-react";
 import { Dropzone } from "../components/Dropzone";
+import { Select } from "../components/Select";
 import { useI18n } from "../i18n";
 import {
   createArchive,
@@ -189,32 +190,36 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
           <label className="block text-xs font-semibold uppercase text-[#6C757D]">
             {t.archive.formatLabel}
           </label>
-          <select
+          <Select
+            ariaLabel={t.archive.formatLabel}
             value={format}
-            onChange={(e) => setFormat(e.target.value as ArchiveFormat)}
-            className="knit-control mt-1 w-full rounded-[4px] border border-[#CED4DA] bg-white px-2.5 text-sm"
-          >
-            <option value="zip">.zip</option>
-            <option value="tar">.tar</option>
-            <option value="tar_gz">.tar.gz</option>
-            <option value="tar_zst">.tar.zst</option>
-          </select>
+            onChange={(val) => setFormat(val as ArchiveFormat)}
+            className="mt-1 w-full"
+            options={[
+              { value: "zip", label: ".zip" },
+              { value: "tar", label: ".tar" },
+              { value: "tar_gz", label: ".tar.gz" },
+              { value: "tar_zst", label: ".tar.zst" },
+            ]}
+          />
         </div>
 
         <div>
           <label className="block text-xs font-semibold uppercase text-[#6C757D]">
             {t.archive.compressionLabel}
           </label>
-          <select
+          <Select
+            ariaLabel={t.archive.compressionLabel}
             value={compression}
-            onChange={(e) => setCompression(e.target.value as CompressionLevel)}
-            className="knit-control mt-1 w-full rounded-[4px] border border-[#CED4DA] bg-white px-2.5 text-sm"
-          >
-            <option value="store">{t.archive.compStore}</option>
-            <option value="fast">{t.archive.compFast}</option>
-            <option value="normal">{t.archive.compNormal}</option>
-            <option value="best">{t.archive.compBest}</option>
-          </select>
+            onChange={(val) => setCompression(val as CompressionLevel)}
+            className="mt-1 w-full"
+            options={[
+              { value: "store", label: t.archive.compStore },
+              { value: "fast", label: t.archive.compFast },
+              { value: "normal", label: t.archive.compNormal },
+              { value: "best", label: t.archive.compBest },
+            ]}
+          />
         </div>
 
         <div>
@@ -222,16 +227,18 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
             <Lock className="mr-1 inline h-3.5 w-3.5" />
             {t.archive.zipPasswordLabel}
           </label>
-          <select
+          <Select
+            ariaLabel={t.archive.zipPasswordLabel}
             disabled={format !== "zip"}
             value={format === "zip" ? encryptionKind : "none"}
-            onChange={(e) => setEncryptionKind(e.target.value as typeof encryptionKind)}
-            className="knit-control mt-1 w-full rounded-[4px] border border-[#CED4DA] bg-white px-2.5 text-sm disabled:bg-[#F1F3F5]"
-          >
-            <option value="none">{t.archive.encNone}</option>
-            <option value="aes256">{t.archive.encAes256}</option>
-            <option value="zip_crypto">{t.archive.encZipCrypto}</option>
-          </select>
+            onChange={(val) => setEncryptionKind(val as typeof encryptionKind)}
+            className="mt-1 w-full"
+            options={[
+              { value: "none", label: t.archive.encNone },
+              { value: "aes256", label: t.archive.encAes256 },
+              { value: "zip_crypto", label: t.archive.encZipCrypto },
+            ]}
+          />
           {format === "zip" && encryptionKind !== "none" && (
             <input
               type="password"

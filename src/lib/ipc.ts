@@ -239,6 +239,23 @@ export async function writeDocTextFile(path: string, content: string): Promise<v
   await invoke("docs_write_text_file", { path, content });
 }
 
+export async function previewDocPdfBytes(params: {
+  content?: string | null;
+  inputPath?: string | null;
+  inputKind: DocInputKind;
+  baseDir?: string | null;
+  options: DocConvertOptions;
+}): Promise<Uint8Array> {
+  const buf = await invoke<ArrayBuffer>("docs_preview_pdf_bytes", {
+    content: params.content ?? null,
+    inputPath: params.inputPath ?? null,
+    inputKind: params.inputKind,
+    baseDir: params.baseDir ?? null,
+    options: params.options,
+  });
+  return new Uint8Array(buf);
+}
+
 export async function previewDocMarkdown(
   content: string,
   inputKind: DocInputKind,

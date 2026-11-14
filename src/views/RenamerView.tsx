@@ -1,4 +1,5 @@
 import React from "react";
+import { Select } from "../components/Select";
 import {
   AlertTriangle,
   Bookmark,
@@ -358,23 +359,27 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
             {t.renamer.layer1Heading}
           </div>
           <div className="grid grid-cols-2 gap-2">
-            <select
+            <Select
+              ariaLabel="Target type"
               value={targetType}
-              onChange={(e) => setTargetType(e.target.value as TargetType)}
-              className="knit-control rounded-[4px] border border-[#CED4DA] bg-white px-2.5 text-sm"
-            >
-              <option value="both">{t.renamer.targetBoth}</option>
-              <option value="files">{t.renamer.targetFiles}</option>
-              <option value="folders">{t.renamer.targetFolders}</option>
-            </select>
-            <select
+              onChange={(val) => setTargetType(val as TargetType)}
+              className="w-full"
+              options={[
+                { value: "both", label: t.renamer.targetBoth },
+                { value: "files", label: t.renamer.targetFiles },
+                { value: "folders", label: t.renamer.targetFolders },
+              ]}
+            />
+            <Select
+              ariaLabel="Pattern kind"
               value={patternKind}
-              onChange={(e) => setPatternKind(e.target.value as PatternKind)}
-              className="knit-control rounded-[4px] border border-[#CED4DA] bg-white px-2.5 text-sm"
-            >
-              <option value="glob">{t.renamer.patternGlob}</option>
-              <option value="regex">{t.renamer.patternRegex}</option>
-            </select>
+              onChange={(val) => setPatternKind(val as PatternKind)}
+              className="w-full"
+              options={[
+                { value: "glob", label: t.renamer.patternGlob },
+                { value: "regex", label: t.renamer.patternRegex },
+              ]}
+            />
           </div>
           <div className="grid grid-cols-2 gap-2 text-sm">
             <label className="flex items-center gap-2">
@@ -499,17 +504,16 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
           )}
 
           {ruleMode === "fixed_preset" && (
-            <select
+            <Select
+              ariaLabel="Fixed preset"
               value={fixedPreset}
-              onChange={(e) => setFixedPreset(e.target.value as FixedPresetKind)}
-              className="knit-control w-full rounded-[4px] border border-[#CED4DA] bg-white px-2.5 text-sm"
-            >
-              {FIXED_PRESET_KEYS.map((key) => (
-                <option key={key} value={key}>
-                  {t.renamer.fixedPresets[key]}
-                </option>
-              ))}
-            </select>
+              onChange={(val) => setFixedPreset(val as FixedPresetKind)}
+              className="w-full"
+              options={FIXED_PRESET_KEYS.map((key) => ({
+                value: key,
+                label: t.renamer.fixedPresets[key],
+              }))}
+            />
           )}
 
           {/* User Presets */}

@@ -1,4 +1,5 @@
 import React from "react";
+import { Select } from "../components/Select";
 import {
   ArrowDown,
   ArrowUp,
@@ -618,15 +619,17 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
               <label className="block text-xs font-semibold uppercase text-[#6C757D]">
                 {t.pdfOps.splitModeLabel}
               </label>
-              <select
+              <Select
+                ariaLabel={t.pdfOps.splitModeLabel}
                 value={splitRuleKind}
-                onChange={(e) => setSplitRuleKind(e.target.value as typeof splitRuleKind)}
-                className="knit-control mt-1 w-full rounded-[4px] border border-[#CED4DA] bg-white px-2.5 text-sm"
-              >
-                <option value="every_n_pages">{t.pdfOps.splitEveryNOpt}</option>
-                <option value="page_ranges">{t.pdfOps.splitRangesOpt}</option>
-                <option value="max_bytes">{t.pdfOps.splitMaxBytesOpt}</option>
-              </select>
+                onChange={(val) => setSplitRuleKind(val as typeof splitRuleKind)}
+                className="mt-1 w-full"
+                options={[
+                  { value: "every_n_pages", label: t.pdfOps.splitEveryNOpt },
+                  { value: "page_ranges", label: t.pdfOps.splitRangesOpt },
+                  { value: "max_bytes", label: t.pdfOps.splitMaxBytesOpt },
+                ]}
+              />
             </div>
 
             {splitRuleKind === "page_ranges" && (

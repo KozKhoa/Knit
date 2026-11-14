@@ -1,6 +1,7 @@
 import React from "react";
 import { AlertCircle, BookOpen, CheckCircle2, PackageCheck } from "lucide-react";
 import { Dropzone } from "../components/Dropzone";
+import { Select } from "../components/Select";
 import { useI18n } from "../i18n";
 import {
   formatBytes,
@@ -143,34 +144,38 @@ export const MangaPackView: React.FC<MangaPackViewProps> = ({
           <label className="block text-xs font-semibold uppercase text-[#6C757D]">
             {t.mangaPack.scanModeLabel}
           </label>
-          <select
+          <Select
+            ariaLabel={t.mangaPack.scanModeLabel}
             value={scanMode}
-            onChange={(e) => {
-              const m = e.target.value as MangaScanMode;
+            onChange={(val) => {
+              const m = val as MangaScanMode;
               setScanMode(m);
               if (rootDir) void runScan(rootDir, m);
             }}
-            className="knit-control mt-1 w-full rounded-[4px] border border-[#CED4DA] bg-white px-2.5 text-sm"
-          >
-            <option value="auto">{t.mangaPack.modeAuto}</option>
-            <option value="single">{t.mangaPack.modeSingle}</option>
-            <option value="library">{t.mangaPack.modeLibrary}</option>
-          </select>
+            className="mt-1 w-full"
+            options={[
+              { value: "auto", label: t.mangaPack.modeAuto },
+              { value: "single", label: t.mangaPack.modeSingle },
+              { value: "library", label: t.mangaPack.modeLibrary },
+            ]}
+          />
         </div>
 
         <div>
           <label className="block text-xs font-semibold uppercase text-[#6C757D]">
             {t.mangaPack.imageCompLabel}
           </label>
-          <select
-            value={imageCompression}
-            onChange={(e) => setImageCompression(Number(e.target.value))}
-            className="knit-control mt-1 w-full rounded-[4px] border border-[#CED4DA] bg-white px-2.5 text-sm"
-          >
-            <option value={0}>{t.mangaPack.compStore}</option>
-            <option value={1}>{t.mangaPack.compFast}</option>
-            <option value={6}>{t.mangaPack.compNormal}</option>
-          </select>
+          <Select
+            ariaLabel={t.mangaPack.imageCompLabel}
+            value={String(imageCompression)}
+            onChange={(val) => setImageCompression(Number(val))}
+            className="mt-1 w-full"
+            options={[
+              { value: "0", label: t.mangaPack.compStore },
+              { value: "1", label: t.mangaPack.compFast },
+              { value: "6", label: t.mangaPack.compNormal },
+            ]}
+          />
         </div>
 
         <div>

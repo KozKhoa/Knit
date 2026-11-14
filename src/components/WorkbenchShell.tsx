@@ -5,7 +5,6 @@ import {
   FileCode2,
   FileSpreadsheet,
   FolderKanban,
-  Globe,
   History,
   Image as ImageIcon,
   Layers,
@@ -68,7 +67,7 @@ export const WorkbenchShell: React.FC<WorkbenchShellProps> = ({
   isDraggingFiles = false,
   children,
 }) => {
-  const { lang, setLang, t } = useI18n();
+  const { t } = useI18n();
   const [sidebarCollapsed, setSidebarCollapsed] = usePersistentState<boolean>(
     "knit.ui.sidebarCollapsed",
     false,
@@ -204,42 +203,6 @@ export const WorkbenchShell: React.FC<WorkbenchShellProps> = ({
                 </span>
               )}
             </button>
-
-            {/* Language Switcher */}
-            {sidebarCollapsed ? (
-              <button
-                type="button"
-                onClick={() => setLang(lang === "vi" ? "en" : "vi")}
-                title={`${t.common.languageLabel}: ${lang.toUpperCase()}`}
-                aria-label={`${t.common.languageLabel}: ${lang}`}
-                className="flex w-full items-center justify-center rounded-[4px] border border-[#495057] bg-[#2B3035] py-1.5 font-mono-code text-xs font-semibold uppercase text-[#DEE2E6] hover:bg-[#495057]"
-              >
-                {lang}
-              </button>
-            ) : (
-              <div className="flex items-center justify-between rounded-[4px] border border-[#495057] bg-[#2B3035] px-2.5 py-1.5 text-xs text-[#DEE2E6]">
-                <span className="flex items-center gap-1.5">
-                  <Globe className="h-3.5 w-3.5 text-[#ADB5BD]" />
-                  {t.common.languageLabel}
-                </span>
-                <div className="flex items-center gap-1">
-                  {(["vi", "en"] as const).map((code) => (
-                    <button
-                      key={code}
-                      type="button"
-                      onClick={() => setLang(code)}
-                      className={`rounded-[4px] px-2 py-0.5 font-mono-code text-xs font-semibold uppercase ${
-                        lang === code
-                          ? "bg-[#007BFF] text-white"
-                          : "text-[#ADB5BD] hover:bg-[#495057] hover:text-white"
-                      }`}
-                    >
-                      {code}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
 
             <button
               type="button"

@@ -29,6 +29,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onChangeFontSizePx,
 }) => {
   const { lang, setLang, t } = useI18n();
+  const [draftFontSize, setDraftFontSize] = React.useState(fontSizePx);
+
+  React.useEffect(() => {
+    setDraftFontSize(fontSizePx);
+  }, [fontSizePx]);
+
+  const commitDraftFontSize = React.useCallback(() => {
+    if (draftFontSize !== fontSizePx) {
+      onChangeFontSizePx(draftFontSize);
+    }
+  }, [draftFontSize, fontSizePx, onChangeFontSizePx]);
 
   return (
     <div className="mx-auto max-w-4xl space-y-5">
@@ -138,8 +149,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             min={13}
             max={20}
             step={1}
-            value={fontSizePx}
-            onChange={(e) => onChangeFontSizePx(Number(e.target.value) || 16)}
+            value={draftFontSize}
+            onChange={(e) => setDraftFontSize(Number(e.target.value) || 16)}
+            onPointerUp={commitDraftFontSize}
+            onMouseUp={commitDraftFontSize}
+            onTouchEnd={commitDraftFontSize}
+            onBlur={commitDraftFontSize}
+            onKeyUp={(e) => {
+              if (
+                ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(
+                  e.key,
+                )
+              ) {
+                commitDraftFontSize();
+              }
+            }}
             className="w-48 accent-[#007BFF]"
           />
           <input
@@ -147,9 +171,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             type="number"
             min={13}
             max={20}
-            value={fontSizePx}
+            value={draftFontSize}
             onChange={(e) => {
               const v = Math.min(20, Math.max(13, Number(e.target.value) || 16));
+              setDraftFontSize(v);
               onChangeFontSizePx(v);
             }}
             className="knit-control w-20 rounded-[4px] border border-[#CED4DA] px-2.5 font-mono-code text-xs text-[#212529]"

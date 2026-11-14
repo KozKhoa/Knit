@@ -5,10 +5,13 @@ import {
   Eye,
   FileCode2,
   FileOutput,
+  GripHorizontal,
   RefreshCw,
   Save,
 } from "lucide-react";
 import { Dropzone } from "../components/Dropzone";
+import { PdfJsPreview } from "../components/PdfJsPreview";
+import { Select } from "../components/Select";
 import { useI18n } from "../i18n";
 import {
   convertDocContentToPdf,
@@ -18,7 +21,7 @@ import {
   isTauriRuntime,
   pickFiles,
   pickSaveFile,
-  previewDocMarkdown,
+  previewDocPdfBytes,
   readDocTextFile,
   writeDocTextFile,
 } from "../lib/ipc";
@@ -100,19 +103,29 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
   const [pdfFont, setPdfFont] = usePersistentState<DocFont>("knit.docs.font", "default");
   const [titleOverride, setTitleOverride] = usePersistentState<string>("knit.docs.titleOverride", "");
   const [includeToc, setIncludeToc] = usePersistentState<boolean>("knit.docs.includeToc", false);
+  const [workspaceHeightPx, setWorkspaceHeightPx] = usePersistentState<number>(
+    "knit.docs.workspaceHeightPx",
+    560,
+  );
+  const [liveHeightPx, setLiveHeightPx] = React.useState<number>(workspaceHeightPx);
   const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
 
   const [previewLoading, setPreviewLoading] = React.useState(false);
   const [previewError, setPreviewError] = React.useState<string | null>(null);
-  const [previewPages, setPreviewPages] = React.useState<string[]>([]);
+  const [previewPdfBytes, setPreviewPdfBytes] = React.useState<Uint8Array | null>(null);
   const [previewTotalPages, setPreviewTotalPages] = React.useState<number>(0);
 
   const previewSeqRef = React.useRef(0);
   const lastHandledDropSeq = React.useRef<number>(0);
 
+  React.useEffect(() => {
+    setLiveHeightPx(Math.min(1200, Math.max(320, workspaceHeightPx)));
+  }, [workspaceHeightPx]);
+
   const docKind = detectDocKind(inputPath);
   const isEditableText =
     docKind === "markdown" || docKind === "plain_text" || docKind === "html";
+  const isPreviewableDoc = isEditableText || (docKind === "epub" && Boolean(inputPath));
   const isOfficeFile = docKind === "docx" || docKind === "pptx";
   const isDirty = isEditableText && editorText !== savedText;
 
@@ -161,7 +174,7 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
     } else {
       setEditorText("");
       setSavedText("");
-      setPreviewPages([]);
+      setPreviewPdfBytes(null);
       setPreviewTotalPages(0);
     }
   }, []);
@@ -176,9 +189,9 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
   }, [droppedBatch, loadDocumentPath]);
 
   const runLivePreview = React.useCallback(async () => {
-    if (!isTauriRuntime() || !isEditableText) return;
-    if (editorText.trim().length === 0) {
-      setPreviewPages([]);
+    if (!isTauriRuntime() || !isPreviewableDoc) return;
+    if (isEditableText && editorText.trim().length === 0) {
+      setPreviewPdfBytes(null);
       setPreviewTotalPages(0);
       setPreviewError(null);
       return;
@@ -188,17 +201,15 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
     setPreviewLoading(true);
     setPreviewError(null);
     try {
-      const res = await previewDocMarkdown(
-        editorText,
-        docKind,
-        parentDirOf(inputPath),
-        docOptions,
-        20,
-        880,
-      );
+      const pdfBytes = await previewDocPdfBytes({
+        content: isEditableText ? editorText : null,
+        inputPath: docKind === "epub" ? inputPath : null,
+        inputKind: docKind,
+        baseDir: parentDirOf(inputPath),
+        options: docOptions,
+      });
       if (previewSeqRef.current !== seq) return;
-      setPreviewPages(res.pages_png_base64.map((b64) => `data:image/png;base64,${b64}`));
-      setPreviewTotalPages(res.page_count);
+      setPreviewPdfBytes(pdfBytes);
     } catch (e) {
       if (previewSeqRef.current !== seq) return;
       setPreviewError(String(e));
@@ -207,21 +218,40 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
         setPreviewLoading(false);
       }
     }
-  }, [docKind, docOptions, editorText, inputPath, isEditableText]);
+  }, [docKind, docOptions, editorText, inputPath, isEditableText, isPreviewableDoc]);
 
   React.useEffect(() => {
-    if (!isTauriRuntime() || !isEditableText) return;
-    if (editorText.trim().length === 0) {
-      setPreviewPages([]);
+    if (!isTauriRuntime() || !isPreviewableDoc) return;
+    if (isEditableText && editorText.trim().length === 0) {
+      setPreviewPdfBytes(null);
       setPreviewTotalPages(0);
       setPreviewError(null);
       return;
     }
     const timer = window.setTimeout(() => {
       void runLivePreview();
-    }, 600);
+    }, docKind === "epub" ? 150 : 600);
     return () => window.clearTimeout(timer);
-  }, [editorText, docOptions, docKind, inputPath, isEditableText, runLivePreview]);
+  }, [editorText, docOptions, docKind, inputPath, isEditableText, isPreviewableDoc, runLivePreview]);
+
+  const handleStartHeightResize = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = liveHeightPx;
+    let latestH = startH;
+
+    const onMove = (ev: PointerEvent) => {
+      latestH = Math.min(1200, Math.max(320, Math.round(startH + (ev.clientY - startY))));
+      setLiveHeightPx(latestH);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      setWorkspaceHeightPx(latestH);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
 
   const handlePickDoc = async () => {
     setErrorMsg(null);
@@ -408,52 +438,43 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
           <label className="block text-xs font-semibold uppercase text-[#6C757D]">
             {t.docs2pdf.themeLabel}
           </label>
-          <select
-            aria-label={t.docs2pdf.themeLabel}
+          <Select
+            ariaLabel={t.docs2pdf.themeLabel}
             value={theme}
-            onChange={(e) => setTheme(e.target.value as DocTheme)}
-            className="knit-control mt-1 w-full rounded-[4px] border border-[#CED4DA] bg-white px-2.5 text-sm"
-          >
-            {THEMES.map((th) => (
-              <option key={th} value={th}>
-                {t.docs2pdf.themes[th]}
-              </option>
-            ))}
-          </select>
+            onChange={(val) => setTheme(val as DocTheme)}
+            className="mt-1 w-full"
+            options={THEMES.map((th) => ({ value: th, label: t.docs2pdf.themes[th] }))}
+          />
         </div>
 
         <div>
           <label className="block text-xs font-semibold uppercase text-[#6C757D]">
             {t.docs2pdf.pdfFontLabel}
           </label>
-          <select
-            aria-label={t.docs2pdf.pdfFontLabel}
+          <Select
+            ariaLabel={t.docs2pdf.pdfFontLabel}
             value={pdfFont}
-            onChange={(e) => setPdfFont(e.target.value as DocFont)}
-            className="knit-control mt-1 w-full rounded-[4px] border border-[#CED4DA] bg-white px-2.5 text-sm"
-          >
-            {PDF_FONTS.map((f) => (
-              <option key={f} value={f}>
-                {t.docs2pdf.fonts[f]}
-              </option>
-            ))}
-          </select>
+            onChange={(val) => setPdfFont(val as DocFont)}
+            className="mt-1 w-full"
+            options={PDF_FONTS.map((f) => ({ value: f, label: t.docs2pdf.fonts[f] }))}
+          />
         </div>
 
         <div>
           <label className="block text-xs font-semibold uppercase text-[#6C757D]">
             {t.docs2pdf.paperSizeLabel}
           </label>
-          <select
-            aria-label={t.docs2pdf.paperSizeLabel}
+          <Select
+            ariaLabel={t.docs2pdf.paperSizeLabel}
             value={pageSize}
-            onChange={(e) => setPageSize(e.target.value as PageSizePreset)}
-            className="knit-control mt-1 w-full rounded-[4px] border border-[#CED4DA] bg-white px-2.5 text-sm"
-          >
-            <option value="a4">A4</option>
-            <option value="letter">US Letter</option>
-            <option value="a5">A5</option>
-          </select>
+            onChange={(val) => setPageSize(val as PageSizePreset)}
+            className="mt-1 w-full"
+            options={[
+              { value: "a4", label: "A4" },
+              { value: "letter", label: "US Letter" },
+              { value: "a5", label: "A5" },
+            ]}
+          />
         </div>
 
         <div>
@@ -507,107 +528,109 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
       </div>
 
       {/* Split Workspace: Markdown Editor (Left) & Live PDF Preview (Right) */}
-      {isEditableText ? (
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          {/* Left: Live Markdown Editor */}
-          <div className="flex flex-col overflow-hidden rounded-[4px] border border-[#DEE2E6] bg-white">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#DEE2E6] bg-[#F8F9FA] px-3.5 py-2">
-              <div className="flex items-center gap-2 text-sm font-bold text-[#343A40]">
-                <FileCode2 className="h-4 w-4 text-[#007BFF]" />
-                <span>{t.docs2pdf.editorTitle}</span>
-                {saveFeedback && (
-                  <span className="rounded-[4px] bg-[#D4EDDA] px-2 py-0.5 text-xs font-semibold text-[#155724]">
-                    {saveFeedback}
-                  </span>
-                )}
-              </div>
-              <div className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => void handleSaveText(false)}
-                  className="knit-control-sm inline-flex items-center gap-1 rounded-[4px] border border-[#CED4DA] bg-white px-2.5 text-xs font-semibold text-[#343A40] hover:bg-[#E9ECEF]"
-                >
-                  <Save className="h-3.5 w-3.5 text-[#007BFF]" />
-                  {t.docs2pdf.saveMdBtn}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void handleSaveText(true)}
-                  className="knit-control-sm inline-flex items-center gap-1 rounded-[4px] border border-[#CED4DA] bg-white px-2.5 text-xs font-semibold text-[#343A40] hover:bg-[#E9ECEF]"
-                >
-                  {t.docs2pdf.saveMdAsBtn}
-                </button>
-              </div>
-            </div>
+      {isPreviewableDoc ? (
+        <div className="space-y-0">
+          <div
+            style={{ height: `${liveHeightPx}px` }}
+            className={`grid min-h-[320px] grid-cols-1 gap-4 ${
+              isEditableText ? "lg:grid-cols-2" : "lg:grid-cols-1"
+            }`}
+          >
+            {/* Left: Live Markdown Editor */}
+            {isEditableText && (
+              <div className="flex min-h-0 flex-col overflow-hidden rounded-[4px] border border-[#DEE2E6] bg-white">
+                <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-[#DEE2E6] bg-[#F8F9FA] px-3.5 py-2">
+                  <div className="flex items-center gap-2 text-sm font-bold text-[#343A40]">
+                    <FileCode2 className="h-4 w-4 text-[#007BFF]" />
+                    <span>{t.docs2pdf.editorTitle}</span>
+                    {saveFeedback && (
+                      <span className="rounded-[4px] bg-[#D4EDDA] px-2 py-0.5 text-xs font-semibold text-[#155724]">
+                        {saveFeedback}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => void handleSaveText(false)}
+                      className="knit-control-sm inline-flex items-center gap-1 rounded-[4px] border border-[#CED4DA] bg-white px-2.5 text-xs font-semibold text-[#343A40] hover:bg-[#E9ECEF]"
+                    >
+                      <Save className="h-3.5 w-3.5 text-[#007BFF]" />
+                      {t.docs2pdf.saveMdBtn}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleSaveText(true)}
+                      className="knit-control-sm inline-flex items-center gap-1 rounded-[4px] border border-[#CED4DA] bg-white px-2.5 text-xs font-semibold text-[#343A40] hover:bg-[#E9ECEF]"
+                    >
+                      {t.docs2pdf.saveMdAsBtn}
+                    </button>
+                  </div>
+                </div>
 
-            <textarea
-              value={editorText}
-              onChange={(e) => setEditorText(e.target.value)}
-              onKeyDown={(e) => {
-                if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
-                  e.preventDefault();
-                  void handleSaveText(false);
-                }
-              }}
-              placeholder={t.docs2pdf.newDocPlaceholder}
-              spellCheck={false}
-              className="min-h-[540px] w-full flex-1 resize-y border-0 bg-white p-3.5 font-mono-code text-xs leading-relaxed text-[#212529] focus:outline-none"
-            />
-          </div>
-
-          {/* Right: Live PDF Preview */}
-          <div className="flex flex-col overflow-hidden rounded-[4px] border border-[#DEE2E6] bg-white">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#DEE2E6] bg-[#F8F9FA] px-3.5 py-2">
-              <div className="flex items-center gap-2 text-sm font-bold text-[#343A40]">
-                <Eye className="h-4 w-4 text-[#007BFF]" />
-                <span>{t.docs2pdf.previewTitle}</span>
-                {previewTotalPages > 0 && (
-                  <span className="rounded-[4px] bg-[#E9ECEF] px-2 py-0.5 font-mono-code text-xs font-semibold text-[#495057]">
-                    {t.docs2pdf.previewPageCount(previewPages.length, previewTotalPages)}
-                  </span>
-                )}
-              </div>
-              <button
-                type="button"
-                disabled={previewLoading}
-                onClick={() => void runLivePreview()}
-                className="knit-control-sm inline-flex items-center gap-1 rounded-[4px] border border-[#CED4DA] bg-white px-2.5 text-xs font-semibold text-[#343A40] hover:bg-[#E9ECEF] disabled:opacity-50"
-              >
-                <RefreshCw className={`h-3.5 w-3.5 ${previewLoading ? "animate-spin" : ""}`} />
-                {t.docs2pdf.refreshPreviewBtn}
-              </button>
-            </div>
-
-            {previewError && (
-              <div className="border-b border-[#F5C6CB] bg-[#F8D7DA] px-3.5 py-2 text-xs text-[#721C24]">
-                {previewError}
+                <textarea
+                  value={editorText}
+                  onChange={(e) => setEditorText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+                      e.preventDefault();
+                      void handleSaveText(false);
+                    }
+                  }}
+                  placeholder={t.docs2pdf.newDocPlaceholder}
+                  spellCheck={false}
+                  className="min-h-0 w-full flex-1 resize-none border-0 bg-white p-3.5 font-mono-code text-xs leading-relaxed text-[#212529] focus:outline-none"
+                />
               </div>
             )}
 
-            <div className="max-h-[600px] min-h-[540px] flex-1 space-y-4 overflow-y-auto bg-[#E9ECEF] p-4">
-              {previewLoading && previewPages.length === 0 ? (
-                <div className="py-12 text-center text-sm text-[#6C757D]">
-                  {t.docs2pdf.previewRendering}
+            {/* Right: Live PDF Preview via pdfjs-dist */}
+            <div className="flex min-h-0 flex-col overflow-hidden rounded-[4px] border border-[#DEE2E6] bg-white">
+              <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-[#DEE2E6] bg-[#F8F9FA] px-3.5 py-2">
+                <div className="flex items-center gap-2 text-sm font-bold text-[#343A40]">
+                  <Eye className="h-4 w-4 text-[#007BFF]" />
+                  <span>{t.docs2pdf.previewTitle}</span>
+                  {previewTotalPages > 0 && (
+                    <span className="rounded-[4px] bg-[#E9ECEF] px-2 py-0.5 font-mono-code text-xs font-semibold text-[#495057]">
+                      {previewTotalPages} p.
+                    </span>
+                  )}
                 </div>
-              ) : previewPages.length === 0 ? (
-                <div className="py-12 text-center text-sm text-[#6C757D]">
-                  {t.docs2pdf.previewEmpty}
-                </div>
-              ) : (
-                previewPages.map((src, idx) => (
-                  <div key={idx} className="space-y-1">
-                    <div className="font-mono-code text-[11px] font-semibold text-[#6C757D]">
-                      #{idx + 1} / {previewTotalPages}
-                    </div>
-                    <img
-                      src={src}
-                      alt={`Preview page ${idx + 1}`}
-                      className="w-full rounded-[2px] border border-[#CED4DA] bg-white"
-                    />
-                  </div>
-                ))
-              )}
+                <button
+                  type="button"
+                  disabled={previewLoading}
+                  onClick={() => void runLivePreview()}
+                  className="knit-control-sm inline-flex items-center gap-1 rounded-[4px] border border-[#CED4DA] bg-white px-2.5 text-xs font-semibold text-[#343A40] hover:bg-[#E9ECEF] disabled:opacity-50"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${previewLoading ? "animate-spin" : ""}`} />
+                  {t.docs2pdf.refreshPreviewBtn}
+                </button>
+              </div>
+
+              <div className="min-h-0 flex-1">
+                <PdfJsPreview
+                  pdfBytes={previewPdfBytes}
+                  loading={previewLoading}
+                  error={previewError}
+                  emptyText={t.docs2pdf.previewEmpty}
+                  loadingText={t.docs2pdf.previewRendering}
+                  onPageCountChange={setPreviewTotalPages}
+                />
+              </div>
             </div>
+          </div>
+
+          {/* Bottom Vertical Resize Handle */}
+          <div
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="Resize editor and preview height"
+            onPointerDown={handleStartHeightResize}
+            className="mt-1.5 flex h-5 cursor-ns-resize select-none items-center justify-center rounded-[4px] border border-dashed border-[#CED4DA] bg-[#F8F9FA] text-[#6C757D] transition-colors hover:border-[#007BFF] hover:bg-[#E7F1FF] hover:text-[#007BFF]"
+            title={`${liveHeightPx}px`}
+          >
+            <GripHorizontal className="h-4 w-4" />
+            <span className="ml-2 font-mono-code text-[11px]">{liveHeightPx}px</span>
           </div>
         </div>
       ) : (

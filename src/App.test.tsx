@@ -20,11 +20,12 @@ describe("Knit Workbench UI", () => {
 
     expect(screen.getByText("Chuyển Ảnh sang PDF & Biên tập Trang")).toBeTruthy();
 
-    // Switch layout to A4 so background & padding unit controls appear and persist
-    const layoutSelect = screen.getByDisplayValue("Kích thước ảnh gốc (DPI)") as HTMLSelectElement;
-    fireEvent.change(layoutSelect, { target: { value: "fit_a4" } });
-    expect(screen.getByLabelText("Màu nền:")).toBeTruthy();
-    expect(screen.getByLabelText("Padding unit")).toBeTruthy();
+    // Switch layout to A4 via custom Select so background & padding unit controls appear and persist
+    const layoutSelect = screen.getByRole("combobox", { name: "Khổ trang & Nền PDF" });
+    fireEvent.click(layoutSelect);
+    fireEvent.click(screen.getByRole("option", { name: "Vừa khổ A4" }));
+    expect(screen.getByRole("combobox", { name: "Màu nền:" })).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "Padding unit" })).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: /Gộp & Tách PDF/i }));
     expect(screen.getByText("Chọn hoặc kéo thả các tệp PDF cần gộp")).toBeTruthy();
@@ -53,6 +54,14 @@ describe("Knit Workbench UI", () => {
     // Test font & font size settings update CSS variables
     fireEvent.click(screen.getByRole("button", { name: /Afacad/i }));
     expect(document.documentElement.style.getPropertyValue("--knit-font-sans")).toContain("Afacad");
+
+    // Slider does not apply while dragging, commits on pointerUp
+    const slider = screen.getByRole("slider", { name: "Kích thước chữ ứng dụng" });
+    fireEvent.change(slider, { target: { value: "19" } });
+    expect(document.documentElement.style.getPropertyValue("--knit-app-font-size")).toBe("16px");
+    fireEvent.pointerUp(slider);
+    expect(document.documentElement.style.getPropertyValue("--knit-app-font-size")).toBe("19px");
+
     fireEvent.click(screen.getByRole("button", { name: "18px" }));
     expect(document.documentElement.style.getPropertyValue("--knit-app-font-size")).toBe("18px");
 
@@ -62,18 +71,19 @@ describe("Knit Workbench UI", () => {
 
     // Switch back to Image2Pdf and verify mounted state (fit_a4) was preserved
     fireEvent.click(screen.getByRole("button", { name: /Ảnh sang PDF/i }));
-    expect((screen.getByLabelText("Màu nền:") as HTMLSelectElement).value).toBe("white");
+    expect(screen.getByRole("combobox", { name: "Màu nền:" }).textContent).toContain("Trắng");
   });
 
-  it("switches language between Vietnamese and English cleanly", () => {
+  it("switches language between Vietnamese and English cleanly via Settings", () => {
     render(<App />);
     expect(screen.getByText("Chuyển Ảnh sang PDF & Biên tập Trang")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "en" }));
-    expect(screen.getByText("Image to PDF & Canvas Editor")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Cài đặt" }));
+    fireEvent.click(screen.getByRole("button", { name: "English (EN)" }));
+    expect(screen.getByText("Appearance & Application Settings")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "vi" }));
-    expect(screen.getByText("Chuyển Ảnh sang PDF & Biên tập Trang")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Tiếng Việt (VI)" }));
+    expect(screen.getByText("Cài đặt Giao diện & Hệ thống")).toBeTruthy();
   });
 
   it("renders ExportSuccessModal when completed result is provided", () => {

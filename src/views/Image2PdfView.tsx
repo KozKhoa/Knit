@@ -1,4 +1,5 @@
 import React from "react";
+import { Select } from "../components/Select";
 import {
   ArrowDown,
   ArrowUp,
@@ -335,15 +336,17 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
           <label className="block text-xs font-semibold uppercase text-[#6C757D]">
             {t.image2pdf.layoutHeading}
           </label>
-          <select
+          <Select
+            ariaLabel={t.image2pdf.layoutHeading}
             value={layoutMode}
-            onChange={(e) => setLayoutMode(e.target.value as typeof layoutMode)}
-            className="knit-control w-full rounded-[4px] border border-[#CED4DA] bg-white px-2.5 text-sm"
-          >
-            <option value="original_size">{t.image2pdf.layoutOriginal}</option>
-            <option value="fit_a4">{t.image2pdf.layoutA4}</option>
-            <option value="fit_letter">{t.image2pdf.layoutLetter}</option>
-          </select>
+            onChange={(val) => setLayoutMode(val as typeof layoutMode)}
+            className="w-full"
+            options={[
+              { value: "original_size", label: t.image2pdf.layoutOriginal },
+              { value: "fit_a4", label: t.image2pdf.layoutA4 },
+              { value: "fit_letter", label: t.image2pdf.layoutLetter },
+            ]}
+          />
 
           {layoutMode === "original_size" ? (
             <label className="flex items-center justify-between gap-2 text-xs text-[#6C757D]">
@@ -371,32 +374,35 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
                     onChange={(e) => setMarginValue(Math.max(0, Number(e.target.value) || 0))}
                     className="knit-control-sm w-20 rounded-[4px] border border-[#CED4DA] px-2 font-mono-code text-xs text-[#212529]"
                   />
-                  <select
-                    aria-label="Padding unit"
+                  <Select
+                    ariaLabel="Padding unit"
+                    size="sm"
                     value={marginUnit}
-                    onChange={(e) => switchMarginUnit(e.target.value as MarginUnit)}
-                    className="knit-control-sm rounded-[4px] border border-[#CED4DA] bg-white px-1.5 font-mono-code text-xs text-[#212529]"
-                  >
-                    <option value="mm">mm</option>
-                    <option value="pt">pt</option>
-                  </select>
+                    onChange={(val) => switchMarginUnit(val as MarginUnit)}
+                    className="font-mono-code"
+                    options={[
+                      { value: "mm", label: "mm" },
+                      { value: "pt", label: "pt" },
+                    ]}
+                  />
                 </div>
               </div>
 
               <div className="flex items-center justify-between gap-2 text-xs text-[#6C757D]">
                 <span>{t.image2pdf.bgColorLabel}</span>
                 <div className="flex items-center gap-1.5">
-                  <select
-                    aria-label={t.image2pdf.bgColorLabel}
+                  <Select
+                    ariaLabel={t.image2pdf.bgColorLabel}
+                    size="sm"
                     value={bgMode}
-                    onChange={(e) => setBgMode(e.target.value as BgMode)}
-                    className="knit-control-sm rounded-[4px] border border-[#CED4DA] bg-white px-2 text-xs text-[#212529]"
-                  >
-                    <option value="white">{t.image2pdf.bgWhite}</option>
-                    <option value="black">{t.image2pdf.bgBlack}</option>
-                    <option value="transparent">{t.image2pdf.bgTransparent}</option>
-                    <option value="custom">{t.image2pdf.bgCustom}</option>
-                  </select>
+                    onChange={(val) => setBgMode(val as BgMode)}
+                    options={[
+                      { value: "white", label: t.image2pdf.bgWhite },
+                      { value: "black", label: t.image2pdf.bgBlack },
+                      { value: "transparent", label: t.image2pdf.bgTransparent },
+                      { value: "custom", label: t.image2pdf.bgCustom },
+                    ]}
+                  />
                   {bgMode === "custom" && (
                     <input
                       type="color"
@@ -441,14 +447,16 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
           <label className="block text-xs font-semibold uppercase text-[#6C757D]">
             {t.image2pdf.animatedHeading}
           </label>
-          <select
+          <Select
+            ariaLabel={t.image2pdf.animatedHeading}
             value={animatedPolicy}
-            onChange={(e) => setAnimatedPolicy(e.target.value as AnimatedImagePolicy)}
-            className="knit-control w-full rounded-[4px] border border-[#CED4DA] bg-white px-2.5 text-sm"
-          >
-            <option value="first_frame_only">{t.image2pdf.animatedFirstFrame}</option>
-            <option value="unpack_all_frames">{t.image2pdf.animatedUnpackAll}</option>
-          </select>
+            onChange={(val) => setAnimatedPolicy(val as AnimatedImagePolicy)}
+            className="w-full"
+            options={[
+              { value: "first_frame_only", label: t.image2pdf.animatedFirstFrame },
+              { value: "unpack_all_frames", label: t.image2pdf.animatedUnpackAll },
+            ]}
+          />
         </div>
 
         <div className="space-y-2">
