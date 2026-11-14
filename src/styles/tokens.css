@@ -1,0 +1,178 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: "Lora";
+  src: url("../assets/fonts/Lora-VariableFont_wght.ttf") format("truetype");
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Lora";
+  src: url("../assets/fonts/Lora-Italic-VariableFont_wght.ttf") format("truetype");
+  font-weight: 400 700;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Afacad";
+  src: url("../assets/fonts/Afacad-VariableFont_wght.ttf") format("truetype");
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Afacad";
+  src: url("../assets/fonts/Afacad-Italic-VariableFont_wght.ttf") format("truetype");
+  font-weight: 400 700;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Roboto";
+  src: url("../assets/fonts/Roboto-VariableFont_wdth,wght.ttf") format("truetype");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Roboto";
+  src: url("../assets/fonts/Roboto-Italic-VariableFont_wdth,wght.ttf") format("truetype");
+  font-weight: 100 900;
+  font-style: italic;
+  font-display: swap;
+}
+
+:root {
+  --knit-primary: #007bff;
+  --knit-primary-hover: #0069d9;
+  --knit-secondary: #343a40;
+  --knit-bg-app: #f8f9fa;
+  --knit-bg-surface: #ffffff;
+  --knit-bg-subtle: #f1f3f5;
+  --knit-border: #dee2e6;
+  --knit-border-strong: #ced4da;
+  --knit-text: #212529;
+  --knit-text-muted: #6c757d;
+  --knit-success: #28a745;
+  --knit-warning: #ffc107;
+  --knit-danger: #dc3545;
+  --knit-info: #17a2b8;
+  --knit-radius: 4px;
+  --knit-app-font-size: 16px;
+  --knit-font-sans: "Lora", Georgia, "Times New Roman", serif;
+  --knit-font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  font-size: var(--knit-app-font-size);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background-color: var(--knit-bg-app);
+  color: var(--knit-text);
+  font-family: var(--knit-font-sans);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+body,
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+}
+
+.font-mono-code {
+  font-family: var(--knit-font-mono);
+}
+
+/* Unified form control height (select, input, button align cleanly) */
+.knit-control {
+  height: 2.25rem;
+  min-height: 2.25rem;
+  line-height: 1.25;
+}
+
+.knit-control-sm {
+  height: 2rem;
+  min-height: 2rem;
+  line-height: 1.2;
+}
+
+/* Accessible custom checkbox with mathematically centered check glyph */
+input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  display: inline-grid;
+  place-content: center;
+  flex-shrink: 0;
+  width: 1.15rem;
+  height: 1.15rem;
+  min-width: 1.15rem;
+  min-height: 1.15rem;
+  margin: 0;
+  border: 1.5px solid #adb5bd;
+  border-radius: 4px;
+  background-color: #ffffff;
+  background-position: center;
+  background-repeat: no-repeat;
+  cursor: pointer;
+  vertical-align: middle;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+input[type="checkbox"]:hover:not(:disabled) {
+  border-color: #007bff;
+}
+
+input[type="checkbox"]:checked {
+  background-color: #007bff;
+  border-color: #007bff;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M3.2 8.2 6.5 11.4 12.8 4.6' stroke='%23ffffff' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-size: 0.85rem 0.85rem;
+}
+
+input[type="checkbox"]:focus-visible {
+  outline: 2px solid #80bdff;
+  outline-offset: 2px;
+}
+
+input[type="checkbox"]:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Flat scrollbars without shadows or gradients */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f3f5;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #ced4da;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #adb5bd;
+}
