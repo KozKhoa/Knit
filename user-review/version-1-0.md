@@ -1,0 +1,11 @@
+- Cần nâng cỡ font cao hơn một tý (nâng lên cỡ 16px)
+- Hiện tại cần tách được text của app ra một file riêng do hỗ trợ tiếng anh và tiếng việt  (hiện tại thì tiếng việt đang không có dấu)
+- Khi mở file selection thì cần disable các phần phía sau của app và hợp nhất phần app và folder selection (tức là khi alt tab thì sẽ gộp app với folder selection thành một, đặc biệt là trên linux). Hiện taij thì vẫn có thể tương tác với app ở sau khi mà folder selection đang mở
+- Bổ sung thêm lưu thông tin cấu hình khi mà chuyển tool, tức là đang tool image2pdf chọn các file ảnh, chuyển sang tool khác rồi quay lại image2pdf thì các ảnh đó vẫn còn ở lại
+- Đổi font chữ dùng cho app sang font Lora (file ttf hiện đang lưu ở /home/khoa/Code/Project/Mangament/client/packages/assets/fonts/Lora/)
+- Trong tool image2pdf, phần sắp xếp ảnh thì cho phép người dùng kéo thả 
+- Trong phần review, sắp xếp ảnh thì cho phép user pick có bao nhiêu ảnh trên một row (lưu lại config này)
+- Khi xuất ra xong thì hiển thị lên một cái modal thông báo là xuất xong rồi
+- Cho phép kéo thêm nhiều ảnh từ folder bên ngoài vào app
+- Khi xuất file pdf khổ A4 thì cho phép cấu hình màu nền (trắng, đen, vô hình,...), thay đổi padding.
+- 

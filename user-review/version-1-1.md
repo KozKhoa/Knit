@@ -1,0 +1,10 @@
+- Đối với tính năng sắp xếp ảnh thì khi kéo đến vị trí cần thả và thì các ảnh xong quanh sẽ dạt ra và hiện ra placeholder vị trí ảnh đo sẽ thả xuống
+- Bổ sung thêm font afacad (file ttf ở /home/khoa/Code/Project/Mangament/client/packages/assets/fonts/Afacad) và roboto (file ttf ở /home/khoa/Code/Project/Mangament/client/packages/assets/fonts/Roboto).
+- Bổ sung thêm page setting để cấu hình cỡ chữ của app, font chữ chính của app, ngôn ngữ của app
+- Thanh bên trái có thể đóng lại 
+- Trong tool tách file pdf thì có thể edit và kéo thả các page của file pdf gốc vào trong các file sẽ được tách ra. (nếu như tác ra thành 5 file thì có 5 section, có thể kéo thả các page của file gốc từ chỗ này sang chỗ kia)
+- Hiện tại chiều cao của các ô button dropdown với button number input bị khác nhau, cần đồng bọ cho nó giống nhau.
+- Ô checkbox khi được check thì cái icon check bị lệch lên sang phải. Làm cho ô checkbox to hơn tý và ô check nằm chính giữa vào.
+- Với tool md to pdf thì có lỗi: "Dữ liệu đầu vào không hợp lệ: Loi bien dich Typst: failed to decode image (Format error decoding Jpeg: Error parsing image. Illegal start bytes:8950)" khi convert file /home/khoa/Documents/Four years/Kiểm thử phần mềm/Homeworks/HW03/report.md
+- Bổ sung thêm các theme (github, academic, Minimal, Modern, Resume), thay đổi font chữ của file pdf, khi tiến hành convert md to pdf. Các
+- Trong tool md to pdf bổ sung thêm edit file md bên trái và preview file pdf sau khi convert bên phải. 
