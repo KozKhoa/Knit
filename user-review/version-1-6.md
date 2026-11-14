@@ -6,4 +6,18 @@
 	- Cache thumbnail ra file tạm trên disk (theo hash path + mtime) và trả về URL qua convertFileSrc thay vì chuỗi data:image/...;base64,... trong React state (giảm hẳn áp lực RAM cho WebView)
 	- Đổi output thumbnail từ PNG sang JPEG (quality ~60–80): render_image_thumbnail đang encode PNG (ImageFormat::Png) — nén PNG cho ảnh wallpaper tốn CPU hơn JPEG rất nhiều và payload Base64 cũng nặng hơn.
 	- Đặt Semaphore ở backend: Giới hạn số lượng render_image_thumb chạy song song trong render_image_thumb (ví dụ tối đa 2 hoặc num_cpus / 2) để đảm bảo không bao giờ bão hòa toàn bộ CPU/RAM dù frontend gửi nhiều request.
-	- 
+- Trong tool image2pdf, tính năng kéo thả để sắp xếp ảnh, hiện tại animation của cái cột placeholder không dược ổn lắm vì nó dường như là đang nhận định là có có thể chèn vào hai vị trí (1 cái gần ảnh ở bên trái, 1 cái ở ảnh bên phải), mặc dù ta có thả ở đâu thì nó vẫn chèn vào vị trí ở giữa hai ảnh nên tôi cần thống nhất vị trí của thanh đó ở đúng chính giữa hai ảnh.
+- Trong tool rename batch, thì font chữ của lớp 2 - xem trước không có khớp với font chữ hệ thống, tôi kỳ vọng nó sẽ khớp với font chữ của hệ thống.
+- Trong tool rename batch, bổ sung thêm khả năng resize height cho lớp 2 - xem trước 
+- Trong tool rename batch, phần lớp 2 - xem trước, bổ sung thêm checkbox select all
+- Trong tool rename batch, khi tôi đang thay đổi regex, hay là tên đuôi của file,... thì liền ngay lập tức áp dụng filter để tìm lấy việc xem trước, điều này khiến cho app trông lag vô cùng. Tùy vào kích thước, số lượng đối tượng sẽ được thay đổi (<= 500 thì sẽ cập nhật theo user thay đổi, > 500 thì đợi user thay đổi filter xong cỡ 150ms rồi hẵng áp dụng filter) .
+- Trong  tool rename batch, hiển thị Lớp 2 - Xem trước dưới dạng cây thư mục
+
+- Trong tool md to pdf, phần mermaid convert thì hiện tại khi tôi convert file /home/khoa/Code/Project/Mangament/docs/caching-architecture-and-guidelines.md thì phầm mermaid (biểu đồ của "Ranh Giới Caching: Được Cache vs Tuyệt Đối Không Được Cache") bị mất đi phần sơ đồ ở dưới rồi. Khi convert mermaid thì nếu như mà hỉnh ảnh lớn quá thì thu nhỏ lại, ưu tiên tối đa cho việc hỉnh ảnh khớp vào trong tài liệu mà không bị mất nội dung nào.
+- Trong tool md to pdf, phần loading thể hiện đang build preview thì hiện icon loading trước text "Xem trước PDF trực tiếp"
+- Trong tool md to pdf, khi tôi thay đổi (zoom) phần preview pdf thì việc tô chọn text hoạt động bị lỗi, khó tô, các phần bị tô bị lấn vào nhau. Fix lỗi đó đi.
+- Trong tool md to pdf, phần preview và khi xuất file pdf, nếu như text quá dài mà không có dấu cách (vd: "BuildStoryTree:storiesVer=${storiesVer}:storyNodeVer=${storyNodeVer}:storyId=${storyId}:isGettingContent=${isGettingContent}" ) thì cần phải ép nó xuống dòng để tránh đè lên cột tiếp theo (nếu như ở trong table) hoặc là mất nội dung.
+
+- Trong các tool, khi tiến hành thêm folder, hiển thị thêm loading là đang load folder vào trong app
+- Trong các tool, hiện tại khi convert hay làm gì đó thành công thì hiện modal, bỏ đi tính năng đó đi, thay bằng việc hiện toast ở phía bottom right (vẫn có thông tin cần thiết như là modal, chỉ thay đổi vị trị), có nút để đóng chủ động và auto close sau 3s.
+- 

@@ -29,7 +29,7 @@ pub struct FilterPattern {
     pub pattern: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanFilter {
     pub target_type: TargetType,
     pub recursive: bool,

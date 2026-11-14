@@ -15,6 +15,7 @@ import {
 import { Dropzone } from "../components/Dropzone";
 import { NumberInput } from "../components/NumberInput";
 import { Select } from "../components/Select";
+import { useVerticalResize } from "../hooks/useVerticalResize";
 import { useI18n } from "../i18n";
 import {
   formatBytes,
@@ -69,16 +70,20 @@ export const MangaPackView: React.FC<MangaPackViewProps> = ({
     0,
   );
   const [maxGb, setMaxGb] = usePersistentState<number>("knit.manga.maxGb", 0);
+  const [scanningFolder, setScanningFolder] = React.useState(false);
   const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
   const lastHandledDropSeq = React.useRef<number>(0);
 
   const runScan = React.useCallback(async (dir: string, mode: MangaScanMode) => {
     setErrorMsg(null);
+    setScanningFolder(true);
     try {
       const found = await scanMangaFolder(dir, mode);
       setStories(found);
     } catch (e) {
       setErrorMsg(String(e));
+    } finally {
+      setScanningFolder(false);
     }
   }, []);
 
@@ -136,35 +141,17 @@ export const MangaPackView: React.FC<MangaPackViewProps> = ({
     "knit.manga.treeHeightPx",
     220,
   );
-  const [liveTreeHeightPx, setLiveTreeHeightPx] = React.useState(treeHeightPx);
+  const { height: liveTreeHeightPx, handlePointerDown: handleTreeResizeStart } = useVerticalResize({
+    value: treeHeightPx,
+    min: 140,
+    max: 680,
+    onCommit: setTreeHeightPx,
+  });
   const [openInfoStoryPath, setOpenInfoStoryPath] = React.useState<string | null>(null);
   const [infoJsonText, setInfoJsonText] = React.useState<string>("");
   const [infoJsonError, setInfoJsonError] = React.useState<string | null>(null);
   const [infoJsonSavedMsg, setInfoJsonSavedMsg] = React.useState<string | null>(null);
   const [collapsedDirs, setCollapsedDirs] = React.useState<Record<string, boolean>>({});
-
-  React.useEffect(() => {
-    setLiveTreeHeightPx(Math.min(680, Math.max(140, treeHeightPx)));
-  }, [treeHeightPx]);
-
-  const handleTreeResizeStart = (e: React.PointerEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    const startY = e.clientY;
-    const startH = liveTreeHeightPx;
-    let latestH = startH;
-
-    const onMove = (ev: PointerEvent) => {
-      latestH = Math.min(680, Math.max(140, Math.round(startH + (ev.clientY - startY))));
-      setLiveTreeHeightPx(latestH);
-    };
-    const onUp = () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      setTreeHeightPx(latestH);
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-  };
 
   const handleToggleInfoEditor = async (st: Story) => {
     if (!st.info_file) return;
@@ -305,6 +292,7 @@ export const MangaPackView: React.FC<MangaPackViewProps> = ({
         description={t.mangaPack.dropDesc}
         onPickFolder={() => void handlePickRoot()}
         folderLabel={rootDir ? t.mangaPack.changeFolderBtn : t.mangaPack.pickFolderBtn}
+        loading={scanningFolder}
       />
 
       {stories.length > 0 && (

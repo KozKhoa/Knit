@@ -8,6 +8,7 @@ import {
   FileCode2,
   FileOutput,
   GripHorizontal,
+  Loader2,
   RefreshCw,
   Save,
   Search,
@@ -21,6 +22,7 @@ import {
 import { NumberInput } from "../components/NumberInput";
 import { PdfJsPreview, type PdfJsPreviewHandle } from "../components/PdfJsPreview";
 import { Select } from "../components/Select";
+import { useVerticalResize } from "../hooks/useVerticalResize";
 import { useI18n } from "../i18n";
 import { findAllTextMatches, findMarkdownSourceRange } from "../lib/markdownSearch";
 import { MERMAID_THEMES, type MermaidTheme, renderMermaidSvgs } from "../lib/mermaid";
@@ -130,7 +132,12 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
     "knit.docs.workspaceHeightPx",
     560,
   );
-  const [liveHeightPx, setLiveHeightPx] = React.useState<number>(workspaceHeightPx);
+  const { height: liveHeightPx, handlePointerDown: handleStartHeightResize } = useVerticalResize({
+    value: workspaceHeightPx,
+    min: 320,
+    max: 1200,
+    onCommit: setWorkspaceHeightPx,
+  });
   const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
 
   const [previewLoading, setPreviewLoading] = React.useState(false);
@@ -163,10 +170,6 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
     source: null,
     until: 0,
   });
-
-  React.useEffect(() => {
-    setLiveHeightPx(Math.min(1200, Math.max(320, workspaceHeightPx)));
-  }, [workspaceHeightPx]);
 
   const docKind = detectDocKind(inputPath);
   const isEditableText =
@@ -410,25 +413,6 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
     mermaidTheme,
     runLivePreview,
   ]);
-
-  const handleStartHeightResize = (e: React.PointerEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    const startY = e.clientY;
-    const startH = liveHeightPx;
-    let latestH = startH;
-
-    const onMove = (ev: PointerEvent) => {
-      latestH = Math.min(1200, Math.max(320, Math.round(startH + (ev.clientY - startY))));
-      setLiveHeightPx(latestH);
-    };
-    const onUp = () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      setWorkspaceHeightPx(latestH);
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-  };
 
   const handlePickDoc = async () => {
     setErrorMsg(null);
@@ -862,7 +846,11 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
             >
               <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-[#DEE2E6] bg-[#F8F9FA] px-3.5 py-2">
                 <div className="flex items-center gap-2 text-sm font-bold text-[#343A40]">
-                  <Eye className="h-4 w-4 text-[#007BFF]" />
+                  {previewLoading ? (
+                    <Loader2 className="h-4 w-4 animate-spin text-[#007BFF]" />
+                  ) : (
+                    <Eye className="h-4 w-4 text-[#007BFF]" />
+                  )}
                   <span>{t.docs2pdf.previewTitle}</span>
                   {previewTotalPages > 0 && (
                     <span className="rounded-[4px] bg-[#E9ECEF] px-2 py-0.5 font-mono-code text-xs font-semibold text-[#495057]">

@@ -266,3 +266,39 @@ A[Start] --> B[End]
     assert!(pages >= 1);
     assert!(pdf_bytes.starts_with(b"%PDF-"));
 }
+
+#[test]
+fn tall_mermaid_scales_to_fit_and_long_unbreakable_strings_wrap_in_tables() {
+    let md = "\
+## Diagram
+
+```mermaid
+flowchart TD
+A[Top] --> B[Bottom]
+```
+
+| Key | Value |
+| --- | --- |
+| `cache_key` | `BuildStoryTree:storiesVer=${storiesVer}:storyNodeVer=${storyNodeVer}:storyId=${storyId}:isGettingContent=${isGettingContent}` |
+| Plain | BuildStoryTree:storiesVer=10:storyNodeVer=7:storyId=1234567890abcdef:isGettingContent=true |
+";
+    let mut mermaid_svgs = std::collections::HashMap::new();
+    // Extra-tall SVG (width=300, height=1200) that would overflow A4 height if only width is bounded
+    mermaid_svgs.insert(
+        "flowchart TD\nA[Top] --> B[Bottom]".to_string(),
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="300" height="1200" viewBox="0 0 300 1200"><rect width="300" height="1200" fill="#eef2ff"/><text x="20" y="1160" font-size="18">Bottom Label</text></svg>"##.to_string(),
+    );
+    let opts = DocConvertOptions {
+        mermaid_svgs,
+        ..DocConvertOptions::default()
+    };
+    let (typst, _) = knit_docs::markdown_to_typst_with_assets(md, &opts);
+    assert!(typst.contains("fit: \"contain\""));
+    assert!(typst.contains("(1fr, 1fr)"));
+    assert!(typst.contains('\u{200B}'));
+
+    let (pdf_bytes, pages) =
+        compile_text_to_pdf_bytes(md, DocInputKind::Markdown, None, &opts).unwrap();
+    assert!(pages >= 1);
+    assert!(pdf_bytes.starts_with(b"%PDF-"));
+}

@@ -25,6 +25,7 @@ import {
   pickFiles,
   pickSaveFile,
   renderImageThumbBase64,
+  renderImageThumbFile,
   scanImagesForPdf,
 } from "../lib/ipc";
 import { usePersistentState } from "../lib/storage";
@@ -111,61 +112,138 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
   const [gridCols, setGridCols] = usePersistentState<number>("knit.img2pdf.gridCols", 4);
 
   const [dragIndex, setDragIndex] = React.useState<number | null>(null);
-  const [dropTarget, setDropTarget] = React.useState<{
-    index: number;
-    side: "before" | "after";
-  } | null>(null);
+  const [insertAt, setInsertAt] = React.useState<number | null>(null);
   const [dragGhostPos, setDragGhostPos] = React.useState<{ x: number; y: number } | null>(null);
+  const [scanningPaths, setScanningPaths] = React.useState(false);
   const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
   const lastHandledDropSeq = React.useRef<number>(0);
 
   const cardRefs = React.useRef<Map<string, HTMLDivElement>>(new Map());
-  const dropTargetRef = React.useRef<{ index: number; side: "before" | "after" } | null>(null);
+  const insertAtRef = React.useRef<number | null>(null);
   const pagesRef = React.useRef<PageDraft[]>(pages);
   const suppressClickUntilRef = React.useRef<number>(0);
+
+  const thumbCacheRef = React.useRef<Record<string, string>>(thumbCache);
+  const loadThumbsRef = React.useRef<boolean>(loadThumbs);
+  const inFlightIdsRef = React.useRef<Set<string>>(new Set());
+  const queuedIdsRef = React.useRef<string[]>([]);
+  const activeWorkersRef = React.useRef<number>(0);
+  const thumbGenRef = React.useRef<number>(0);
+  const observerRef = React.useRef<IntersectionObserver | null>(null);
 
   React.useEffect(() => {
     pagesRef.current = pages;
   }, [pages]);
 
-  const registerCardRef = React.useCallback((id: string, el: HTMLDivElement | null) => {
-    if (el) {
-      cardRefs.current.set(id, el);
-    } else {
-      cardRefs.current.delete(id);
+  React.useEffect(() => {
+    thumbCacheRef.current = thumbCache;
+  }, [thumbCache]);
+
+  React.useEffect(() => {
+    loadThumbsRef.current = loadThumbs;
+    if (!loadThumbs) {
+      thumbGenRef.current += 1;
+      queuedIdsRef.current = [];
+      inFlightIdsRef.current.clear();
+    }
+  }, [loadThumbs]);
+
+  const pumpThumbQueue = React.useCallback(() => {
+    if (!isTauriRuntime() || !loadThumbsRef.current) return;
+    const CONCURRENCY = 3;
+
+    while (activeWorkersRef.current < CONCURRENCY && queuedIdsRef.current.length > 0) {
+      const pageId = queuedIdsRef.current.shift();
+      if (!pageId) break;
+      if (thumbCacheRef.current[pageId] || inFlightIdsRef.current.has(pageId)) continue;
+
+      const page = pagesRef.current.find((p) => p.id === pageId);
+      if (!page) continue;
+
+      inFlightIdsRef.current.add(pageId);
+      activeWorkersRef.current += 1;
+      const gen = thumbGenRef.current;
+
+      void (async () => {
+        try {
+          const thumbPath = await renderImageThumbFile(page.source.path, 360);
+          if (thumbGenRef.current !== gen || !loadThumbsRef.current) return;
+          const url = convertFileSrc(thumbPath);
+          thumbCacheRef.current[pageId] = url;
+          setThumbCache((prev) => (prev[pageId] === url ? prev : { ...prev, [pageId]: url }));
+        } catch {
+          if (thumbGenRef.current !== gen || !loadThumbsRef.current) return;
+          if (page.source.kind === "image_file") {
+            const lower = page.source.path.toLowerCase();
+            if (!lower.endsWith(".avif") && !lower.endsWith(".tiff") && !lower.endsWith(".tif")) {
+              const url = convertFileSrc(page.source.path);
+              thumbCacheRef.current[pageId] = url;
+              setThumbCache((prev) => (prev[pageId] === url ? prev : { ...prev, [pageId]: url }));
+            }
+          }
+        } finally {
+          inFlightIdsRef.current.delete(pageId);
+          activeWorkersRef.current = Math.max(0, activeWorkersRef.current - 1);
+          if (thumbGenRef.current === gen && loadThumbsRef.current) {
+            pumpThumbQueue();
+          }
+        }
+      })();
     }
   }, []);
 
-  const loadThumbnails = React.useCallback(async (newPages: PageDraft[]) => {
-    if (!isTauriRuntime() || newPages.length === 0) return;
+  const enqueueThumbnail = React.useCallback(
+    (pageId: string) => {
+      if (!isTauriRuntime() || !loadThumbsRef.current) return;
+      if (thumbCacheRef.current[pageId] || inFlightIdsRef.current.has(pageId)) return;
+      if (queuedIdsRef.current.includes(pageId)) return;
+      queuedIdsRef.current.push(pageId);
+      pumpThumbQueue();
+    },
+    [pumpThumbQueue],
+  );
 
-    // Decode compact 360px thumbnails in bounded concurrent batches so 120MB+ sets never bloat GPU RAM
-    const BATCH = 4;
-    for (let i = 0; i < newPages.length; i += BATCH) {
-      const slice = newPages.slice(i, i + BATCH);
-      const entries = await Promise.all(
-        slice.map(async (p): Promise<[string, string] | null> => {
-          try {
-            const b64 = await renderImageThumbBase64(p.source.path, 360);
-            return [p.id, `data:image/png;base64,${b64}`];
-          } catch {
-            if (p.source.kind === "image_file") {
-              const lower = p.source.path.toLowerCase();
-              if (!lower.endsWith(".avif") && !lower.endsWith(".tiff") && !lower.endsWith(".tif")) {
-                return [p.id, convertFileSrc(p.source.path)];
-              }
-            }
-            return null;
-          }
-        }),
-      );
-      const updates: Record<string, string> = {};
-      for (const item of entries) {
-        if (item) updates[item[0]] = item[1];
+  React.useEffect(() => {
+    if (!loadThumbs || !isTauriRuntime() || typeof IntersectionObserver === "undefined") {
+      observerRef.current?.disconnect();
+      observerRef.current = null;
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const id = (entry.target as HTMLElement).dataset.pageId;
+          if (id) enqueueThumbnail(id);
+        }
+      },
+      { rootMargin: "320px 0px" },
+    );
+
+    observerRef.current = observer;
+    for (const el of cardRefs.current.values()) {
+      observer.observe(el);
+    }
+
+    return () => {
+      observer.disconnect();
+      if (observerRef.current === observer) {
+        observerRef.current = null;
       }
-      if (Object.keys(updates).length > 0) {
-        setThumbCache((prev) => ({ ...prev, ...updates }));
-      }
+    };
+  }, [loadThumbs, enqueueThumbnail]);
+
+  const registerCardRef = React.useCallback((id: string, el: HTMLDivElement | null) => {
+    const prevEl = cardRefs.current.get(id);
+    if (prevEl && prevEl !== el) {
+      observerRef.current?.unobserve(prevEl);
+    }
+    if (el) {
+      cardRefs.current.set(id, el);
+      observerRef.current?.observe(el);
+    } else {
+      cardRefs.current.delete(id);
     }
   }, []);
 
@@ -235,6 +313,7 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
     async (paths: string[], isFolder: boolean) => {
       if (paths.length === 0) return;
       setErrorMsg(null);
+      setScanningPaths(true);
       try {
         const scan = await scanImagesForPdf(paths, isFolder, animatedPolicy);
         if (scan.pages.length === 0) return;
@@ -246,23 +325,14 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
           }
           return [...prev, ...scan.pages];
         });
-        if (loadThumbs) {
-          void loadThumbnails(scan.pages);
-        }
       } catch (e) {
         setErrorMsg(String(e));
+      } finally {
+        setScanningPaths(false);
       }
     },
-    [animatedPolicy, loadThumbnails, loadThumbs],
+    [animatedPolicy],
   );
-
-  React.useEffect(() => {
-    if (!loadThumbs || pages.length === 0) return;
-    const missing = pages.filter((p) => !thumbCache[p.id]);
-    if (missing.length > 0) {
-      void loadThumbnails(missing);
-    }
-  }, [loadThumbs, pages, thumbCache, loadThumbnails]);
 
   React.useEffect(() => {
     if (!droppedBatch || droppedBatch.seq === lastHandledDropSeq.current) return;
@@ -408,7 +478,7 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
     const startY = e.clientY;
     let dragging = false;
 
-    const hitTestCards = (clientX: number, clientY: number) => {
+    const hitTestInsertAt = (clientX: number, clientY: number): number | null => {
       const currentPages = pagesRef.current;
       let bestIdx: number | null = null;
       let bestDist = Infinity;
@@ -424,12 +494,7 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
           clientY >= rect.top &&
           clientY <= rect.bottom
         ) {
-          return {
-            index: i,
-            side: (clientX < rect.left + rect.width / 2 ? "before" : "after") as
-              | "before"
-              | "after",
-          };
+          return clientX < rect.left + rect.width / 2 ? i : i + 1;
         }
         const cx = rect.left + rect.width / 2;
         const cy = rect.top + rect.height / 2;
@@ -440,7 +505,8 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
           bestSide = clientX < cx ? "before" : "after";
         }
       }
-      return bestIdx !== null ? { index: bestIdx, side: bestSide } : null;
+      if (bestIdx === null) return null;
+      return bestSide === "before" ? bestIdx : bestIdx + 1;
     };
 
     const onMove = (ev: PointerEvent) => {
@@ -451,13 +517,10 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
         setDragIndex(idx);
       }
       setDragGhostPos({ x: ev.clientX, y: ev.clientY });
-      const target = hitTestCards(ev.clientX, ev.clientY);
-      if (
-        target?.index !== dropTargetRef.current?.index ||
-        target?.side !== dropTargetRef.current?.side
-      ) {
-        dropTargetRef.current = target;
-        setDropTarget(target);
+      const nextInsert = hitTestInsertAt(ev.clientX, ev.clientY);
+      if (nextInsert !== insertAtRef.current) {
+        insertAtRef.current = nextInsert;
+        setInsertAt(nextInsert);
       }
     };
 
@@ -468,17 +531,14 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
 
       if (dragging) {
         suppressClickUntilRef.current = performance.now() + 250;
-        const target = dropTargetRef.current;
-        if (target !== null) {
-          const insertAt = target.side === "before" ? target.index : target.index + 1;
-          if (insertAt !== idx && insertAt !== idx + 1) {
-            const toIdx = insertAt > idx ? insertAt - 1 : insertAt;
-            reorderPage(idx, toIdx);
-          }
+        const targetInsert = insertAtRef.current;
+        if (targetInsert !== null && targetInsert !== idx && targetInsert !== idx + 1) {
+          const toIdx = targetInsert > idx ? targetInsert - 1 : targetInsert;
+          reorderPage(idx, toIdx);
         }
-        dropTargetRef.current = null;
+        insertAtRef.current = null;
         setDragIndex(null);
-        setDropTarget(null);
+        setInsertAt(null);
         setDragGhostPos(null);
       }
     };
@@ -506,6 +566,10 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
             <button
               type="button"
               onClick={() => {
+                thumbGenRef.current += 1;
+                queuedIdsRef.current = [];
+                inFlightIdsRef.current.clear();
+                thumbCacheRef.current = {};
                 setPages([]);
                 setBookmarks([]);
                 setThumbCache({});
@@ -681,6 +745,14 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
             className="w-full"
           />
           <p className="text-[11px] text-[#6C757D]">{t.image2pdf.splitMbPlaceholder}</p>
+          <label className="flex cursor-pointer items-center gap-2 pt-1 text-sm font-medium text-[#212529]">
+            <input
+              type="checkbox"
+              checked={loadThumbs}
+              onChange={(e) => setLoadThumbs(e.target.checked)}
+            />
+            <span>{t.image2pdf.loadThumbsLabel}</span>
+          </label>
         </div>
       </div>
 
@@ -691,6 +763,7 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
         onPickFolder={() => void handlePickFolder()}
         filesLabel={t.image2pdf.pickFilesLabel}
         folderLabel={t.image2pdf.pickFolderLabel}
+        loading={scanningPaths}
       />
 
       {pages.length > 0 && (
@@ -703,14 +776,6 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
                 <span>{t.image2pdf.dragHint}</span>
               </div>
               <div className="flex flex-wrap items-center gap-2 text-xs text-[#495057]">
-                <label className="mr-1 flex cursor-pointer items-center gap-1.5 font-semibold text-[#343A40]">
-                  <input
-                    type="checkbox"
-                    checked={loadThumbs}
-                    onChange={(e) => setLoadThumbs(e.target.checked)}
-                  />
-                  {t.image2pdf.loadThumbsLabel}
-                </label>
                 <span className="font-semibold">{t.image2pdf.gridColumnsLabel}</span>
                 {GRID_COL_OPTIONS.map((cols) => (
                   <button
@@ -742,11 +807,6 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
             </div>
 
             {(() => {
-              const insertAt = dropTarget
-                ? dropTarget.side === "before"
-                  ? dropTarget.index
-                  : dropTarget.index + 1
-                : null;
               const isNoOpInsert =
                 dragIndex !== null &&
                 insertAt !== null &&
@@ -765,18 +825,14 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
                       page.annotations.strokes.length > 0;
                     const isDragged = dragIndex === idx;
                     const isQuarterRotated = Math.abs(page.rotation_deg % 180) === 90;
-                    const showBarLeft =
-                      !isNoOpInsert &&
-                      dropTarget?.index === idx &&
-                      dropTarget.side === "before";
-                    const showBarRight =
-                      !isNoOpInsert &&
-                      dropTarget?.index === idx &&
-                      dropTarget.side === "after";
+                    const showBarLeft = !isNoOpInsert && insertAt === idx;
+                    const showBarEnd =
+                      !isNoOpInsert && insertAt === pages.length && idx === pages.length - 1;
 
                     return (
                       <div
                         key={page.id}
+                        data-page-id={page.id}
                         ref={(el) => registerCardRef(page.id, el)}
                         onPointerDown={(e) => handleCardPointerDown(e, idx)}
                         onDoubleClick={(e) => handleCardDoubleClick(e, page.id)}
@@ -785,13 +841,13 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
                         {showBarLeft && (
                           <div
                             aria-hidden="true"
-                            className="pointer-events-none absolute -left-1.5 bottom-0 top-0 z-30 w-1.5 rounded-full bg-[#007BFF] shadow-[0_0_8px_rgba(0,123,255,0.75)]"
+                            className="pointer-events-none absolute -left-[9px] bottom-0 top-0 z-30 w-1.5 rounded-full bg-[#007BFF] shadow-[0_0_8px_rgba(0,123,255,0.75)]"
                           />
                         )}
-                        {showBarRight && (
+                        {showBarEnd && (
                           <div
                             aria-hidden="true"
-                            className="pointer-events-none absolute -right-1.5 bottom-0 top-0 z-30 w-1.5 rounded-full bg-[#007BFF] shadow-[0_0_8px_rgba(0,123,255,0.75)]"
+                            className="pointer-events-none absolute -right-[9px] bottom-0 top-0 z-30 w-1.5 rounded-full bg-[#007BFF] shadow-[0_0_8px_rgba(0,123,255,0.75)]"
                           />
                         )}
 

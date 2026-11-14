@@ -23,6 +23,7 @@ export const vi: Translations = {
     exportSuccessTitle: "Xuất kết quả hoàn tất",
     exportSuccessSubtitle: "Tác vụ đã thực thi thành công. Bạn có thể mở thư mục chứa tệp đầu ra bên dưới.",
     outputFilesLabel: "Tệp / thư mục đầu ra",
+    loadingFolder: "Đang quét và nạp thư mục vào ứng dụng...",
   },
   shell: {
     logsButton: "Nhật ký xử lý",
@@ -342,6 +343,10 @@ export const vi: Translations = {
     selectAllBtn: "Chọn tất cả",
     deselectAllBtn: "Bỏ chọn tất cả",
     clearFoldersBtn: "Xóa thư mục",
+    viewTreeBtn: "Cây thư mục",
+    viewFlatBtn: "Bảng phẳng",
+    expandAllBtn: "Mở hết",
+    collapseAllBtn: "Thu gọn",
     colSelect: "Chọn",
     colType: "Loại",
     colOriginal: "Tên gốc",

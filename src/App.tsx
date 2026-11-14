@@ -1,9 +1,9 @@
 import React from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
-  ExportSuccessModal,
+  ExportSuccessToast,
   type CompletedExportInfo,
-} from "./components/ExportSuccessModal";
+} from "./components/ExportSuccessToast";
 import { WorkbenchShell } from "./components/WorkbenchShell";
 import { I18nProvider, useI18n } from "./i18n";
 import {
@@ -254,7 +254,7 @@ const AppInner: React.FC = () => {
         </div>
       </WorkbenchShell>
 
-      <ExportSuccessModal
+      <ExportSuccessToast
         result={completedExport}
         onClose={() => setCompletedExport(null)}
       />

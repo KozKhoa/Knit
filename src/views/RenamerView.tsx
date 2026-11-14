@@ -4,12 +4,20 @@ import {
   AlertTriangle,
   Bookmark,
   CheckSquare,
+  ChevronDown,
+  ChevronRight,
+  Folder,
   FolderKanban,
+  FolderOpen,
+  GripHorizontal,
+  List,
+  ListTree,
   Play,
   RotateCcw,
   Trash2,
 } from "lucide-react";
 import { Dropzone } from "../components/Dropzone";
+import { useVerticalResize } from "../hooks/useVerticalResize";
 import { useI18n } from "../i18n";
 import {
   applyBatchRename,
@@ -22,6 +30,7 @@ import {
   saveRenamePreset,
   undoLastRename,
 } from "../lib/ipc";
+import { buildRenamerTree, flattenVisibleTree } from "../lib/renamerTree";
 import { usePersistentState } from "../lib/storage";
 import type {
   FilterPattern,
@@ -106,8 +115,34 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
   const [presets, setPresets] = React.useState<UserPreset[]>([]);
   const [newPresetTitle, setNewPresetTitle] = React.useState("");
   const [undoReady, setUndoReady] = React.useState(false);
+  const [scanningFolder, setScanningFolder] = React.useState(false);
+  const [viewMode, setViewMode] = usePersistentState<"tree" | "flat">(
+    "knit.renamer.viewMode",
+    "tree",
+  );
+  const [previewHeightPx, setPreviewHeightPx] = usePersistentState<number>(
+    "knit.renamer.previewHeightPx",
+    384,
+  );
+  const { height: livePreviewHeightPx, handlePointerDown: handlePreviewResizeStart } =
+    useVerticalResize({
+      value: previewHeightPx,
+      min: 180,
+      max: 900,
+      onCommit: setPreviewHeightPx,
+    });
+  const [expandedKeys, setExpandedKeys] = React.useState<Set<string>>(() => new Set());
+  const [scrollTop, setScrollTop] = React.useState(0);
   const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
   const lastHandledDropSeq = React.useRef<number>(0);
+  const previewSeqRef = React.useRef<number>(0);
+  const itemCountRef = React.useRef<number>(0);
+  const prevRootsKeyRef = React.useRef<string>("");
+  const scrollContainerRef = React.useRef<HTMLDivElement | null>(null);
+
+  React.useEffect(() => {
+    itemCountRef.current = plan.items.length;
+  }, [plan.items.length]);
 
   React.useEffect(() => {
     void listRenamePresets()
@@ -165,17 +200,26 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
   };
 
   const refreshPreview = React.useCallback(
-    async (targetRoots = roots) => {
+    async (targetRoots = roots, showLoading = false) => {
+      const seq = ++previewSeqRef.current;
       if (targetRoots.length === 0) {
         setPlan({ items: [] });
+        setScanningFolder(false);
         return;
       }
       setErrorMsg(null);
+      if (showLoading) setScanningFolder(true);
       try {
         const nextPlan = await previewBatchRename(targetRoots, buildFilter(), buildRule());
+        if (previewSeqRef.current !== seq) return;
         setPlan(nextPlan);
       } catch (e) {
+        if (previewSeqRef.current !== seq) return;
         setErrorMsg(String(e));
+      } finally {
+        if (showLoading && previewSeqRef.current === seq) {
+          setScanningFolder(false);
+        }
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -199,11 +243,36 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
   );
 
   React.useEffect(() => {
-    if (roots.length > 0) {
-      void refreshPreview(roots);
-    } else {
+    const rootsKey = roots.join("\0");
+    const rootsChanged = rootsKey !== prevRootsKeyRef.current;
+    prevRootsKeyRef.current = rootsKey;
+
+    if (roots.length === 0) {
+      previewSeqRef.current += 1;
       setPlan({ items: [] });
+      setExpandedKeys(new Set());
+      setScanningFolder(false);
+      return;
     }
+
+    if (rootsChanged) {
+      setExpandedKeys(new Set());
+      setScrollTop(0);
+      if (scrollContainerRef.current) scrollContainerRef.current.scrollTop = 0;
+      void refreshPreview(roots, true);
+      return;
+    }
+
+    // Adaptive debounce: instant for <= 500 items, 150ms debounce for > 500 items
+    if (itemCountRef.current <= 500) {
+      void refreshPreview(roots, false);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void refreshPreview(roots, false);
+    }, 150);
+    return () => window.clearTimeout(timer);
   }, [roots, refreshPreview]);
 
   const handleAddRoot = async () => {
@@ -212,9 +281,11 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
     setRoots((prev) => Array.from(new Set([...prev, dir])));
   };
 
-  const toggleItemSelected = async (idx: number, selected: boolean) => {
+  const applySelectionIndices = async (indices: number[], selected: boolean) => {
+    if (indices.length === 0) return;
+    const indexSet = new Set(indices);
     const next: RenamePlan = {
-      items: plan.items.map((it, i) => (i === idx ? { ...it, selected } : it)),
+      items: plan.items.map((it, i) => (indexSet.has(i) ? { ...it, selected } : it)),
     };
     setPlan(next);
     try {
@@ -223,6 +294,10 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
     } catch (e) {
       setErrorMsg(String(e));
     }
+  };
+
+  const toggleItemSelected = async (idx: number, selected: boolean) => {
+    await applySelectionIndices([idx], selected);
   };
 
   const toggleAllSelected = async (selected: boolean) => {
@@ -236,6 +311,63 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
     } catch (e) {
       setErrorMsg(String(e));
     }
+  };
+
+  const treeRoots = React.useMemo(
+    () => buildRenamerTree(plan.items, roots),
+    [plan.items, roots],
+  );
+
+  // Auto-expand small trees on initial scan so small folders are immediately visible
+  React.useEffect(() => {
+    if (plan.items.length > 0 && plan.items.length <= 200) {
+      setExpandedKeys((prev) => {
+        if (prev.size > 0) return prev;
+        const next = new Set<string>();
+        const collect = (nodes: typeof treeRoots) => {
+          for (const n of nodes) {
+            if (n.children.length > 0) {
+              next.add(n.key);
+              collect(n.children);
+            }
+          }
+        };
+        collect(treeRoots);
+        return next;
+      });
+    }
+  }, [plan.items.length, treeRoots]);
+
+  const visibleTreeRows = React.useMemo(
+    () => (viewMode === "tree" ? flattenVisibleTree(treeRoots, plan.items, expandedKeys) : []),
+    [viewMode, treeRoots, plan.items, expandedKeys],
+  );
+
+  const toggleFolderExpanded = (key: string) => {
+    setExpandedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const expandAllFolders = () => {
+    const next = new Set<string>();
+    const collect = (nodes: typeof treeRoots) => {
+      for (const n of nodes) {
+        if (n.children.length > 0) {
+          next.add(n.key);
+          collect(n.children);
+        }
+      }
+    };
+    collect(treeRoots);
+    setExpandedKeys(next);
+  };
+
+  const collapseAllFolders = () => {
+    setExpandedKeys(new Set());
   };
 
   const selectedPending = plan.items.filter((i) => i.selected && i.status === "pending").length;
@@ -565,96 +697,299 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
         }
         onPickFolder={() => void handleAddRoot()}
         folderLabel={roots.length > 0 ? t.renamer.addFolderBtn : t.renamer.pickFolderBtn}
+        loading={scanningFolder}
       />
 
       {/* Layer 2: Dry-Run Preview Table */}
-      {plan.items.length > 0 && (
-        <div className="overflow-hidden rounded-[4px] border border-[#DEE2E6] bg-white">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#DEE2E6] bg-[#F8F9FA] px-3.5 py-2.5 text-sm">
-            <div className="flex items-center gap-2 font-semibold text-[#343A40]">
-              <FolderKanban className="h-4 w-4 text-[#007BFF]" />
-              {t.renamer.previewHeading(plan.items.length, selectedPending)}
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => void toggleAllSelected(true)}
-                className="flex items-center gap-1 rounded-[4px] border border-[#CED4DA] bg-white px-2.5 py-1 text-xs hover:bg-[#E9ECEF]"
-              >
-                <CheckSquare className="h-3.5 w-3.5" />
-                {t.renamer.selectAllBtn}
-              </button>
-              <button
-                type="button"
-                onClick={() => void toggleAllSelected(false)}
-                className="rounded-[4px] border border-[#CED4DA] bg-white px-2.5 py-1 text-xs hover:bg-[#E9ECEF]"
-              >
-                {t.renamer.deselectAllBtn}
-              </button>
-              <button
-                type="button"
-                onClick={() => setRoots([])}
-                className="rounded-[4px] border border-[#CED4DA] bg-white px-2.5 py-1 text-xs text-[#DC3545] hover:bg-[#F8D7DA]"
-              >
-                {t.renamer.clearFoldersBtn}
-              </button>
-            </div>
-          </div>
+      {plan.items.length > 0 && (() => {
+        const selectedCount = plan.items.filter((i) => i.selected).length;
+        const allSelected = selectedCount === plan.items.length;
+        const someSelected = selectedCount > 0 && selectedCount < plan.items.length;
 
-          <div className="max-h-96 overflow-auto">
-            <table className="w-full border-collapse text-left text-xs">
-              <thead className="sticky top-0 border-b border-[#DEE2E6] bg-[#F8F9FA] text-xs uppercase text-[#6C757D]">
-                <tr>
-                  <th className="w-10 px-3 py-2">{t.renamer.colSelect}</th>
-                  <th className="w-16 px-2 py-2">{t.renamer.colType}</th>
-                  <th className="px-3 py-2">{t.renamer.colOriginal}</th>
-                  <th className="px-3 py-2">{t.renamer.colNew}</th>
-                  <th className="w-28 px-3 py-2">{t.renamer.colStatus}</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[#E9ECEF]">
-                {plan.items.map((item, idx) => (
-                  <tr
-                    key={item.id}
-                    className={item.selected ? "bg-white" : "bg-[#F8F9FA] opacity-60"}
-                  >
-                    <td className="px-3 py-2">
-                      <input
-                        type="checkbox"
-                        checked={item.selected}
-                        onChange={(e) => void toggleItemSelected(idx, e.target.checked)}
-                      />
-                    </td>
-                    <td className="px-2 py-2 font-mono-code text-xs text-[#6C757D]">
-                      {item.is_dir ? "DIR" : "FILE"}
-                    </td>
-                    <td className="px-3 py-2 font-mono-code break-all text-[#495057]">
-                      {item.original_name}
-                    </td>
-                    <td className="px-3 py-2 font-mono-code break-all font-semibold text-[#212529]">
-                      {item.new_name}
-                    </td>
-                    <td className="px-3 py-2">
-                      <span
-                        className={`inline-block rounded-[4px] px-1.5 py-0.5 text-[11px] font-semibold uppercase ${
-                          item.status === "conflict"
-                            ? "bg-[#F8D7DA] text-[#721C24]"
-                            : item.status === "pending"
-                              ? "bg-[#D1ECF1] text-[#0C5460]"
-                              : "bg-[#E9ECEF] text-[#6C757D]"
-                        }`}
-                        title={item.error_message || undefined}
+        const ROW_HEIGHT = 34;
+        const totalRows = viewMode === "tree" ? visibleTreeRows.length : plan.items.length;
+        const overscan = 8;
+        const visibleCount = Math.ceil(livePreviewHeightPx / ROW_HEIGHT) + overscan * 2;
+        const startIdx = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - overscan);
+        const endIdx = Math.min(totalRows, startIdx + visibleCount);
+        const topPadPx = startIdx * ROW_HEIGHT;
+        const bottomPadPx = Math.max(0, (totalRows - endIdx) * ROW_HEIGHT);
+
+        return (
+          <div className="space-y-1.5">
+            <div className="overflow-hidden rounded-[4px] border border-[#DEE2E6] bg-white">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#DEE2E6] bg-[#F8F9FA] px-3.5 py-2.5 text-sm">
+                <div className="flex items-center gap-2 font-semibold text-[#343A40]">
+                  <FolderKanban className="h-4 w-4 text-[#007BFF]" />
+                  {t.renamer.previewHeading(plan.items.length, selectedPending)}
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <div className="inline-flex overflow-hidden rounded-[4px] border border-[#CED4DA] bg-white">
+                    <button
+                      type="button"
+                      onClick={() => setViewMode("tree")}
+                      className={`inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold ${
+                        viewMode === "tree"
+                          ? "bg-[#007BFF] text-white"
+                          : "text-[#343A40] hover:bg-[#E9ECEF]"
+                      }`}
+                    >
+                      <ListTree className="h-3.5 w-3.5" />
+                      {t.renamer.viewTreeBtn}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setViewMode("flat")}
+                      className={`inline-flex items-center gap-1 border-l border-[#CED4DA] px-2.5 py-1 text-xs font-semibold ${
+                        viewMode === "flat"
+                          ? "bg-[#007BFF] text-white"
+                          : "text-[#343A40] hover:bg-[#E9ECEF]"
+                      }`}
+                    >
+                      <List className="h-3.5 w-3.5" />
+                      {t.renamer.viewFlatBtn}
+                    </button>
+                  </div>
+                  {viewMode === "tree" && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={expandAllFolders}
+                        className="rounded-[4px] border border-[#CED4DA] bg-white px-2 py-1 text-xs hover:bg-[#E9ECEF]"
                       >
-                        {item.status}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                        {t.renamer.expandAllBtn}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={collapseAllFolders}
+                        className="rounded-[4px] border border-[#CED4DA] bg-white px-2 py-1 text-xs hover:bg-[#E9ECEF]"
+                      >
+                        {t.renamer.collapseAllBtn}
+                      </button>
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => void toggleAllSelected(true)}
+                    className="flex items-center gap-1 rounded-[4px] border border-[#CED4DA] bg-white px-2.5 py-1 text-xs hover:bg-[#E9ECEF]"
+                  >
+                    <CheckSquare className="h-3.5 w-3.5" />
+                    {t.renamer.selectAllBtn}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void toggleAllSelected(false)}
+                    className="rounded-[4px] border border-[#CED4DA] bg-white px-2.5 py-1 text-xs hover:bg-[#E9ECEF]"
+                  >
+                    {t.renamer.deselectAllBtn}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRoots([])}
+                    className="rounded-[4px] border border-[#CED4DA] bg-white px-2.5 py-1 text-xs text-[#DC3545] hover:bg-[#F8D7DA]"
+                  >
+                    {t.renamer.clearFoldersBtn}
+                  </button>
+                </div>
+              </div>
+
+              <div
+                ref={scrollContainerRef}
+                onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+                style={{ height: `${livePreviewHeightPx}px` }}
+                className="overflow-auto"
+              >
+                <table className="w-full border-collapse text-left text-xs">
+                  <thead className="sticky top-0 z-10 border-b border-[#DEE2E6] bg-[#F8F9FA] text-xs uppercase text-[#6C757D]">
+                    <tr>
+                      <th className="w-16 px-3 py-2">
+                        <label className="inline-flex cursor-pointer items-center gap-1.5">
+                          <input
+                            type="checkbox"
+                            aria-label={t.renamer.selectAllBtn}
+                            checked={allSelected}
+                            ref={(el) => {
+                              if (el) el.indeterminate = someSelected;
+                            }}
+                            onChange={(e) => void toggleAllSelected(e.target.checked)}
+                          />
+                          <span>{t.renamer.colSelect}</span>
+                        </label>
+                      </th>
+                      <th className="w-16 px-2 py-2">{t.renamer.colType}</th>
+                      <th className="px-3 py-2">{t.renamer.colOriginal}</th>
+                      <th className="px-3 py-2">{t.renamer.colNew}</th>
+                      <th className="w-28 px-3 py-2">{t.renamer.colStatus}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#E9ECEF]">
+                    {topPadPx > 0 && (
+                      <tr aria-hidden="true">
+                        <td colSpan={5} style={{ height: `${topPadPx}px`, padding: 0 }} />
+                      </tr>
+                    )}
+
+                    {viewMode === "tree"
+                      ? visibleTreeRows.slice(startIdx, endIdx).map((row) => {
+                          const { node, treeDepth, hasChildren, isExpanded } = row;
+                          const item = node.item;
+                          const isChecked = item ? item.selected : row.allSelected;
+                          const isIndeterminate = node.isDir && row.someSelected;
+                          const status = item?.status ?? null;
+
+                          return (
+                            <tr
+                              key={row.key}
+                              style={{ height: `${ROW_HEIGHT}px` }}
+                              className={
+                                isChecked || row.someSelected
+                                  ? "bg-white"
+                                  : "bg-[#F8F9FA] opacity-60"
+                              }
+                            >
+                              <td className="px-3 py-1.5">
+                                <input
+                                  type="checkbox"
+                                  checked={isChecked}
+                                  ref={(el) => {
+                                    if (el) el.indeterminate = isIndeterminate;
+                                  }}
+                                  onChange={(e) => {
+                                    if (node.isDir) {
+                                      void applySelectionIndices(
+                                        node.subtreePlanIndices,
+                                        e.target.checked,
+                                      );
+                                    } else if (node.planIndex !== null) {
+                                      void toggleItemSelected(node.planIndex, e.target.checked);
+                                    }
+                                  }}
+                                />
+                              </td>
+                              <td className="px-2 py-1.5 text-xs text-[#6C757D]">
+                                {node.isDir ? "DIR" : "FILE"}
+                              </td>
+                              <td className="px-3 py-1.5 text-[#495057]">
+                                <div
+                                  className="flex items-center gap-1"
+                                  style={{ paddingLeft: `${treeDepth * 16}px` }}
+                                >
+                                  {hasChildren ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleFolderExpanded(row.key)}
+                                      className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-[#6C757D] hover:bg-[#E9ECEF]"
+                                    >
+                                      {isExpanded ? (
+                                        <ChevronDown className="h-3.5 w-3.5" />
+                                      ) : (
+                                        <ChevronRight className="h-3.5 w-3.5" />
+                                      )}
+                                    </button>
+                                  ) : (
+                                    <span className="inline-block w-4 shrink-0" />
+                                  )}
+                                  {node.isDir &&
+                                    (isExpanded ? (
+                                      <FolderOpen className="h-3.5 w-3.5 shrink-0 text-[#007BFF]" />
+                                    ) : (
+                                      <Folder className="h-3.5 w-3.5 shrink-0 text-[#F59E0B]" />
+                                    ))}
+                                  <span className="truncate" title={item?.original_path ?? row.key}>
+                                    {node.name}
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="px-3 py-1.5 font-semibold text-[#212529]">
+                                <span className="block truncate">
+                                  {item ? item.new_name : node.name}
+                                </span>
+                              </td>
+                              <td className="px-3 py-1.5">
+                                {status && (
+                                  <span
+                                    className={`inline-block rounded-[4px] px-1.5 py-0.5 text-[11px] font-semibold uppercase ${
+                                      status === "conflict"
+                                        ? "bg-[#F8D7DA] text-[#721C24]"
+                                        : status === "pending"
+                                          ? "bg-[#D1ECF1] text-[#0C5460]"
+                                          : "bg-[#E9ECEF] text-[#6C757D]"
+                                    }`}
+                                    title={item?.error_message || undefined}
+                                  >
+                                    {status}
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      : plan.items.slice(startIdx, endIdx).map((item, localIdx) => {
+                          const idx = startIdx + localIdx;
+                          return (
+                            <tr
+                              key={item.id}
+                              style={{ height: `${ROW_HEIGHT}px` }}
+                              className={item.selected ? "bg-white" : "bg-[#F8F9FA] opacity-60"}
+                            >
+                              <td className="px-3 py-1.5">
+                                <input
+                                  type="checkbox"
+                                  checked={item.selected}
+                                  onChange={(e) => void toggleItemSelected(idx, e.target.checked)}
+                                />
+                              </td>
+                              <td className="px-2 py-1.5 text-xs text-[#6C757D]">
+                                {item.is_dir ? "DIR" : "FILE"}
+                              </td>
+                              <td className="px-3 py-1.5 break-all text-[#495057]">
+                                {item.original_name}
+                              </td>
+                              <td className="px-3 py-1.5 break-all font-semibold text-[#212529]">
+                                {item.new_name}
+                              </td>
+                              <td className="px-3 py-1.5">
+                                <span
+                                  className={`inline-block rounded-[4px] px-1.5 py-0.5 text-[11px] font-semibold uppercase ${
+                                    item.status === "conflict"
+                                      ? "bg-[#F8D7DA] text-[#721C24]"
+                                      : item.status === "pending"
+                                        ? "bg-[#D1ECF1] text-[#0C5460]"
+                                        : "bg-[#E9ECEF] text-[#6C757D]"
+                                  }`}
+                                  title={item.error_message || undefined}
+                                >
+                                  {item.status}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+
+                    {bottomPadPx > 0 && (
+                      <tr aria-hidden="true">
+                        <td colSpan={5} style={{ height: `${bottomPadPx}px`, padding: 0 }} />
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div
+              role="separator"
+              aria-orientation="horizontal"
+              aria-label="Resize rename preview height"
+              onPointerDown={handlePreviewResizeStart}
+              title={`${livePreviewHeightPx}px`}
+              className="flex h-4 cursor-ns-resize select-none items-center justify-center rounded-[4px] border border-dashed border-[#CED4DA] bg-[#F8F9FA] text-[#6C757D] hover:border-[#007BFF] hover:bg-[#E7F1FF] hover:text-[#007BFF]"
+            >
+              <GripHorizontal className="h-3.5 w-3.5" />
+              <span className="ml-2 font-mono-code text-[11px]">{livePreviewHeightPx}px</span>
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 };

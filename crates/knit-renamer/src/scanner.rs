@@ -241,6 +241,8 @@ pub fn recompute_collisions(plan: &mut RenamePlan) {
         }
     }
 
+    let mut dir_entries_cache: HashMap<&Path, Option<HashSet<String>>> = HashMap::new();
+
     for item in &mut plan.items {
         if item.status != RenameStatus::Pending || !item.selected {
             continue;
@@ -256,12 +258,41 @@ pub fn recompute_collisions(plan: &mut RenamePlan) {
         }
 
         let same_casefold_file = new_key == orig_key;
-        if !same_casefold_file && item.new_path.exists() && !vacated_keys.contains(&new_key) {
-            item.status = RenameStatus::Conflict;
-            item.error_message = Some(format!(
-                "Xung đột: đã tồn tại '{}' trên ổ đĩa",
-                item.new_name
-            ));
+        if !same_casefold_file && !vacated_keys.contains(&new_key) {
+            let parent = item.parent_dir.as_path();
+            let exists_on_disk = match dir_entries_cache
+                .entry(parent)
+                .or_insert_with(|| {
+                    std::fs::read_dir(parent).ok().map(|rd| {
+                        rd.filter_map(|e| e.ok())
+                            .map(|e| {
+                                let name = e.file_name().to_string_lossy().into_owned();
+                                if cfg!(unix) {
+                                    name
+                                } else {
+                                    name.to_lowercase()
+                                }
+                            })
+                            .collect::<HashSet<String>>()
+                    })
+                }) {
+                Some(set) => {
+                    if cfg!(unix) {
+                        set.contains(&item.new_name)
+                    } else {
+                        set.contains(&item.new_name.to_lowercase())
+                    }
+                }
+                None => item.new_path.exists(),
+            };
+
+            if exists_on_disk {
+                item.status = RenameStatus::Conflict;
+                item.error_message = Some(format!(
+                    "Xung đột: đã tồn tại '{}' trên ổ đĩa",
+                    item.new_name
+                ));
+            }
         }
     }
 }

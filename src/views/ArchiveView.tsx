@@ -60,6 +60,7 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
     "knit.archive.ignoreHidden",
     true,
   );
+  const [loadingFolder, setLoadingFolder] = React.useState(false);
   const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
   const lastHandledDropSeq = React.useRef<number>(0);
 
@@ -86,6 +87,7 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
 
   const addFolder = async () => {
     setErrorMsg(null);
+    setLoadingFolder(true);
     try {
       const dir = await pickDirectory(t.archive.pickFolderDialog);
       if (dir) {
@@ -93,6 +95,8 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
       }
     } catch (e) {
       setErrorMsg(String(e));
+    } finally {
+      setLoadingFolder(false);
     }
   };
 
@@ -277,6 +281,7 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
         onPickFolder={() => void addFolder()}
         filesLabel={t.archive.addFilesBtn}
         folderLabel={t.archive.addFolderBtn}
+        loading={loadingFolder}
       />
 
       {inputs.length > 0 && (

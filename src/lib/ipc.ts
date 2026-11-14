@@ -151,6 +151,13 @@ export async function renderImageThumbBase64(
   return await invoke("render_image_thumb", { path, maxWidth });
 }
 
+export async function renderImageThumbFile(
+  path: string,
+  maxWidth = 360,
+): Promise<string> {
+  return await invoke("render_image_thumb_file", { path, maxWidth });
+}
+
 export async function renderPdfThumbBase64(
   path: string,
   pageIndex: number,

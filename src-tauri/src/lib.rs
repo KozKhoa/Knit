@@ -3,7 +3,8 @@ use base64::Engine;
 use knit_archive::{collect_entries, pack_entries, ArchiveOptions, ArchiveSummary};
 use knit_core::job::ThrottledReporter;
 use knit_core::{
-    app_config_dir, CancellationToken, JobLogLevel, JobProgress, JobReporter, NoopReporter,
+    app_cache_dir, app_config_dir, CancellationToken, JobLogLevel, JobProgress, JobReporter,
+    NoopReporter,
 };
 use knit_docs::{
     compile_epub_to_pdf_bytes, compile_text_to_pdf_bytes, convert_document_to_pdf,
@@ -13,20 +14,23 @@ use knit_docs::{
 use knit_manga::{default_output_name, pack_stories, scan_stories, MangaPackOptions, MangaPackSummary, MangaScanMode, Story};
 use knit_pdf::{
     build_pdf_from_drafts, inspect_pdf, merge_pdfs, render_image_thumbnail,
-    render_pdf_bytes_thumbnails, render_pdf_thumbnail, scan_image_files, scan_image_folder,
-    split_pdf, AnimatedImagePolicy, BookmarkNode, Image2PdfConfig, ImageScanResult, PageDraft,
-    PdfBuildResult, PdfInfo, PdfMergeConfig, PdfSplitRule,
+    render_image_thumbnail_jpeg, render_pdf_bytes_thumbnails, render_pdf_thumbnail,
+    scan_image_files, scan_image_folder, split_pdf, AnimatedImagePolicy, BookmarkNode,
+    Image2PdfConfig, ImageScanResult, PageDraft, PdfBuildResult, PdfInfo, PdfMergeConfig,
+    PdfSplitRule,
 };
 use knit_renamer::{
     apply_rename_plan, build_rename_plan, compile_rule, recompute_collisions, scan_items,
-    undo_manifest, PresetStore, RenameExecutionResult, RenamePlan, RenameRule, ScanFilter,
-    UserPreset,
+    undo_manifest, PresetStore, RenameExecutionResult, RenameItem, RenamePlan, RenameRule,
+    ScanFilter, UserPreset,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::ipc::Channel;
 use tauri::{State, Window};
 use tauri_plugin_dialog::DialogExt;
@@ -55,10 +59,17 @@ impl JobReporter for ChannelReporter {
     }
 }
 
+struct CachedRenamerScan {
+    roots: Vec<PathBuf>,
+    filter: ScanFilter,
+    items: Vec<RenameItem>,
+}
+
 pub struct AppState {
     jobs: Mutex<HashMap<String, CancellationToken>>,
     preset_store: Mutex<PresetStore>,
     undo_manifest_path: PathBuf,
+    renamer_scan_cache: Mutex<Option<CachedRenamerScan>>,
 }
 
 impl Default for AppState {
@@ -67,11 +78,18 @@ impl Default for AppState {
             jobs: Mutex::new(HashMap::new()),
             preset_store: Mutex::new(PresetStore::default_os()),
             undo_manifest_path: app_config_dir().join("last_rename_undo.json"),
+            renamer_scan_cache: Mutex::new(None),
         }
     }
 }
 
 impl AppState {
+    fn invalidate_renamer_cache(&self) {
+        if let Ok(mut guard) = self.renamer_scan_cache.lock() {
+            *guard = None;
+        }
+    }
+
     fn register_job(&self, job_id: &str) -> CancellationToken {
         let token = CancellationToken::new();
         if let Ok(mut guard) = self.jobs.lock() {
@@ -264,11 +282,124 @@ async fn pdf_scan_images(
     .map_err(|e| e.to_string())?
 }
 
+fn thumb_semaphore() -> &'static tokio::sync::Semaphore {
+    static SEM: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
+    SEM.get_or_init(|| {
+        let cpus = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+        let permits = (cpus / 2).clamp(2, 4);
+        tokio::sync::Semaphore::new(permits)
+    })
+}
+
+fn thumb_cache_dir() -> PathBuf {
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = app_cache_dir("image-thumbs");
+        let _ = std::fs::create_dir_all(&dir);
+        let cleanup_dir = dir.clone();
+        std::thread::spawn(move || {
+            let max_age = Duration::from_secs(7 * 24 * 60 * 60);
+            let now = SystemTime::now();
+            if let Ok(entries) = std::fs::read_dir(&cleanup_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if let Ok(meta) = entry.metadata() {
+                        if meta.is_file() {
+                            let is_stale = meta
+                                .modified()
+                                .ok()
+                                .and_then(|m| now.duration_since(m).ok())
+                                .map(|age| age > max_age)
+                                .unwrap_or(false);
+                            if is_stale {
+                                let _ = std::fs::remove_file(path);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        dir
+    })
+    .clone()
+}
+
+fn thumb_cache_file_path(path: &std::path::Path, max_width: u32) -> PathBuf {
+    let mut h1 = DefaultHasher::new();
+    let mut h2 = DefaultHasher::new();
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    canonical.hash(&mut h1);
+    max_width.hash(&mut h1);
+    "knit_thumb_v1".hash(&mut h2);
+    canonical.hash(&mut h2);
+
+    if let Ok(meta) = std::fs::metadata(path) {
+        meta.len().hash(&mut h1);
+        meta.len().hash(&mut h2);
+        if let Ok(modified) = meta.modified() {
+            if let Ok(dur) = modified.duration_since(UNIX_EPOCH) {
+                dur.as_nanos().hash(&mut h1);
+                dur.as_secs().hash(&mut h2);
+            }
+        }
+    }
+
+    let name = format!("{:016x}{:016x}_{}.jpg", h1.finish(), h2.finish(), max_width);
+    thumb_cache_dir().join(name)
+}
+
 #[tauri::command]
 async fn render_image_thumb(path: PathBuf, max_width: u32) -> Result<String, String> {
+    let _permit = thumb_semaphore()
+        .acquire()
+        .await
+        .map_err(|e| e.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
         let png = render_image_thumbnail(&path, max_width).map_err(|e| e.to_string())?;
         Ok(BASE64.encode(png))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn render_image_thumb_file(path: PathBuf, max_width: u32) -> Result<PathBuf, String> {
+    let cache_path = thumb_cache_file_path(&path, max_width);
+    if cache_path.is_file() {
+        return Ok(cache_path);
+    }
+
+    let _permit = thumb_semaphore()
+        .acquire()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if cache_path.is_file() {
+        return Ok(cache_path);
+    }
+
+    tauri::async_runtime::spawn_blocking(move || {
+        if cache_path.is_file() {
+            return Ok(cache_path);
+        }
+        let jpg = render_image_thumbnail_jpeg(&path, max_width, 75).map_err(|e| e.to_string())?;
+        let tmp_name = format!(
+            ".{}.{}.tmp",
+            cache_path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("thumb"),
+            std::process::id()
+        );
+        let tmp_path = cache_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join(tmp_name);
+        std::fs::write(&tmp_path, &jpg).map_err(|e| e.to_string())?;
+        let _ = std::fs::rename(&tmp_path, &cache_path);
+        Ok(cache_path)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -573,12 +704,42 @@ async fn renamer_preview(
     roots: Vec<PathBuf>,
     filter: ScanFilter,
     rule: RenameRule,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<RenamePlan, String> {
+    let state_arc = Arc::clone(&state);
     tauri::async_runtime::spawn_blocking(move || {
-        let mut items = Vec::new();
-        for root in &roots {
-            items.extend(scan_items(root, &filter).map_err(|e| e.to_string())?);
-        }
+        let cached_items = state_arc
+            .renamer_scan_cache
+            .lock()
+            .ok()
+            .and_then(|guard| {
+                guard.as_ref().and_then(|entry| {
+                    if entry.roots == roots && entry.filter == filter {
+                        Some(entry.items.clone())
+                    } else {
+                        None
+                    }
+                })
+            });
+
+        let items = match cached_items {
+            Some(it) => it,
+            None => {
+                let mut scanned = Vec::new();
+                for root in &roots {
+                    scanned.extend(scan_items(root, &filter).map_err(|e| e.to_string())?);
+                }
+                if let Ok(mut guard) = state_arc.renamer_scan_cache.lock() {
+                    *guard = Some(CachedRenamerScan {
+                        roots,
+                        filter,
+                        items: scanned.clone(),
+                    });
+                }
+                scanned
+            }
+        };
+
         let transform = compile_rule(&rule).map_err(|e| e.to_string())?;
         Ok(build_rename_plan(items, transform))
     })
@@ -605,6 +766,7 @@ async fn renamer_apply(
     tauri::async_runtime::spawn_blocking(move || {
         let reporter = make_reporter(on_event);
         let res = apply_rename_plan(&mut plan, Some(&undo_path), &reporter).map_err(|e| e.to_string());
+        state_arc.invalidate_renamer_cache();
         state_arc.finish_job(&job_id);
         res
     })
@@ -614,9 +776,11 @@ async fn renamer_apply(
 
 #[tauri::command]
 async fn renamer_undo_last(state: State<'_, Arc<AppState>>) -> Result<RenameExecutionResult, String> {
+    let state_arc = Arc::clone(&state);
     let undo_path = state.undo_manifest_path.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let count = undo_manifest(&undo_path, &NoopReporter).map_err(|e| e.to_string())?;
+        state_arc.invalidate_renamer_cache();
         Ok(RenameExecutionResult {
             renamed_count: count,
             skipped_count: 0,
@@ -674,6 +838,7 @@ pub fn run() {
             dialog_save_path,
             pdf_scan_images,
             render_image_thumb,
+            render_image_thumb_file,
             render_pdf_thumb,
             pdf_build_from_images,
             pdf_inspect,

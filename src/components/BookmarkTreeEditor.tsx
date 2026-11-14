@@ -2,6 +2,7 @@ import React from "react";
 import { BookmarkPlus, FolderPlus, GripHorizontal, Trash2 } from "lucide-react";
 import { NumberInput } from "./NumberInput";
 import { useI18n } from "../i18n";
+import { useVerticalResize } from "../hooks/useVerticalResize";
 import { usePersistentState } from "../lib/storage";
 import type { BookmarkNode } from "../types/ipc";
 
@@ -21,30 +22,12 @@ export const BookmarkTreeEditor: React.FC<BookmarkTreeEditorProps> = ({
     "knit.img2pdf.bookmarkHeightPx",
     300,
   );
-  const [liveHeightPx, setLiveHeightPx] = React.useState(treeHeightPx);
-
-  React.useEffect(() => {
-    setLiveHeightPx(Math.min(880, Math.max(180, treeHeightPx)));
-  }, [treeHeightPx]);
-
-  const handleResizeStart = (e: React.PointerEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    const startY = e.clientY;
-    const startH = liveHeightPx;
-    let latestH = startH;
-
-    const onMove = (ev: PointerEvent) => {
-      latestH = Math.min(880, Math.max(180, Math.round(startH + (ev.clientY - startY))));
-      setLiveHeightPx(latestH);
-    };
-    const onUp = () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      setTreeHeightPx(latestH);
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-  };
+  const { height: liveHeightPx, handlePointerDown: handleResizeStart } = useVerticalResize({
+    value: treeHeightPx,
+    min: 180,
+    max: 880,
+    onCommit: setTreeHeightPx,
+  });
 
   const addRootBookmark = () => {
     onChange([

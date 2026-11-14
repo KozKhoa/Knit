@@ -23,6 +23,7 @@ export const en: Translations = {
     exportSuccessTitle: "Export Complete",
     exportSuccessSubtitle: "The task finished successfully. You can open the output location below.",
     outputFilesLabel: "Output files / folders",
+    loadingFolder: "Scanning and loading folder...",
   },
   shell: {
     logsButton: "Activity Logs",
@@ -341,6 +342,10 @@ export const en: Translations = {
     selectAllBtn: "Select all",
     deselectAllBtn: "Deselect all",
     clearFoldersBtn: "Clear folders",
+    viewTreeBtn: "Tree view",
+    viewFlatBtn: "Flat table",
+    expandAllBtn: "Expand all",
+    collapseAllBtn: "Collapse all",
     colSelect: "Use",
     colType: "Type",
     colOriginal: "Original Name",

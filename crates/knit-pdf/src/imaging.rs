@@ -8,7 +8,6 @@ use flate2::Compression;
 use image::codecs::gif::GifDecoder;
 use image::codecs::jpeg::JpegEncoder;
 use image::codecs::webp::WebPDecoder;
-use image::imageops::FilterType;
 use image::metadata::Orientation;
 use image::{AnimationDecoder, DynamicImage, ImageDecoder, ImageFormat, ImageReader, Rgba, RgbaImage};
 use imageproc::drawing::{draw_filled_circle_mut, draw_line_segment_mut, draw_text_mut};
@@ -602,19 +601,38 @@ pub fn rasterize_annotations(img: &mut RgbaImage, layer: &AnnotationLayer) -> Re
     Ok(())
 }
 
-pub fn render_image_thumbnail(path: &Path, max_width: u32) -> Result<Vec<u8>> {
+fn load_resized_thumbnail(path: &Path, max_width: u32) -> Result<DynamicImage> {
     let img = load_image_with_exif(path)?;
     let (w, h) = (img.width(), img.height());
-    let resized = if w > max_width && max_width > 0 {
+    if w > max_width && max_width > 0 {
         let target_h = ((h as f64) * (max_width as f64 / w as f64)).round().max(1.0) as u32;
-        img.resize(max_width, target_h, FilterType::Triangle)
+        Ok(img.thumbnail(max_width, target_h))
     } else {
-        img
-    };
+        Ok(img)
+    }
+}
+
+pub fn render_image_thumbnail(path: &Path, max_width: u32) -> Result<Vec<u8>> {
+    let resized = load_resized_thumbnail(path, max_width)?;
     let mut out = Vec::new();
     resized
         .write_to(&mut Cursor::new(&mut out), ImageFormat::Png)
         .map_err(|e| KnitError::InvalidInput(format!("Loi encode PNG thumbnail: {e}")))?;
+    Ok(out)
+}
+
+/// Render thumbnail JPEG nhẹ & nhanh hơn nhiều so với PNG cho ảnh dung lượng lớn.
+pub fn render_image_thumbnail_jpeg(path: &Path, max_width: u32, quality: u8) -> Result<Vec<u8>> {
+    let resized = load_resized_thumbnail(path, max_width)?;
+    let rgb = match resized {
+        DynamicImage::ImageRgb8(rgb) => rgb,
+        other => alpha_to_white_rgb(&other),
+    };
+    let mut out = Vec::new();
+    let mut encoder = JpegEncoder::new_with_quality(&mut out, quality.clamp(40, 95));
+    encoder
+        .encode_image(&DynamicImage::ImageRgb8(rgb))
+        .map_err(|e| KnitError::InvalidInput(format!("Loi encode JPEG thumbnail: {e}")))?;
     Ok(out)
 }
 

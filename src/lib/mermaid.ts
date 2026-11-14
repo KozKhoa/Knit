@@ -83,7 +83,7 @@ export async function renderMermaidSvgs(
     theme,
     securityLevel: "loose",
     htmlLabels: false,
-    flowchart: { htmlLabels: false, useMaxWidth: true },
+    flowchart: { htmlLabels: false, useMaxWidth: false, padding: 14 },
     class: { htmlLabels: false },
     state: { dividerMargin: 10 },
   });
@@ -119,6 +119,8 @@ function sanitizeMermaidSvgForTypst(svg: string): string {
   if (!out.includes("xmlns=")) {
     out = out.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"');
   }
+  // Remove inline max-width CSS so Typst derives sizing purely from viewBox / attributes
+  out = out.replace(/(<svg\b[^>]*?)\sstyle="[^"]*max-width:[^"]*"/i, "$1");
   // Typst's SVG decoder ignores HTML inside <foreignObject>; strip any residual blocks cleanly
   out = out.replace(/<foreignObject[\s\S]*?<\/foreignObject>/gi, "");
   return out;

@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
-import { ExportSuccessModal } from "./components/ExportSuccessModal";
+import { ExportSuccessToast } from "./components/ExportSuccessToast";
 import { I18nProvider } from "./i18n";
 import { formatBytes } from "./lib/ipc";
 
@@ -97,11 +97,12 @@ describe("Knit Workbench UI", () => {
     expect(screen.getByText("Cài đặt Giao diện & Hệ thống")).toBeTruthy();
   });
 
-  it("renders ExportSuccessModal when completed result is provided", () => {
+  it("renders ExportSuccessToast at bottom-right, pauses on hover, and auto-closes after 3s", () => {
+    vi.useFakeTimers();
     let closed = false;
     render(
       <I18nProvider>
-        <ExportSuccessModal
+        <ExportSuccessToast
           result={{
             title: "Ảnh sang PDF",
             summary: "Đã xuất 5 trang vào 1 tệp PDF.",
@@ -114,10 +115,24 @@ describe("Knit Workbench UI", () => {
       </I18nProvider>,
     );
 
+    const toast = screen.getByRole("status");
     expect(screen.getByText(/Xuất kết quả hoàn tất: Ảnh sang PDF/)).toBeTruthy();
     expect(screen.getByText("/tmp/output.pdf")).toBeTruthy();
-    fireEvent.click(screen.getByText("Đóng"));
+
+    // Hover pauses auto-close beyond 3s
+    fireEvent.mouseEnter(toast);
+    act(() => {
+      vi.advanceTimersByTime(3500);
+    });
+    expect(closed).toBe(false);
+
+    // Mouse leave resumes 3s timer
+    fireEvent.mouseLeave(toast);
+    act(() => {
+      vi.advanceTimersByTime(3000);
+    });
     expect(closed).toBe(true);
+    vi.useRealTimers();
   });
 
   it("formats byte sizes consistently", () => {

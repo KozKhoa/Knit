@@ -191,9 +191,48 @@ pub(crate) fn typst_preamble(opts: &DocConvertOptions) -> String {
     s
 }
 
-pub(crate) fn escape_typst_text(input: &str) -> String {
-    let mut out = String::with_capacity(input.len() + 8);
+fn insert_wrap_opportunities(input: &str) -> String {
+    const BREAK_AFTER: &[char] = &[':', '=', '/', '&', '?', '_', '-', '.', ',', ';', '+'];
+    let mut out = String::with_capacity(input.len() + 16);
+    let mut token = String::new();
+
+    let flush_token = |tok: &str, dst: &mut String| {
+        if tok.chars().count() <= 16 {
+            dst.push_str(tok);
+            return;
+        }
+        let mut run = 0usize;
+        for ch in tok.chars() {
+            dst.push(ch);
+            run += 1;
+            if BREAK_AFTER.contains(&ch) || run >= 20 {
+                dst.push('\u{200B}');
+                run = 0;
+            }
+        }
+    };
+
     for ch in input.chars() {
+        if ch.is_whitespace() {
+            if !token.is_empty() {
+                flush_token(&token, &mut out);
+                token.clear();
+            }
+            out.push(ch);
+        } else {
+            token.push(ch);
+        }
+    }
+    if !token.is_empty() {
+        flush_token(&token, &mut out);
+    }
+    out
+}
+
+pub(crate) fn escape_typst_text(input: &str) -> String {
+    let wrappable = insert_wrap_opportunities(input);
+    let mut out = String::with_capacity(wrappable.len() + 8);
+    for ch in wrappable.chars() {
         match ch {
             '\\' | '#' | '$' | '@' | '*' | '_' | '`' | '<' | '>' | '[' | ']' | '=' | '~' => {
                 out.push('\\');
@@ -558,10 +597,17 @@ pub fn markdown_to_typst_with_assets(
                             let vname = format!("__knit_mermaid_{mermaid_idx}.svg");
                             mermaid_idx += 1;
                             assets.insert(vname.clone(), svg_content.as_bytes().to_vec());
+                            let page_h_mm = match opts.page_size {
+                                crate::models::PageSizePreset::A4 => 297.0_f32,
+                                crate::models::PageSizePreset::Letter => 279.4_f32,
+                                crate::models::PageSizePreset::A5 => 210.0_f32,
+                            };
+                            let margin = opts.margin_mm.clamp(5.0, 60.0);
+                            let max_h_mm = (page_h_mm - 2.0 * margin - 18.0).max(70.0);
+                            let lit = typst_string_literal(&vname);
                             let _ = writeln!(
                                 out,
-                                "\n#figure(image({}, width: 92%))\n",
-                                typst_string_literal(&vname)
+                                "\n#figure(layout(size => context {{\n  let max-w = size.width * 0.96\n  let max-h = {max_h_mm:.1}mm\n  let natural = measure(image({lit}, width: max-w))\n  if natural.height > max-h {{\n    image({lit}, width: max-w, height: max-h, fit: \"contain\")\n  }} else {{\n    image({lit}, width: max-w)\n  }}\n}}))\n"
                             );
                         } else {
                             let _ = writeln!(
@@ -574,10 +620,11 @@ pub fn markdown_to_typst_with_assets(
                         let lang_arg = (!lang_trimmed.is_empty())
                             .then(|| format!(", lang: {}", typst_string_literal(lang_trimmed)))
                             .unwrap_or_default();
+                        let wrapped_code = insert_wrap_opportunities(code_buf.trim_end_matches('\n'));
                         let _ = writeln!(
                             out,
                             "\n#block(fill: rgb(\"#E9EEF5\"), stroke: 0.75pt + rgb(\"#CBD5E1\"), inset: 10pt, radius: 4pt, width: 100%, breakable: true)[#raw(block: true{lang_arg}, {})]\n",
-                            typst_string_literal(code_buf.trim_end_matches('\n'))
+                            typst_string_literal(&wrapped_code)
                         );
                     }
                     code_buf.clear();
@@ -627,7 +674,11 @@ pub fn markdown_to_typst_with_assets(
             match event {
                 Event::Text(t) => link_text.push_str(&escape_typst_text(&t)),
                 Event::Code(t) => {
-                    let _ = write!(link_text, "#raw({});", typst_string_literal(&t));
+                    let _ = write!(
+                        link_text,
+                        "#raw({});",
+                        typst_string_literal(&insert_wrap_opportunities(&t))
+                    );
                 }
                 Event::InlineHtml(html) => link_text.push_str(&handle_inline_html(&html)),
                 Event::End(TagEnd::Link) => {
@@ -754,10 +805,10 @@ pub fn markdown_to_typst_with_assets(
                 TagEnd::Table => {
                     in_table = false;
                     if !table_cells.is_empty() {
+                        let cols_spec = format!("({})", vec!["1fr"; table_cols].join(", "));
                         let _ = write!(
                             out,
-                            "\n#table(columns: {}, stroke: 0.5pt + rgb(\"#DEE2E6\"), inset: 6pt, ",
-                            table_cols
+                            "\n#table(columns: {cols_spec}, stroke: 0.5pt + rgb(\"#DEE2E6\"), inset: 6pt, "
                         );
                         for cell in &table_cells {
                             let _ = write!(out, "[{}], ", cell);
@@ -777,7 +828,8 @@ pub fn markdown_to_typst_with_assets(
                 }
             }
             Event::Code(code) => {
-                let raw = format!("#raw({});", typst_string_literal(&code));
+                let wrapped = insert_wrap_opportunities(&code);
+                let raw = format!("#raw({});", typst_string_literal(&wrapped));
                 if in_cell {
                     current_cell.push_str(&raw);
                 } else {

@@ -25,6 +25,7 @@ export interface Translations {
     exportSuccessTitle: string;
     exportSuccessSubtitle: string;
     outputFilesLabel: string;
+    loadingFolder: string;
   };
   shell: {
     logsButton: string;
@@ -308,6 +309,10 @@ export interface Translations {
     selectAllBtn: string;
     deselectAllBtn: string;
     clearFoldersBtn: string;
+    viewTreeBtn: string;
+    viewFlatBtn: string;
+    expandAllBtn: string;
+    collapseAllBtn: string;
     colSelect: string;
     colType: string;
     colOriginal: string;

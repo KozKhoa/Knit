@@ -243,8 +243,10 @@ const PdfPageCanvas: React.FC<PdfPageCanvasProps> = ({
 
         textDiv.replaceChildren();
         textDiv.style.setProperty("--scale-factor", String(scale));
-        textDiv.style.width = `${viewport.width}px`;
-        textDiv.style.height = `${viewport.height}px`;
+        textDiv.style.setProperty("--total-scale-factor", String(scale));
+        textDiv.style.setProperty("--scale-round-x", "1px");
+        textDiv.style.setProperty("--scale-round-y", "1px");
+        pdfjsLib.setLayerDimensions(textDiv, viewport);
 
         textLayer = new pdfjsLib.TextLayer({
           textContentSource: pageObj.streamTextContent(),
@@ -284,6 +286,18 @@ const PdfPageCanvas: React.FC<PdfPageCanvasProps> = ({
     applySearchHighlightToTextLayer(textDiv, searchQuery, activeLocalIndex);
   }, [searchQuery, activeLocalIndex, textRenderedTick]);
 
+  React.useEffect(() => {
+    const clearSelecting = () => {
+      textLayerRef.current?.classList.remove("selecting");
+    };
+    window.addEventListener("pointerup", clearSelecting);
+    window.addEventListener("pointercancel", clearSelecting);
+    return () => {
+      window.removeEventListener("pointerup", clearSelecting);
+      window.removeEventListener("pointercancel", clearSelecting);
+    };
+  }, []);
+
   return (
     <div className="flex flex-col items-center">
       <div
@@ -292,7 +306,11 @@ const PdfPageCanvas: React.FC<PdfPageCanvasProps> = ({
         className="relative overflow-hidden rounded-[2px] border border-[#CED4DA] bg-white shadow-sm"
       >
         <canvas ref={canvasRef} className="block" />
-        <div ref={textLayerRef} className="textLayer" />
+        <div
+          ref={textLayerRef}
+          className="textLayer"
+          onPointerDown={() => textLayerRef.current?.classList.add("selecting")}
+        />
       </div>
       <div className="mt-1 font-mono-code text-[11px] text-[#6C757D]">
         {pageNumber}
