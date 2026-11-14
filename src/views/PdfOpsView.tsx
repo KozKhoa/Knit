@@ -1,4 +1,5 @@
 import React from "react";
+import { NumberInput } from "../components/NumberInput";
 import { Select } from "../components/Select";
 import {
   ArrowDown,
@@ -652,12 +653,12 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
                 <label className="block text-xs font-semibold uppercase text-[#6C757D]">
                   {t.pdfOps.everyNLabel}
                 </label>
-                <input
-                  type="number"
+                <NumberInput
+                  ariaLabel={t.pdfOps.everyNLabel}
                   min={1}
                   value={everyN}
-                  onChange={(e) => setEveryN(Math.max(1, Number(e.target.value) || 1))}
-                  className="knit-control mt-1 w-full rounded-[4px] border border-[#CED4DA] px-2.5 font-mono-code text-xs"
+                  onChange={setEveryN}
+                  className="mt-1 w-full"
                 />
               </div>
             )}
@@ -667,13 +668,13 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
                 <label className="block text-xs font-semibold uppercase text-[#6C757D]">
                   {t.pdfOps.maxMbLabel}
                 </label>
-                <input
-                  type="number"
-                  min={1}
+                <NumberInput
+                  ariaLabel={t.pdfOps.maxMbLabel}
+                  min={0.5}
                   step={0.5}
                   value={splitMaxMb}
-                  onChange={(e) => setSplitMaxMb(Math.max(0.5, Number(e.target.value) || 1))}
-                  className="knit-control mt-1 w-full rounded-[4px] border border-[#CED4DA] px-2.5 font-mono-code text-xs"
+                  onChange={setSplitMaxMb}
+                  className="mt-1 w-full"
                 />
               </div>
             )}

@@ -1,8 +1,8 @@
 import React from "react";
+import { NumberInput } from "../components/NumberInput";
 import { Select } from "../components/Select";
+import { Slider } from "../components/Slider";
 import {
-  ArrowDown,
-  ArrowUp,
   Edit3,
   FileOutput,
   GripVertical,
@@ -98,7 +98,10 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
   const [gridCols, setGridCols] = usePersistentState<number>("knit.img2pdf.gridCols", 4);
 
   const [dragIndex, setDragIndex] = React.useState<number | null>(null);
-  const [dragOverIndex, setDragOverIndex] = React.useState<number | null>(null);
+  const [dropTarget, setDropTarget] = React.useState<{
+    index: number;
+    side: "before" | "after";
+  } | null>(null);
   const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
   const lastHandledDropSeq = React.useRef<number>(0);
 
@@ -198,10 +201,6 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
       next.splice(toIdx, 0, item);
       return next;
     });
-  };
-
-  const movePage = (idx: number, delta: number) => {
-    reorderPage(idx, idx + delta);
   };
 
   const rotatePage = (id: string) => {
@@ -351,13 +350,14 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
           {layoutMode === "original_size" ? (
             <label className="flex items-center justify-between gap-2 text-xs text-[#6C757D]">
               <span>{t.image2pdf.dpiLabel}</span>
-              <input
-                type="number"
+              <NumberInput
+                ariaLabel={t.image2pdf.dpiLabel}
+                size="sm"
                 min={36}
                 max={600}
                 value={dpi}
-                onChange={(e) => setDpi(Number(e.target.value) || 72)}
-                className="knit-control-sm w-24 rounded-[4px] border border-[#CED4DA] px-2 font-mono-code text-xs text-[#212529]"
+                onChange={setDpi}
+                className="w-24"
               />
             </label>
           ) : (
@@ -365,14 +365,15 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
               <div className="flex items-center justify-between gap-2 text-xs text-[#6C757D]">
                 <span>{t.image2pdf.paddingLabel}</span>
                 <div className="flex items-center gap-1">
-                  <input
-                    type="number"
+                  <NumberInput
+                    ariaLabel={t.image2pdf.paddingLabel}
+                    size="sm"
                     min={0}
                     max={marginUnit === "mm" ? 60 : 170}
                     step={marginUnit === "mm" ? 1 : 2}
                     value={marginValue}
-                    onChange={(e) => setMarginValue(Math.max(0, Number(e.target.value) || 0))}
-                    className="knit-control-sm w-20 rounded-[4px] border border-[#CED4DA] px-2 font-mono-code text-xs text-[#212529]"
+                    onChange={setMarginValue}
+                    className="w-20"
                   />
                   <Select
                     ariaLabel="Padding unit"
@@ -432,12 +433,13 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
           </label>
           <label className="flex items-center justify-between gap-2 text-xs text-[#6C757D]">
             <span>{t.image2pdf.jpegQualityLabel(jpegQuality)}</span>
-            <input
-              type="range"
+            <Slider
+              ariaLabel="JPEG Quality"
               min={40}
               max={100}
+              step={1}
               value={jpegQuality}
-              onChange={(e) => setJpegQuality(Number(e.target.value))}
+              onChange={setJpegQuality}
               className="w-28"
             />
           </label>
@@ -463,15 +465,15 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
           <label className="block text-xs font-semibold uppercase text-[#6C757D]">
             {t.image2pdf.splitMbHeading}
           </label>
-          <input
-            type="number"
-            min={1}
+          <NumberInput
+            ariaLabel={t.image2pdf.splitMbHeading}
+            min={0}
             step={1}
-            placeholder={t.image2pdf.splitMbPlaceholder}
-            value={maxMb}
-            onChange={(e) => setMaxMb(e.target.value)}
-            className="knit-control w-full rounded-[4px] border border-[#CED4DA] px-2.5 font-mono-code text-xs"
+            value={maxMb.trim() !== "" && !Number.isNaN(Number(maxMb)) ? Number(maxMb) : 0}
+            onChange={(val) => setMaxMb(val > 0 ? String(val) : "")}
+            className="w-full"
           />
+          <p className="text-[11px] text-[#6C757D]">{t.image2pdf.splitMbPlaceholder}</p>
         </div>
       </div>
 
@@ -513,13 +515,23 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
             </div>
 
             {(() => {
-              const visualSlots = computeVisualOrderMap(pages.length, dragIndex, dragOverIndex);
+              const insertAt = dropTarget
+                ? dropTarget.side === "before"
+                  ? dropTarget.index
+                  : dropTarget.index + 1
+                : null;
+              const isNoOpInsert =
+                dragIndex !== null &&
+                insertAt !== null &&
+                (insertAt === dragIndex || insertAt === dragIndex + 1);
+
               const commitDrop = () => {
-                if (dragIndex !== null && dragOverIndex !== null) {
-                  reorderPage(dragIndex, dragOverIndex);
+                if (dragIndex !== null && insertAt !== null && !isNoOpInsert) {
+                  const targetIdx = insertAt > dragIndex ? insertAt - 1 : insertAt;
+                  reorderPage(dragIndex, targetIdx);
                 }
                 setDragIndex(null);
-                setDragOverIndex(null);
+                setDropTarget(null);
               };
 
               return (
@@ -544,16 +556,24 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
                       page.crop !== null ||
                       page.annotations.texts.length > 0 ||
                       page.annotations.strokes.length > 0;
-                    const slotIdx = visualSlots[idx];
-                    const isDraggedPlaceholder = dragIndex === idx;
+                    const isDragged = dragIndex === idx;
+                    const isQuarterRotated = Math.abs(page.rotation_deg % 180) === 90;
+                    const showBarLeft =
+                      !isNoOpInsert &&
+                      dropTarget?.index === idx &&
+                      dropTarget.side === "before";
+                    const showBarRight =
+                      !isNoOpInsert &&
+                      dropTarget?.index === idx &&
+                      dropTarget.side === "after";
+
                     return (
                       <div
                         key={page.id}
                         draggable
-                        style={{ order: slotIdx }}
                         onDragStart={(e) => {
                           setDragIndex(idx);
-                          setDragOverIndex(idx);
+                          setDropTarget(null);
                           e.dataTransfer.effectAllowed = "move";
                           e.dataTransfer.setData("text/plain", page.id);
                         }}
@@ -562,8 +582,10 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
                           e.preventDefault();
                           e.stopPropagation();
                           e.dataTransfer.dropEffect = "move";
-                          if (idx !== dragIndex && dragOverIndex !== slotIdx) {
-                            setDragOverIndex(slotIdx);
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          const side = e.clientX < rect.left + rect.width / 2 ? "before" : "after";
+                          if (dropTarget?.index !== idx || dropTarget?.side !== side) {
+                            setDropTarget({ index: idx, side });
                           }
                         }}
                         onDrop={(e) => {
@@ -574,106 +596,98 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
                         }}
                         onDragEnd={() => {
                           setDragIndex(null);
-                          setDragOverIndex(null);
+                          setDropTarget(null);
                         }}
-                        className={`relative flex cursor-grab flex-col overflow-hidden rounded-[4px] transition-all duration-150 active:cursor-grabbing ${
-                          isDraggedPlaceholder
-                            ? "border-2 border-dashed border-[#007BFF] bg-[#E7F1FF]/70 ring-2 ring-[#007BFF]/25"
-                            : "border border-[#DEE2E6] bg-white"
-                        }`}
+                        className="relative"
                       >
-                        <div className="relative flex h-36 items-center justify-center bg-[#F1F3F5] p-1.5">
-                          {thumbCache[page.id] ? (
-                            <img
-                              src={thumbCache[page.id]}
-                              alt={page.label}
-                              draggable={false}
-                              className={`pointer-events-none max-h-full max-w-full object-contain transition-opacity ${
-                                isDraggedPlaceholder ? "opacity-35" : "opacity-100"
-                              }`}
-                              style={{ transform: `rotate(${page.rotation_deg}deg)` }}
-                            />
-                          ) : (
-                            <Layers className="h-6 w-6 text-[#ADB5BD]" />
-                          )}
-                          <span
-                            className={`absolute left-1.5 top-1.5 flex items-center gap-0.5 rounded-[4px] px-1.5 py-0.5 font-mono-code text-[11px] text-white ${
-                              isDraggedPlaceholder ? "bg-[#007BFF]" : "bg-[#343A40]"
-                            }`}
-                          >
-                            <GripVertical className="h-3 w-3 opacity-80" />#{slotIdx + 1}
-                            {isDraggedPlaceholder ? ` · ${t.image2pdf.dropSlotHint}` : ""}
-                          </span>
-                          {hasEdits && (
-                            <span className="absolute right-1.5 top-1.5 rounded-[4px] bg-[#17A2B8] px-1.5 py-0.5 text-[11px] font-semibold text-white">
-                              {t.image2pdf.editedBadge}
+                        {showBarLeft && (
+                          <div
+                            aria-hidden="true"
+                            className="pointer-events-none absolute -left-2 bottom-0 top-0 z-20 w-1 rounded-full bg-[#007BFF] shadow-[0_0_8px_rgba(0,123,255,0.65)]"
+                          />
+                        )}
+                        {showBarRight && (
+                          <div
+                            aria-hidden="true"
+                            className="pointer-events-none absolute -right-2 bottom-0 top-0 z-20 w-1 rounded-full bg-[#007BFF] shadow-[0_0_8px_rgba(0,123,255,0.65)]"
+                          />
+                        )}
+
+                        <div
+                          className={`flex cursor-grab flex-col overflow-hidden rounded-[4px] border border-[#DEE2E6] bg-white transition-opacity duration-150 active:cursor-grabbing ${
+                            isDragged ? "opacity-40 ring-1 ring-[#ADB5BD]" : "opacity-100"
+                          }`}
+                        >
+                          <div className="relative flex h-36 items-center justify-center overflow-hidden bg-[#F1F3F5] p-2">
+                            {thumbCache[page.id] ? (
+                              <img
+                                src={thumbCache[page.id]}
+                                alt={page.label}
+                                draggable={false}
+                                className={`pointer-events-none object-contain ${
+                                  isQuarterRotated
+                                    ? "max-h-[112px] max-w-[112px]"
+                                    : "max-h-full max-w-full"
+                                }`}
+                                style={{ transform: `rotate(${page.rotation_deg}deg)` }}
+                              />
+                            ) : (
+                              <Layers className="h-6 w-6 text-[#ADB5BD]" />
+                            )}
+                            <span className="absolute left-1.5 top-1.5 flex items-center gap-0.5 rounded-[4px] bg-[#343A40] px-1.5 py-0.5 font-mono-code text-[11px] text-white">
+                              <GripVertical className="h-3 w-3 opacity-80" />#{idx + 1}
                             </span>
-                          )}
-                        </div>
-                        <div className={`border-t border-[#DEE2E6] p-2 ${isDraggedPlaceholder ? "opacity-50" : ""}`}>
-                      <div
-                        className="truncate text-sm font-semibold text-[#212529]"
-                        title={page.label}
-                      >
-                        {page.label}
-                      </div>
-                      <div className="font-mono-code text-xs text-[#6C757D]">
-                        {page.width_px}x{page.height_px}
-                        {page.duration_ms ? ` · ${page.duration_ms}ms` : ""}
-                      </div>
-                      <div className="mt-2 flex items-center justify-between gap-1">
-                        <div className="flex items-center gap-0.5">
-                          <button
-                            type="button"
-                            onClick={() => movePage(idx, -1)}
-                            disabled={idx === 0}
-                            className="rounded-[4px] border border-[#DEE2E6] p-1 text-[#495057] hover:bg-[#F8F9FA] disabled:opacity-30"
-                            title={t.image2pdf.moveUpTitle}
-                          >
-                            <ArrowUp className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => movePage(idx, 1)}
-                            disabled={idx === pages.length - 1}
-                            className="rounded-[4px] border border-[#DEE2E6] p-1 text-[#495057] hover:bg-[#F8F9FA] disabled:opacity-30"
-                            title={t.image2pdf.moveDownTitle}
-                          >
-                            <ArrowDown className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => rotatePage(page.id)}
-                            className="rounded-[4px] border border-[#DEE2E6] p-1 text-[#495057] hover:bg-[#F8F9FA]"
-                            title={t.image2pdf.rotateTitle}
-                          >
-                            <RotateCw className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() => setEditingPageId(page.id)}
-                            className="rounded-[4px] border border-[#007BFF] px-2 py-0.5 text-xs font-semibold text-[#007BFF] hover:bg-[#007BFF] hover:text-white"
-                            title={t.image2pdf.editBtnTitle}
-                          >
-                            <Edit3 className="mr-0.5 inline h-3 w-3" />
-                            {t.image2pdf.editBtn}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => removePage(page.id)}
-                            className="rounded-[4px] p-1 text-[#DC3545] hover:bg-[#F8D7DA]"
-                            title={t.image2pdf.deletePageTitle}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
+                            {hasEdits && (
+                              <span className="absolute right-1.5 top-1.5 rounded-[4px] bg-[#17A2B8] px-1.5 py-0.5 text-[11px] font-semibold text-white">
+                                {t.image2pdf.editedBadge}
+                              </span>
+                            )}
+                          </div>
+                          <div className="border-t border-[#DEE2E6] p-2">
+                            <div
+                              className="truncate text-sm font-semibold text-[#212529]"
+                              title={page.label}
+                            >
+                              {page.label}
+                            </div>
+                            <div className="font-mono-code text-xs text-[#6C757D]">
+                              {page.width_px}x{page.height_px}
+                              {page.duration_ms ? ` · ${page.duration_ms}ms` : ""}
+                            </div>
+                            <div className="mt-2 flex items-center justify-between gap-1">
+                              <button
+                                type="button"
+                                onClick={() => rotatePage(page.id)}
+                                className="rounded-[4px] border border-[#DEE2E6] p-1 text-[#495057] hover:bg-[#F8F9FA]"
+                                title={t.image2pdf.rotateTitle}
+                              >
+                                <RotateCw className="h-3.5 w-3.5" />
+                              </button>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingPageId(page.id)}
+                                  className="rounded-[4px] border border-[#007BFF] px-2 py-0.5 text-xs font-semibold text-[#007BFF] hover:bg-[#007BFF] hover:text-white"
+                                  title={t.image2pdf.editBtnTitle}
+                                >
+                                  <Edit3 className="mr-0.5 inline h-3 w-3" />
+                                  {t.image2pdf.editBtn}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => removePage(page.id)}
+                                  className="rounded-[4px] p-1 text-[#DC3545] hover:bg-[#F8D7DA]"
+                                  title={t.image2pdf.deletePageTitle}
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  </div>
-                );
-              })}
+                    );
+                  })}
                 </div>
               );
             })()}
@@ -703,27 +717,6 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
     </div>
   );
 };
-
-function computeVisualOrderMap(
-  len: number,
-  dragIdx: number | null,
-  dropSlot: number | null,
-): number[] {
-  const result = Array.from({ length: len }, (_, i) => i);
-  if (dragIdx === null || dropSlot === null || dragIdx < 0 || dragIdx >= len) {
-    return result;
-  }
-  const target = Math.max(0, Math.min(len - 1, dropSlot));
-  result[dragIdx] = target;
-  let cursor = 0;
-  for (let i = 0; i < len; i++) {
-    if (i === dragIdx) continue;
-    if (cursor === target) cursor += 1;
-    result[i] = cursor;
-    cursor += 1;
-  }
-  return result;
-}
 
 function shiftBookmarks(nodes: BookmarkNode[], offset: number): BookmarkNode[] {
   return nodes.map((n) => ({

@@ -1,5 +1,6 @@
 import React from "react";
 import { BookmarkPlus, FolderPlus, Trash2 } from "lucide-react";
+import { NumberInput } from "./NumberInput";
 import { useI18n } from "../i18n";
 import type { BookmarkNode } from "../types/ipc";
 
@@ -95,19 +96,14 @@ const BookmarkRow: React.FC<BookmarkRowProps> = ({
         />
         <label className="flex items-center gap-1 text-xs text-[#6C757D]">
           {t.bookmarks.pageLabel}
-          <input
-            type="number"
+          <NumberInput
+            ariaLabel={t.bookmarks.pageLabel}
+            size="sm"
             min={1}
             max={Math.max(1, totalPages)}
             value={node.target_page_index + 1}
-            onChange={(e) => {
-              const p = Math.max(
-                1,
-                Math.min(Math.max(1, totalPages), Number(e.target.value) || 1),
-              );
-              onUpdate({ ...node, target_page_index: p - 1 });
-            }}
-            className="knit-control-sm w-14 rounded-[4px] border border-[#CED4DA] bg-white px-1.5 font-mono-code text-xs"
+            onChange={(p) => onUpdate({ ...node, target_page_index: p - 1 })}
+            className="w-16"
           />
         </label>
         <button

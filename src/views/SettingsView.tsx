@@ -1,5 +1,7 @@
 import React from "react";
 import { Globe, RotateCcw, Settings2, Type } from "lucide-react";
+import { NumberInput } from "../components/NumberInput";
+import { Slider } from "../components/Slider";
 import { useI18n } from "../i18n";
 import type { AppFontFamily } from "../types/ipc";
 
@@ -34,12 +36,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   React.useEffect(() => {
     setDraftFontSize(fontSizePx);
   }, [fontSizePx]);
-
-  const commitDraftFontSize = React.useCallback(() => {
-    if (draftFontSize !== fontSizePx) {
-      onChangeFontSizePx(draftFontSize);
-    }
-  }, [draftFontSize, fontSizePx, onChangeFontSizePx]);
 
   return (
     <div className="mx-auto max-w-4xl space-y-5">
@@ -143,41 +139,28 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         <p className="text-xs text-[#6C757D]">{t.settings.fontSizeDesc}</p>
 
         <div className="flex flex-wrap items-center gap-3">
-          <input
-            aria-label={t.settings.fontSizeHeading}
-            type="range"
+          <Slider
+            ariaLabel={t.settings.fontSizeHeading}
             min={13}
             max={20}
             step={1}
             value={draftFontSize}
-            onChange={(e) => setDraftFontSize(Number(e.target.value) || 16)}
-            onPointerUp={commitDraftFontSize}
-            onMouseUp={commitDraftFontSize}
-            onTouchEnd={commitDraftFontSize}
-            onBlur={commitDraftFontSize}
-            onKeyUp={(e) => {
-              if (
-                ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(
-                  e.key,
-                )
-              ) {
-                commitDraftFontSize();
-              }
+            onChange={setDraftFontSize}
+            onValueCommit={(v) => {
+              if (v !== fontSizePx) onChangeFontSizePx(v);
             }}
-            className="w-48 accent-[#007BFF]"
+            className="w-48"
           />
-          <input
-            aria-label="Font size px"
-            type="number"
+          <NumberInput
+            ariaLabel="Font size px"
             min={13}
             max={20}
             value={draftFontSize}
-            onChange={(e) => {
-              const v = Math.min(20, Math.max(13, Number(e.target.value) || 16));
+            onChange={(v) => {
               setDraftFontSize(v);
               onChangeFontSizePx(v);
             }}
-            className="knit-control w-20 rounded-[4px] border border-[#CED4DA] px-2.5 font-mono-code text-xs text-[#212529]"
+            className="w-22"
           />
           <span className="font-mono-code text-xs text-[#6C757D]">px</span>
 

@@ -1,6 +1,7 @@
 import React from "react";
 import { AlertCircle, BookOpen, CheckCircle2, PackageCheck } from "lucide-react";
 import { Dropzone } from "../components/Dropzone";
+import { NumberInput } from "../components/NumberInput";
 import { Select } from "../components/Select";
 import { useI18n } from "../i18n";
 import {
@@ -182,13 +183,13 @@ export const MangaPackView: React.FC<MangaPackViewProps> = ({
           <label className="block text-xs font-semibold uppercase text-[#6C757D]">
             {t.mangaPack.maxGbLabel}
           </label>
-          <input
-            type="number"
+          <NumberInput
+            ariaLabel={t.mangaPack.maxGbLabel}
             min={0}
             step={0.5}
             value={maxGb}
-            onChange={(e) => setMaxGb(Math.max(0, Number(e.target.value) || 0))}
-            className="knit-control mt-1 w-full rounded-[4px] border border-[#CED4DA] px-2.5 font-mono-code text-xs"
+            onChange={setMaxGb}
+            className="mt-1 w-full"
           />
         </div>
 

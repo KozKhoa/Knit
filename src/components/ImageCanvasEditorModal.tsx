@@ -1,4 +1,5 @@
 import React from "react";
+import { Slider } from "./Slider";
 import {
   Crop,
   PenTool,
@@ -362,15 +363,16 @@ export const ImageCanvasEditorModal: React.FC<ImageCanvasEditorModalProps> = ({
           </div>
 
           {tool === "draw" && (
-            <label className="flex items-center gap-1.5 text-xs text-[#495057]">
+            <label className="flex items-center gap-2 text-xs text-[#495057]">
               {t.canvasEditor.strokeLabel}
-              <input
-                type="range"
+              <Slider
+                ariaLabel={t.canvasEditor.strokeLabel}
                 min={0.003}
                 max={0.025}
                 step={0.001}
                 value={strokeWidthRatio}
-                onChange={(e) => setStrokeWidthRatio(Number(e.target.value))}
+                onChange={setStrokeWidthRatio}
+                className="w-24"
               />
             </label>
           )}
@@ -384,15 +386,16 @@ export const ImageCanvasEditorModal: React.FC<ImageCanvasEditorModalProps> = ({
                 placeholder={t.canvasEditor.textPlaceholder}
                 className="w-56 rounded-[4px] border border-[#CED4DA] bg-white px-2.5 py-1 text-xs"
               />
-              <label className="flex items-center gap-1 text-xs text-[#495057]">
+              <label className="flex items-center gap-2 text-xs text-[#495057]">
                 {t.canvasEditor.fontSizeLabel}
-                <input
-                  type="range"
+                <Slider
+                  ariaLabel={t.canvasEditor.fontSizeLabel}
                   min={0.02}
                   max={0.14}
                   step={0.005}
                   value={fontSizeRatio}
-                  onChange={(e) => setFontSizeRatio(Number(e.target.value))}
+                  onChange={setFontSizeRatio}
+                  className="w-24"
                 />
               </label>
             </div>

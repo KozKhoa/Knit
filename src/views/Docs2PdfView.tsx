@@ -10,6 +10,8 @@ import {
   Save,
 } from "lucide-react";
 import { Dropzone } from "../components/Dropzone";
+import { MarkdownCodeEditor } from "../components/MarkdownCodeEditor";
+import { NumberInput } from "../components/NumberInput";
 import { PdfJsPreview } from "../components/PdfJsPreview";
 import { Select } from "../components/Select";
 import { useI18n } from "../i18n";
@@ -51,7 +53,15 @@ interface Docs2PdfViewProps {
 }
 
 const SUPPORTED_DOC_RE = /\.(md|markdown|txt|html|htm|epub|docx|pptx)$/i;
-const THEMES: DocTheme[] = ["github", "academic", "minimal", "modern", "resume"];
+const THEMES: DocTheme[] = [
+  "github",
+  "vs_code_light",
+  "obsidian",
+  "academic",
+  "minimal",
+  "modern",
+  "resume",
+];
 const PDF_FONTS: DocFont[] = [
   "default",
   "afacad",
@@ -481,13 +491,13 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
           <label className="block text-xs font-semibold uppercase text-[#6C757D]">
             {t.docs2pdf.marginMmLabel}
           </label>
-          <input
-            type="number"
+          <NumberInput
+            ariaLabel={t.docs2pdf.marginMmLabel}
             min={5}
             max={50}
             value={marginMm}
-            onChange={(e) => setMarginMm(Number(e.target.value) || 20)}
-            className="knit-control mt-1 w-full rounded-[4px] border border-[#CED4DA] px-2.5 font-mono-code text-xs"
+            onChange={setMarginMm}
+            className="mt-1 w-full"
           />
         </div>
 
@@ -495,13 +505,13 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
           <label className="block text-xs font-semibold uppercase text-[#6C757D]">
             {t.docs2pdf.fontSizeLabel}
           </label>
-          <input
-            type="number"
+          <NumberInput
+            ariaLabel={t.docs2pdf.fontSizeLabel}
             min={8}
             max={20}
             value={fontSizePt}
-            onChange={(e) => setFontSizePt(Number(e.target.value) || 11)}
-            className="knit-control mt-1 w-full rounded-[4px] border border-[#CED4DA] px-2.5 font-mono-code text-xs"
+            onChange={setFontSizePt}
+            className="mt-1 w-full"
           />
         </div>
 
@@ -568,18 +578,11 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
                   </div>
                 </div>
 
-                <textarea
+                <MarkdownCodeEditor
                   value={editorText}
-                  onChange={(e) => setEditorText(e.target.value)}
-                  onKeyDown={(e) => {
-                    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
-                      e.preventDefault();
-                      void handleSaveText(false);
-                    }
-                  }}
+                  onChange={setEditorText}
+                  onSave={() => void handleSaveText(false)}
                   placeholder={t.docs2pdf.newDocPlaceholder}
-                  spellCheck={false}
-                  className="min-h-0 w-full flex-1 resize-none border-0 bg-white p-3.5 font-mono-code text-xs leading-relaxed text-[#212529] focus:outline-none"
                 />
               </div>
             )}

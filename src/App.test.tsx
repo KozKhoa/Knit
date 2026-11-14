@@ -55,12 +55,23 @@ describe("Knit Workbench UI", () => {
     fireEvent.click(screen.getByRole("button", { name: /Afacad/i }));
     expect(document.documentElement.style.getPropertyValue("--knit-font-sans")).toContain("Afacad");
 
-    // Slider does not apply while dragging, commits on pointerUp
+    // Custom Slider does not apply while dragging, commits on pointerUp
     const slider = screen.getByRole("slider", { name: "Kích thước chữ ứng dụng" });
-    fireEvent.change(slider, { target: { value: "19" } });
+    slider.getBoundingClientRect = () =>
+      ({ left: 0, right: 100, width: 100, top: 0, bottom: 24, height: 24, x: 0, y: 0, toJSON: () => {} }) as DOMRect;
+    fireEvent(slider, new MouseEvent("pointerdown", { bubbles: true, clientX: 86 }));
     expect(document.documentElement.style.getPropertyValue("--knit-app-font-size")).toBe("16px");
-    fireEvent.pointerUp(slider);
+    expect(slider.getAttribute("aria-valuenow")).toBe("19");
+    fireEvent(window, new MouseEvent("pointerup", { bubbles: true, clientX: 86 }));
     expect(document.documentElement.style.getPropertyValue("--knit-app-font-size")).toBe("19px");
+
+    // Custom NumberInput adjusts via wheel ONLY when focused
+    const numInput = screen.getByRole("spinbutton", { name: "Font size px" });
+    fireEvent.wheel(numInput, { deltaY: -100 });
+    expect(document.documentElement.style.getPropertyValue("--knit-app-font-size")).toBe("19px");
+    numInput.focus();
+    fireEvent.wheel(numInput, { deltaY: -100 });
+    expect(document.documentElement.style.getPropertyValue("--knit-app-font-size")).toBe("20px");
 
     fireEvent.click(screen.getByRole("button", { name: "18px" }));
     expect(document.documentElement.style.getPropertyValue("--knit-app-font-size")).toBe("18px");
