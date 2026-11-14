@@ -29,14 +29,17 @@ export function findAllTextMatches(
 export function findMarkdownSourceRange(
   markdown: string,
   selectedText: string,
+  occurrenceIndex = 0,
 ): SourceRange | null {
   const trimmed = selectedText.trim();
   if (!trimmed || !markdown) return null;
 
-  // 1. Exact match first
-  const exactIdx = markdown.indexOf(trimmed);
-  if (exactIdx !== -1) {
-    return { from: exactIdx, to: exactIdx + trimmed.length };
+  // 1. Exact match when looking for the first occurrence (or only one exists)
+  if (occurrenceIndex <= 0) {
+    const exactIdx = markdown.indexOf(trimmed);
+    if (exactIdx !== -1 && markdown.indexOf(trimmed, exactIdx + 1) === -1) {
+      return { from: exactIdx, to: exactIdx + trimmed.length };
+    }
   }
 
   // 2. Build stripped plain-text index mapping back to original Markdown indices
@@ -107,8 +110,18 @@ export function findMarkdownSourceRange(
 
   const stripped = strippedChars.join("");
   const needle = trimmed.replace(/\s+/g, " ").toLowerCase();
-  const pos = stripped.indexOf(needle);
-  if (pos !== -1) {
+  const allPositions: number[] = [];
+  let scanIdx = 0;
+  while (scanIdx <= stripped.length - needle.length) {
+    const found = stripped.indexOf(needle, scanIdx);
+    if (found === -1) break;
+    allPositions.push(found);
+    scanIdx = found + Math.max(1, needle.length);
+  }
+
+  if (allPositions.length > 0) {
+    const pickedIdx = Math.min(Math.max(0, occurrenceIndex), allPositions.length - 1);
+    const pos = allPositions[pickedIdx];
     const startOrig = origIndices[pos];
     const endOrig = origIndices[Math.min(origIndices.length - 1, pos + needle.length - 1)] + 1;
     return { from: startOrig, to: endOrig };

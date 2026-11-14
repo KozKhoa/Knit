@@ -1,7 +1,8 @@
 import React from "react";
-import { BookmarkPlus, FolderPlus, Trash2 } from "lucide-react";
+import { BookmarkPlus, FolderPlus, GripHorizontal, Trash2 } from "lucide-react";
 import { NumberInput } from "./NumberInput";
 import { useI18n } from "../i18n";
+import { usePersistentState } from "../lib/storage";
 import type { BookmarkNode } from "../types/ipc";
 
 interface BookmarkTreeEditorProps {
@@ -16,6 +17,34 @@ export const BookmarkTreeEditor: React.FC<BookmarkTreeEditorProps> = ({
   onChange,
 }) => {
   const { t } = useI18n();
+  const [treeHeightPx, setTreeHeightPx] = usePersistentState<number>(
+    "knit.img2pdf.bookmarkHeightPx",
+    300,
+  );
+  const [liveHeightPx, setLiveHeightPx] = React.useState(treeHeightPx);
+
+  React.useEffect(() => {
+    setLiveHeightPx(Math.min(880, Math.max(180, treeHeightPx)));
+  }, [treeHeightPx]);
+
+  const handleResizeStart = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = liveHeightPx;
+    let latestH = startH;
+
+    const onMove = (ev: PointerEvent) => {
+      latestH = Math.min(880, Math.max(180, Math.round(startH + (ev.clientY - startY))));
+      setLiveHeightPx(latestH);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      setTreeHeightPx(latestH);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
 
   const addRootBookmark = () => {
     onChange([
@@ -47,22 +76,36 @@ export const BookmarkTreeEditor: React.FC<BookmarkTreeEditorProps> = ({
           {t.bookmarks.emptyHint}
         </div>
       ) : (
-        <div className="max-h-72 space-y-1.5 overflow-y-auto pr-1">
-          {nodes.map((node, idx) => (
-            <BookmarkRow
-              key={idx}
-              node={node}
-              depth={0}
-              totalPages={totalPages}
-              onUpdate={(updated) => {
-                const copy = [...nodes];
-                copy[idx] = updated;
-                onChange(copy);
-              }}
-              onDelete={() => onChange(nodes.filter((_, i) => i !== idx))}
-            />
-          ))}
-        </div>
+        <>
+          <div
+            style={{ maxHeight: `${liveHeightPx}px` }}
+            className="space-y-1.5 overflow-y-auto pr-1"
+          >
+            {nodes.map((node, idx) => (
+              <BookmarkRow
+                key={idx}
+                node={node}
+                depth={0}
+                totalPages={totalPages}
+                onUpdate={(updated) => {
+                  const copy = [...nodes];
+                  copy[idx] = updated;
+                  onChange(copy);
+                }}
+                onDelete={() => onChange(nodes.filter((_, i) => i !== idx))}
+              />
+            ))}
+          </div>
+          <div
+            role="separator"
+            aria-orientation="horizontal"
+            onPointerDown={handleResizeStart}
+            title={`${liveHeightPx}px`}
+            className="mt-2 flex h-4 cursor-ns-resize select-none items-center justify-center rounded-[4px] border border-dashed border-[#CED4DA] bg-[#F8F9FA] text-[#6C757D] hover:border-[#007BFF] hover:bg-[#E7F1FF] hover:text-[#007BFF]"
+          >
+            <GripHorizontal className="h-3.5 w-3.5" />
+          </div>
+        </>
       )}
     </div>
   );

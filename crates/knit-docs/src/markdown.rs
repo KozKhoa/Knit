@@ -566,7 +566,7 @@ pub fn markdown_to_typst_with_assets(
                         } else {
                             let _ = writeln!(
                                 out,
-                                "\n#block(fill: rgb(\"#F1F5F9\"), stroke: 0.6pt + rgb(\"#CBD5E1\"), inset: 9pt, radius: 4pt, width: 100%, breakable: true)[#raw(block: true, lang: \"mermaid\", {})]\n",
+                                "\n#block(fill: rgb(\"#E9EEF5\"), stroke: 0.75pt + rgb(\"#CBD5E1\"), inset: 10pt, radius: 4pt, width: 100%, breakable: true)[#raw(block: true, lang: \"mermaid\", {})]\n",
                                 typst_string_literal(code_buf.trim_end_matches('\n'))
                             );
                         }
@@ -576,7 +576,7 @@ pub fn markdown_to_typst_with_assets(
                             .unwrap_or_default();
                         let _ = writeln!(
                             out,
-                            "\n#block(fill: rgb(\"#F1F5F9\"), stroke: 0.6pt + rgb(\"#CBD5E1\"), inset: 9pt, radius: 4pt, width: 100%, breakable: true)[#raw(block: true{lang_arg}, {})]\n",
+                            "\n#block(fill: rgb(\"#E9EEF5\"), stroke: 0.75pt + rgb(\"#CBD5E1\"), inset: 10pt, radius: 4pt, width: 100%, breakable: true)[#raw(block: true{lang_arg}, {})]\n",
                             typst_string_literal(code_buf.trim_end_matches('\n'))
                         );
                     }

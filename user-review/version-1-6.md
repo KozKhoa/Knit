@@ -1,0 +1,9 @@
+- Trong tool image to pdf, checkbox tải ảnh xem trước nên nằm ở bên ngoài  (cùng với các cấu hình như là chất lượng ảnh, khổ trang,...), nếu như nằm bên trong thì khi người dùng import cả gb ảnh vào rồi mới cho check thì rất lag và không ổn
+- Hiện tại thì logic load ảnh vào (vd như tool image2pdf) nằm ở đâu vậy? Tôi chỉ load có 50MB ảnh thôi mà dùng hết 100% CPU trnong tầm 1s, nếu tôi load tầm 500MB ảnh thì máy đơ hòan toàn, bắt buộc phải hard restart máy luôn. 500MB ảnh nằm ở /home/khoa/Pictures/Wallpaper/wallpaper-main. Một vài đề xuất fix (nếu agent có đề xuất nào tốt hơn thì hỏi) là: 
+	- Chặn triệt để lỗi gọi trùng loadThumbnails, dùng useRef (inFlightIds + thumbCacheRef hoặc queue duy nhất) và bỏ thumbCache khỏi dependency của useEffect.
+	- Đảm bảo mỗi page.id chỉ được gửi đi 1 lần duy nhất và luôn giữ đúng giới hạn concurrency (ví dụ 2–3 ảnh cùng lúc), có cơ chế hủy queue khi bấm Clear
+	- Chỉ load thumbnail khi ảnh lọt vào màn hình
+	- Cache thumbnail ra file tạm trên disk (theo hash path + mtime) và trả về URL qua convertFileSrc thay vì chuỗi data:image/...;base64,... trong React state (giảm hẳn áp lực RAM cho WebView)
+	- Đổi output thumbnail từ PNG sang JPEG (quality ~60–80): render_image_thumbnail đang encode PNG (ImageFormat::Png) — nén PNG cho ảnh wallpaper tốn CPU hơn JPEG rất nhiều và payload Base64 cũng nặng hơn.
+	- Đặt Semaphore ở backend: Giới hạn số lượng render_image_thumb chạy song song trong render_image_thumb (ví dụ tối đa 2 hoặc num_cpus / 2) để đảm bảo không bao giờ bão hòa toàn bộ CPU/RAM dù frontend gửi nhiều request.
+	- 

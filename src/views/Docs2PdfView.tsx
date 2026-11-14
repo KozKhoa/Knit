@@ -138,18 +138,31 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
   const [previewPdfBytes, setPreviewPdfBytes] = React.useState<Uint8Array | null>(null);
   const [previewTotalPages, setPreviewTotalPages] = React.useState<number>(0);
 
-  // Unified Ctrl+F search across Editor + Preview
-  const [findOpen, setFindOpen] = React.useState(false);
-  const [findQuery, setFindQuery] = React.useState("");
-  const [findGlobalIdx, setFindGlobalIdx] = React.useState(0);
+  // Independent Find state for Editor vs Preview
+  const [editorFindOpen, setEditorFindOpen] = React.useState(false);
+  const [editorFindQuery, setEditorFindQuery] = React.useState("");
+  const [editorFindIdx, setEditorFindIdx] = React.useState(0);
+
+  const [previewFindOpen, setPreviewFindOpen] = React.useState(false);
+  const [previewFindQuery, setPreviewFindQuery] = React.useState("");
+  const [previewFindIdx, setPreviewFindIdx] = React.useState(0);
   const [previewMatchCount, setPreviewMatchCount] = React.useState(0);
+
+  const [syncScroll, setSyncScroll] = usePersistentState<boolean>("knit.docs.syncScroll", false);
 
   const previewSeqRef = React.useRef(0);
   const lastHandledDropSeq = React.useRef<number>(0);
   const mermaidCacheRef = React.useRef<Map<string, string>>(new Map());
   const editorRef = React.useRef<MarkdownCodeEditorHandle | null>(null);
   const previewRef = React.useRef<PdfJsPreviewHandle | null>(null);
-  const findInputRef = React.useRef<HTMLInputElement | null>(null);
+  const editorFindInputRef = React.useRef<HTMLInputElement | null>(null);
+  const previewFindInputRef = React.useRef<HTMLInputElement | null>(null);
+  const editorPaneRef = React.useRef<HTMLDivElement | null>(null);
+  const previewPaneRef = React.useRef<HTMLDivElement | null>(null);
+  const syncLockRef = React.useRef<{ source: "editor" | "preview" | null; until: number }>({
+    source: null,
+    until: 0,
+  });
 
   React.useEffect(() => {
     setLiveHeightPx(Math.min(1200, Math.max(320, workspaceHeightPx)));
@@ -221,11 +234,19 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
     }
   }, [droppedBatch, loadDocumentPath]);
 
-  const openFindBar = React.useCallback(() => {
-    setFindOpen(true);
+  const openEditorFind = React.useCallback(() => {
+    setEditorFindOpen(true);
     window.requestAnimationFrame(() => {
-      findInputRef.current?.focus();
-      findInputRef.current?.select();
+      editorFindInputRef.current?.focus();
+      editorFindInputRef.current?.select();
+    });
+  }, []);
+
+  const openPreviewFind = React.useCallback(() => {
+    setPreviewFindOpen(true);
+    window.requestAnimationFrame(() => {
+      previewFindInputRef.current?.focus();
+      previewFindInputRef.current?.select();
     });
   }, []);
 
@@ -233,40 +254,48 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
         e.preventDefault();
-        openFindBar();
-      } else if (e.key === "Escape" && findOpen) {
-        setFindOpen(false);
-        setFindQuery("");
+        const active = document.activeElement;
+        if (active && previewPaneRef.current?.contains(active)) {
+          openPreviewFind();
+        } else {
+          openEditorFind();
+        }
+      } else if (e.key === "Escape") {
+        if (editorFindOpen) {
+          setEditorFindOpen(false);
+          setEditorFindQuery("");
+        }
+        if (previewFindOpen) {
+          setPreviewFindOpen(false);
+          setPreviewFindQuery("");
+        }
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [findOpen, openFindBar]);
+  }, [editorFindOpen, previewFindOpen, openEditorFind, openPreviewFind]);
 
   const editorMatches = React.useMemo(
-    () => (isEditableText && findOpen ? findAllTextMatches(editorText, findQuery) : []),
-    [editorText, findOpen, findQuery, isEditableText],
+    () => (isEditableText && editorFindOpen ? findAllTextMatches(editorText, editorFindQuery) : []),
+    [editorText, editorFindOpen, editorFindQuery, isEditableText],
   );
-  const totalCombinedMatches = editorMatches.length + previewMatchCount;
-  const clampedGlobalIdx =
-    totalCombinedMatches > 0 ? ((findGlobalIdx % totalCombinedMatches) + totalCombinedMatches) % totalCombinedMatches : 0;
-
   const activeEditorMatchIdx =
-    findOpen && findQuery.trim() && clampedGlobalIdx < editorMatches.length
-      ? clampedGlobalIdx
+    editorFindOpen && editorFindQuery.trim() && editorMatches.length > 0
+      ? ((editorFindIdx % editorMatches.length) + editorMatches.length) % editorMatches.length
       : null;
+
   const activePreviewMatchIdx =
-    findOpen && findQuery.trim() && clampedGlobalIdx >= editorMatches.length && previewMatchCount > 0
-      ? clampedGlobalIdx - editorMatches.length
+    previewFindOpen && previewFindQuery.trim() && previewMatchCount > 0
+      ? ((previewFindIdx % previewMatchCount) + previewMatchCount) % previewMatchCount
       : null;
 
   React.useEffect(() => {
-    if (!findOpen || !findQuery.trim()) {
+    if (!editorFindOpen || !editorFindQuery.trim()) {
       editorRef.current?.setSearchHighlights([], null);
       return;
     }
     editorRef.current?.setSearchHighlights(editorMatches, activeEditorMatchIdx);
-  }, [findOpen, findQuery, editorMatches, activeEditorMatchIdx]);
+  }, [editorFindOpen, editorFindQuery, editorMatches, activeEditorMatchIdx]);
 
   React.useEffect(() => {
     if (activePreviewMatchIdx !== null) {
@@ -274,18 +303,41 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
     }
   }, [activePreviewMatchIdx]);
 
-  const stepFind = React.useCallback(
-    (delta: number) => {
-      if (totalCombinedMatches === 0) return;
-      setFindGlobalIdx((prev) => (prev + delta + totalCombinedMatches) % totalCombinedMatches);
+  const handleToggleSyncScroll = (checked: boolean) => {
+    setSyncScroll(checked);
+    if (checked) {
+      const ratio = editorRef.current?.getScrollRatio() ?? 0;
+      syncLockRef.current = { source: "editor", until: performance.now() + 140 };
+      previewRef.current?.setScrollRatio(ratio);
+    }
+  };
+
+  const handleEditorScrollRatio = React.useCallback(
+    (ratio: number) => {
+      if (!syncScroll) return;
+      const now = performance.now();
+      if (syncLockRef.current.source === "preview" && now < syncLockRef.current.until) return;
+      syncLockRef.current = { source: "editor", until: now + 100 };
+      previewRef.current?.setScrollRatio(ratio);
     },
-    [totalCombinedMatches],
+    [syncScroll],
+  );
+
+  const handlePreviewScrollRatio = React.useCallback(
+    (ratio: number) => {
+      if (!syncScroll) return;
+      const now = performance.now();
+      if (syncLockRef.current.source === "editor" && now < syncLockRef.current.until) return;
+      syncLockRef.current = { source: "preview", until: now + 100 };
+      editorRef.current?.setScrollRatio(ratio);
+    },
+    [syncScroll],
   );
 
   const handleGoToInEditor = React.useCallback(
-    (selectedText: string) => {
+    (selectedText: string, occurrenceIndex = 0) => {
       if (!isEditableText) return;
-      const range = findMarkdownSourceRange(editorText, selectedText);
+      const range = findMarkdownSourceRange(editorText, selectedText, occurrenceIndex);
       if (range) {
         setErrorMsg(null);
         editorRef.current?.jumpToRange(range.from, range.to, true);
@@ -680,75 +732,6 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
       {/* Split Workspace: Markdown Editor (Left) & Live PDF Preview (Right) */}
       {isPreviewableDoc ? (
         <div className="space-y-2">
-          {findOpen && (
-            <div className="flex flex-wrap items-center gap-2 rounded-[4px] border border-[#B6D4FE] bg-[#F8FAFF] px-3 py-2 text-xs">
-              <Search className="h-3.5 w-3.5 shrink-0 text-[#007BFF]" />
-              <input
-                ref={findInputRef}
-                type="text"
-                value={findQuery}
-                onChange={(e) => {
-                  setFindQuery(e.target.value);
-                  setFindGlobalIdx(0);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    stepFind(e.shiftKey ? -1 : 1);
-                  } else if (e.key === "Escape") {
-                    setFindOpen(false);
-                    setFindQuery("");
-                  }
-                }}
-                placeholder={t.docs2pdf.findPlaceholder}
-                className="knit-control-sm min-w-[220px] flex-1 rounded-[4px] border border-[#CED4DA] bg-white px-2.5 text-xs text-[#212529]"
-              />
-              {findQuery.trim() !== "" && (
-                <div className="flex items-center gap-1.5 font-mono-code text-[11px]">
-                  {isEditableText && (
-                    <span className="rounded-[4px] bg-[#E7F1FF] px-2 py-0.5 font-semibold text-[#0056B3]">
-                      {t.docs2pdf.findEditorCount(editorMatches.length)}
-                    </span>
-                  )}
-                  <span className="rounded-[4px] bg-[#FFF3CD] px-2 py-0.5 font-semibold text-[#856404]">
-                    {t.docs2pdf.findPreviewCount(previewMatchCount)}
-                  </span>
-                </div>
-              )}
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  disabled={totalCombinedMatches === 0}
-                  onClick={() => stepFind(-1)}
-                  title={t.docs2pdf.findPrevTitle}
-                  className="flex h-6 w-6 items-center justify-center rounded-[4px] border border-[#CED4DA] bg-white text-[#343A40] hover:bg-[#E9ECEF] disabled:opacity-40"
-                >
-                  <ChevronUp className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  disabled={totalCombinedMatches === 0}
-                  onClick={() => stepFind(1)}
-                  title={t.docs2pdf.findNextTitle}
-                  className="flex h-6 w-6 items-center justify-center rounded-[4px] border border-[#CED4DA] bg-white text-[#343A40] hover:bg-[#E9ECEF] disabled:opacity-40"
-                >
-                  <ChevronDown className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setFindOpen(false);
-                    setFindQuery("");
-                  }}
-                  aria-label={t.common.close}
-                  className="flex h-6 w-6 items-center justify-center rounded-[4px] text-[#6C757D] hover:bg-[#E9ECEF] hover:text-[#212529]"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            </div>
-          )}
-
           <div
             style={{ height: `${liveHeightPx}px` }}
             className={`grid min-h-[320px] grid-cols-1 gap-4 ${
@@ -757,7 +740,10 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
           >
             {/* Left: Live Markdown Editor */}
             {isEditableText && (
-              <div className="flex min-h-0 flex-col overflow-hidden rounded-[4px] border border-[#DEE2E6] bg-white">
+              <div
+                ref={editorPaneRef}
+                className="flex min-h-0 flex-col overflow-hidden rounded-[4px] border border-[#DEE2E6] bg-white"
+              >
                 <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-[#DEE2E6] bg-[#F8F9FA] px-3.5 py-2">
                   <div className="flex items-center gap-2 text-sm font-bold text-[#343A40]">
                     <FileCode2 className="h-4 w-4 text-[#007BFF]" />
@@ -771,7 +757,7 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
                   <div className="flex items-center gap-1.5">
                     <button
                       type="button"
-                      onClick={openFindBar}
+                      onClick={openEditorFind}
                       title="Ctrl+F"
                       className="knit-control-sm inline-flex items-center gap-1 rounded-[4px] border border-[#CED4DA] bg-white px-2 text-xs font-semibold text-[#343A40] hover:bg-[#E9ECEF]"
                     >
@@ -795,19 +781,85 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
                   </div>
                 </div>
 
+                {editorFindOpen && (
+                  <div className="flex shrink-0 items-center gap-1.5 border-b border-[#B6D4FE] bg-[#F8FAFF] px-3 py-1.5 text-xs">
+                    <Search className="h-3.5 w-3.5 shrink-0 text-[#007BFF]" />
+                    <input
+                      ref={editorFindInputRef}
+                      type="text"
+                      value={editorFindQuery}
+                      onChange={(e) => {
+                        setEditorFindQuery(e.target.value);
+                        setEditorFindIdx(0);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && editorMatches.length > 0) {
+                          e.preventDefault();
+                          setEditorFindIdx((i) => i + (e.shiftKey ? -1 : 1));
+                        } else if (e.key === "Escape") {
+                          setEditorFindOpen(false);
+                          setEditorFindQuery("");
+                        }
+                      }}
+                      placeholder={t.docs2pdf.findEditorPlaceholder}
+                      className="knit-control-sm min-w-0 flex-1 rounded-[4px] border border-[#CED4DA] bg-white px-2 text-xs text-[#212529]"
+                    />
+                    {editorFindQuery.trim() !== "" && (
+                      <span className="font-mono-code text-[11px] font-semibold text-[#0056B3]">
+                        {editorMatches.length > 0
+                          ? `${(activeEditorMatchIdx ?? 0) + 1}/${editorMatches.length}`
+                          : "0/0"}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      disabled={editorMatches.length === 0}
+                      onClick={() => setEditorFindIdx((i) => i - 1)}
+                      title={t.docs2pdf.findPrevTitle}
+                      className="flex h-6 w-6 items-center justify-center rounded-[4px] border border-[#CED4DA] bg-white text-[#343A40] hover:bg-[#E9ECEF] disabled:opacity-40"
+                    >
+                      <ChevronUp className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={editorMatches.length === 0}
+                      onClick={() => setEditorFindIdx((i) => i + 1)}
+                      title={t.docs2pdf.findNextTitle}
+                      className="flex h-6 w-6 items-center justify-center rounded-[4px] border border-[#CED4DA] bg-white text-[#343A40] hover:bg-[#E9ECEF] disabled:opacity-40"
+                    >
+                      <ChevronDown className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditorFindOpen(false);
+                        setEditorFindQuery("");
+                      }}
+                      aria-label={t.common.close}
+                      className="flex h-6 w-6 items-center justify-center rounded-[4px] text-[#6C757D] hover:bg-[#E9ECEF]"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                )}
+
                 <MarkdownCodeEditor
                   ref={editorRef}
                   value={editorText}
                   onChange={setEditorText}
                   onSave={() => void handleSaveText(false)}
-                  onOpenFind={openFindBar}
+                  onOpenFind={openEditorFind}
+                  onScrollRatioChange={handleEditorScrollRatio}
                   placeholder={t.docs2pdf.newDocPlaceholder}
                 />
               </div>
             )}
 
             {/* Right: Live PDF Preview via pdfjs-dist */}
-            <div className="flex min-h-0 flex-col overflow-hidden rounded-[4px] border border-[#DEE2E6] bg-white">
+            <div
+              ref={previewPaneRef}
+              className="flex min-h-0 flex-col overflow-hidden rounded-[4px] border border-[#DEE2E6] bg-white"
+            >
               <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-[#DEE2E6] bg-[#F8F9FA] px-3.5 py-2">
                 <div className="flex items-center gap-2 text-sm font-bold text-[#343A40]">
                   <Eye className="h-4 w-4 text-[#007BFF]" />
@@ -818,10 +870,20 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
                     </span>
                   )}
                 </div>
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-2">
+                  {isEditableText && (
+                    <label className="flex cursor-pointer items-center gap-1.5 text-xs font-semibold text-[#343A40]">
+                      <input
+                        type="checkbox"
+                        checked={syncScroll}
+                        onChange={(e) => handleToggleSyncScroll(e.target.checked)}
+                      />
+                      {t.docs2pdf.syncScrollLabel}
+                    </label>
+                  )}
                   <button
                     type="button"
-                    onClick={openFindBar}
+                    onClick={openPreviewFind}
                     title="Ctrl+F"
                     className="knit-control-sm inline-flex items-center gap-1 rounded-[4px] border border-[#CED4DA] bg-white px-2 text-xs font-semibold text-[#343A40] hover:bg-[#E9ECEF]"
                   >
@@ -839,6 +901,68 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
                 </div>
               </div>
 
+              {previewFindOpen && (
+                <div className="flex shrink-0 items-center gap-1.5 border-b border-[#B6D4FE] bg-[#F8FAFF] px-3 py-1.5 text-xs">
+                  <Search className="h-3.5 w-3.5 shrink-0 text-[#007BFF]" />
+                  <input
+                    ref={previewFindInputRef}
+                    type="text"
+                    value={previewFindQuery}
+                    onChange={(e) => {
+                      setPreviewFindQuery(e.target.value);
+                      setPreviewFindIdx(0);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && previewMatchCount > 0) {
+                        e.preventDefault();
+                        setPreviewFindIdx((i) => i + (e.shiftKey ? -1 : 1));
+                      } else if (e.key === "Escape") {
+                        setPreviewFindOpen(false);
+                        setPreviewFindQuery("");
+                      }
+                    }}
+                    placeholder={t.docs2pdf.findPreviewPlaceholder}
+                    className="knit-control-sm min-w-0 flex-1 rounded-[4px] border border-[#CED4DA] bg-white px-2 text-xs text-[#212529]"
+                  />
+                  {previewFindQuery.trim() !== "" && (
+                    <span className="font-mono-code text-[11px] font-semibold text-[#856404]">
+                      {previewMatchCount > 0
+                        ? `${(activePreviewMatchIdx ?? 0) + 1}/${previewMatchCount}`
+                        : "0/0"}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    disabled={previewMatchCount === 0}
+                    onClick={() => setPreviewFindIdx((i) => i - 1)}
+                    title={t.docs2pdf.findPrevTitle}
+                    className="flex h-6 w-6 items-center justify-center rounded-[4px] border border-[#CED4DA] bg-white text-[#343A40] hover:bg-[#E9ECEF] disabled:opacity-40"
+                  >
+                    <ChevronUp className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    disabled={previewMatchCount === 0}
+                    onClick={() => setPreviewFindIdx((i) => i + 1)}
+                    title={t.docs2pdf.findNextTitle}
+                    className="flex h-6 w-6 items-center justify-center rounded-[4px] border border-[#CED4DA] bg-white text-[#343A40] hover:bg-[#E9ECEF] disabled:opacity-40"
+                  >
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPreviewFindOpen(false);
+                      setPreviewFindQuery("");
+                    }}
+                    aria-label={t.common.close}
+                    className="flex h-6 w-6 items-center justify-center rounded-[4px] text-[#6C757D] hover:bg-[#E9ECEF]"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
+
               <div className="min-h-0 flex-1">
                 <PdfJsPreview
                   ref={previewRef}
@@ -848,11 +972,14 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
                   emptyText={t.docs2pdf.previewEmpty}
                   loadingText={t.docs2pdf.previewRendering}
                   onPageCountChange={setPreviewTotalPages}
-                  searchQuery={findOpen ? findQuery : ""}
+                  searchQuery={previewFindOpen ? previewFindQuery : ""}
                   activeMatchIndex={activePreviewMatchIdx}
                   onSearchMatchCountChange={setPreviewMatchCount}
+                  copyTextLabel={t.docs2pdf.copyText}
                   goToInEditorLabel={t.docs2pdf.gotoInEditor}
                   onGoToInEditor={isEditableText ? handleGoToInEditor : undefined}
+                  onScrollRatioChange={handlePreviewScrollRatio}
+                  onOpenFind={openPreviewFind}
                 />
               </div>
             </div>

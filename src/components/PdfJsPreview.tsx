@@ -4,12 +4,13 @@ import * as pdfjsLib from "pdfjs-dist";
 import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import "pdfjs-dist/web/pdf_viewer.css";
-import { CornerUpLeft, Maximize2, ZoomIn, ZoomOut } from "lucide-react";
+import { Copy, CornerUpLeft, Loader2, Maximize2, ZoomIn, ZoomOut } from "lucide-react";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 export interface PdfJsPreviewHandle {
   scrollToMatch: (globalMatchIndex: number) => void;
+  setScrollRatio: (ratio: number) => void;
 }
 
 interface PdfJsPreviewProps {
@@ -23,8 +24,11 @@ interface PdfJsPreviewProps {
   searchQuery?: string;
   activeMatchIndex?: number | null;
   onSearchMatchCountChange?: (total: number) => void;
+  copyTextLabel?: string;
   goToInEditorLabel?: string;
-  onGoToInEditor?: (selectedText: string) => void;
+  onGoToInEditor?: (selectedText: string, occurrenceIndex: number) => void;
+  onScrollRatioChange?: (ratio: number) => void;
+  onOpenFind?: () => void;
 }
 
 interface PageSearchSpan {
@@ -310,8 +314,11 @@ export const PdfJsPreview = React.forwardRef<PdfJsPreviewHandle, PdfJsPreviewPro
       searchQuery = "",
       activeMatchIndex = null,
       onSearchMatchCountChange,
+      copyTextLabel,
       goToInEditorLabel,
       onGoToInEditor,
+      onScrollRatioChange,
+      onOpenFind,
     },
     ref,
   ) => {
@@ -331,6 +338,7 @@ export const PdfJsPreview = React.forwardRef<PdfJsPreviewHandle, PdfJsPreviewPro
       x: number;
       y: number;
       selectedText: string;
+      pageNumber: number;
     } | null>(null);
 
     const registerPageRef = React.useCallback((pageNumber: number, el: HTMLDivElement | null) => {
@@ -459,7 +467,21 @@ export const PdfJsPreview = React.forwardRef<PdfJsPreviewHandle, PdfJsPreviewPro
       [pageSearchSpans],
     );
 
-    React.useImperativeHandle(ref, () => ({ scrollToMatch }), [scrollToMatch]);
+    React.useImperativeHandle(
+      ref,
+      () => ({
+        scrollToMatch,
+        setScrollRatio: (ratio: number) => {
+          const el = scrollRef.current;
+          if (!el) return;
+          const maxScroll = el.scrollHeight - el.clientHeight;
+          if (maxScroll > 0) {
+            el.scrollTop = Math.min(1, Math.max(0, ratio)) * maxScroll;
+          }
+        },
+      }),
+      [scrollToMatch],
+    );
 
     // Dismiss custom context menu on click, escape, or scroll
     React.useEffect(() => {
@@ -518,18 +540,56 @@ export const PdfJsPreview = React.forwardRef<PdfJsPreviewHandle, PdfJsPreviewPro
     };
 
     const handlePreviewContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
-      if (!onGoToInEditor) return;
-      const selected = window.getSelection()?.toString().trim() ?? "";
+      const sel = window.getSelection();
+      const selected = sel?.toString().trim() ?? "";
       if (!selected) {
         setContextMenu(null);
         return;
       }
       e.preventDefault();
+      let pageNumber = currentPage;
+      const anchorNode = sel?.anchorNode;
+      const anchorEl =
+        anchorNode instanceof HTMLElement ? anchorNode : anchorNode?.parentElement;
+      const pageHost = anchorEl?.closest<HTMLElement>("[data-page-number]");
+      if (pageHost?.dataset.pageNumber) {
+        const parsed = Number.parseInt(pageHost.dataset.pageNumber, 10);
+        if (!Number.isNaN(parsed)) pageNumber = parsed;
+      }
       setContextMenu({
         x: Math.min(e.clientX, window.innerWidth - 220),
-        y: Math.min(e.clientY, window.innerHeight - 60),
+        y: Math.min(e.clientY, window.innerHeight - 90),
         selectedText: selected,
+        pageNumber,
       });
+    };
+
+    const resolveOccurrenceIndex = async (snippet: string, targetPage: number): Promise<number> => {
+      if (!pdfDoc) return 0;
+      const needle = snippet.replace(/\s+/g, " ").toLowerCase();
+      if (!needle) return 0;
+      let countBefore = 0;
+      for (let p = 1; p < targetPage; p++) {
+        try {
+          const page = await pdfDoc.getPage(p);
+          const tc = await page.getTextContent();
+          const joined = tc.items
+            .map((it) => ("str" in it ? it.str : ""))
+            .join("")
+            .replace(/\s+/g, " ")
+            .toLowerCase();
+          let idx = 0;
+          while (idx <= joined.length - needle.length) {
+            const found = joined.indexOf(needle, idx);
+            if (found === -1) break;
+            countBefore += 1;
+            idx = found + Math.max(1, needle.length);
+          }
+        } catch {
+          // ignore
+        }
+      }
+      return countBefore;
     };
 
     return (
@@ -586,12 +646,29 @@ export const PdfJsPreview = React.forwardRef<PdfJsPreviewHandle, PdfJsPreviewPro
         {/* Continuous Scroll Pages */}
         <div
           ref={scrollRef}
-          onContextMenu={handlePreviewContextMenu}
-          onScroll={() => {
-            if (contextMenu) setContextMenu(null);
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+              e.preventDefault();
+              e.stopPropagation();
+              onOpenFind?.();
+            }
           }}
-          className="relative flex-1 overflow-y-auto overflow-x-auto p-4"
+          onContextMenu={handlePreviewContextMenu}
+          onScroll={(e) => {
+            if (contextMenu) setContextMenu(null);
+            const el = e.currentTarget;
+            const maxScroll = el.scrollHeight - el.clientHeight;
+            onScrollRatioChange?.(maxScroll > 0 ? el.scrollTop / maxScroll : 0);
+          }}
+          className="relative flex-1 overflow-y-auto overflow-x-auto p-4 focus:outline-none"
         >
+          {loading && pdfDoc && (
+            <div className="sticky top-2 z-30 ml-auto mb-2 flex w-fit items-center gap-1.5 rounded-[4px] border border-[#B6D4FE] bg-[#E7F1FF]/95 px-2.5 py-1 text-xs font-semibold text-[#0056B3] shadow-sm">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              <span>{loadingText}</span>
+            </div>
+          )}
           {(error || parseError) && (
             <div className="mb-3 rounded-[4px] border border-[#DC3545]/40 bg-[#F8D7DA] px-3 py-2 text-xs text-[#842029]">
               {error || parseError}
@@ -610,17 +687,18 @@ export const PdfJsPreview = React.forwardRef<PdfJsPreviewHandle, PdfJsPreviewPro
                     ? activeMatchIndex - hit.startGlobalIndex
                     : null;
                 return (
-                  <PdfPageCanvas
-                    key={`${numPages}-${pageNum}`}
-                    pdfDoc={pdfDoc}
-                    pageNumber={pageNum}
-                    scale={activeScale}
-                    containerEl={scrollRef.current}
-                    searchQuery={searchQuery}
-                    activeLocalIndex={activeLocal}
-                    onVisible={setCurrentPage}
-                    registerPageRef={registerPageRef}
-                  />
+                  <div key={`${numPages}-${pageNum}`} data-page-number={pageNum}>
+                    <PdfPageCanvas
+                      pdfDoc={pdfDoc}
+                      pageNumber={pageNum}
+                      scale={activeScale}
+                      containerEl={scrollRef.current}
+                      searchQuery={searchQuery}
+                      activeLocalIndex={activeLocal}
+                      onVisible={setCurrentPage}
+                      registerPageRef={registerPageRef}
+                    />
+                  </div>
                 );
               })}
             </div>
@@ -631,8 +709,8 @@ export const PdfJsPreview = React.forwardRef<PdfJsPreviewHandle, PdfJsPreviewPro
           )}
         </div>
 
-        {/* Context Menu for "Go to in Editor" */}
-        {contextMenu && onGoToInEditor && (
+        {/* Context Menu for Copy + "Go to in Editor" */}
+        {contextMenu && (
           <div
             style={{ left: contextMenu.x, top: contextMenu.y }}
             onMouseDown={(e) => e.stopPropagation()}
@@ -643,13 +721,29 @@ export const PdfJsPreview = React.forwardRef<PdfJsPreviewHandle, PdfJsPreviewPro
               onClick={() => {
                 const snippet = contextMenu.selectedText;
                 setContextMenu(null);
-                onGoToInEditor(snippet);
+                void navigator.clipboard?.writeText(snippet);
               }}
               className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs font-semibold text-[#212529] hover:bg-[#E7F1FF] hover:text-[#0056B3]"
             >
-              <CornerUpLeft className="h-3.5 w-3.5 text-[#007BFF]" />
-              <span>{goToInEditorLabel ?? "Go to in Editor"}</span>
+              <Copy className="h-3.5 w-3.5 text-[#495057]" />
+              <span>{copyTextLabel ?? "Copy"}</span>
             </button>
+            {onGoToInEditor && (
+              <button
+                type="button"
+                onClick={() => {
+                  const { selectedText, pageNumber } = contextMenu;
+                  setContextMenu(null);
+                  void resolveOccurrenceIndex(selectedText, pageNumber).then((occIdx) => {
+                    onGoToInEditor(selectedText, occIdx);
+                  });
+                }}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs font-semibold text-[#212529] hover:bg-[#E7F1FF] hover:text-[#0056B3]"
+              >
+                <CornerUpLeft className="h-3.5 w-3.5 text-[#007BFF]" />
+                <span>{goToInEditorLabel ?? "Go to in Editor"}</span>
+              </button>
+            )}
           </div>
         )}
       </div>

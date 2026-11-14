@@ -78,6 +78,7 @@ export interface Translations {
     pickFolderDialog: string;
     savePdfDialog: string;
     gridColumnsLabel: string;
+    loadThumbsLabel: string;
     dragHint: string;
     toggleBookmarksShow: string;
     toggleBookmarksHide: string;
@@ -190,12 +191,16 @@ export interface Translations {
     mermaidThemeLabel: string;
     mermaidThemes: Record<"default" | "neutral" | "forest" | "dark" | "base", string>;
     findPlaceholder: string;
+    findEditorPlaceholder: string;
+    findPreviewPlaceholder: string;
     findPrevTitle: string;
     findNextTitle: string;
     findEditorCount: (n: number) => string;
     findPreviewCount: (n: number) => string;
+    copyText: string;
     gotoInEditor: string;
     gotoNotFound: string;
+    syncScrollLabel: string;
     editorTitle: string;
     previewTitle: string;
     saveMdBtn: string;
@@ -260,6 +265,11 @@ export interface Translations {
     pickOutDialog: string;
     noInfoJson: string;
     chaptersAndPages: (chapters: number, pages: number) => string;
+    editInfoJsonBtn: string;
+    infoJsonTitle: string;
+    saveInfoJsonBtn: string;
+    savedInfoJson: string;
+    invalidJsonError: string;
     doneSummary: (stories: number, files: number, size: string, zips: number) => string;
   };
   renamer: {

@@ -81,6 +81,10 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
     "knit.img2pdf.showBookmarks",
     true,
   );
+  const [loadThumbs, setLoadThumbs] = usePersistentState<boolean>(
+    "knit.img2pdf.loadThumbs",
+    true,
+  );
 
   const [layoutMode, setLayoutMode] = usePersistentState<"original_size" | "fit_a4" | "fit_letter">(
     "knit.img2pdf.layoutMode",
@@ -119,11 +123,6 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
   const dropTargetRef = React.useRef<{ index: number; side: "before" | "after" } | null>(null);
   const pagesRef = React.useRef<PageDraft[]>(pages);
   const suppressClickUntilRef = React.useRef<number>(0);
-  const clickTrackerRef = React.useRef<{
-    pageId: string | null;
-    count: number;
-    timer: number | null;
-  }>({ pageId: null, count: 0, timer: null });
 
   React.useEffect(() => {
     pagesRef.current = pages;
@@ -173,9 +172,18 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
   const resolveFullResSrc = React.useCallback(
     (page: PageDraft | null): string => {
       if (!page) return "";
+      const lower = page.source.path.toLowerCase();
+      // Animated images (GIF / WebP / APNG) must use native file URL so WebView plays animation
+      if (
+        page.source.kind === "animated_frame" ||
+        lower.endsWith(".gif") ||
+        lower.endsWith(".webp") ||
+        lower.endsWith(".apng")
+      ) {
+        if (isTauriRuntime()) return convertFileSrc(page.source.path);
+      }
       if (hiResCache[page.id]) return hiResCache[page.id];
       if (page.source.kind === "image_file") {
-        const lower = page.source.path.toLowerCase();
         if (!lower.endsWith(".avif") && !lower.endsWith(".tiff") && !lower.endsWith(".tif")) {
           if (isTauriRuntime()) return convertFileSrc(page.source.path);
         }
@@ -238,13 +246,23 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
           }
           return [...prev, ...scan.pages];
         });
-        void loadThumbnails(scan.pages);
+        if (loadThumbs) {
+          void loadThumbnails(scan.pages);
+        }
       } catch (e) {
         setErrorMsg(String(e));
       }
     },
-    [animatedPolicy, loadThumbnails],
+    [animatedPolicy, loadThumbnails, loadThumbs],
   );
+
+  React.useEffect(() => {
+    if (!loadThumbs || pages.length === 0) return;
+    const missing = pages.filter((p) => !thumbCache[p.id]);
+    if (missing.length > 0) {
+      void loadThumbnails(missing);
+    }
+  }, [loadThumbs, pages, thumbCache, loadThumbnails]);
 
   React.useEffect(() => {
     if (!droppedBatch || droppedBatch.seq === lastHandledDropSeq.current) return;
@@ -430,10 +448,6 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
         if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 5) return;
         dragging = true;
         suppressClickUntilRef.current = performance.now() + 300;
-        if (clickTrackerRef.current.timer !== null) {
-          window.clearTimeout(clickTrackerRef.current.timer);
-          clickTrackerRef.current = { pageId: null, count: 0, timer: null };
-        }
         setDragIndex(idx);
       }
       setDragGhostPos({ x: ev.clientX, y: ev.clientY });
@@ -474,32 +488,10 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
     window.addEventListener("pointercancel", onUp);
   };
 
-  const handleCardSurfaceClick = (e: React.MouseEvent<HTMLDivElement>, pageId: string) => {
+  const handleCardDoubleClick = (e: React.MouseEvent<HTMLDivElement>, pageId: string) => {
     if ((e.target as HTMLElement).closest("button")) return;
     if (performance.now() < suppressClickUntilRef.current) return;
-
-    const tracker = clickTrackerRef.current;
-    if (tracker.timer !== null) {
-      window.clearTimeout(tracker.timer);
-      tracker.timer = null;
-    }
-
-    const nextCount = tracker.pageId === pageId ? tracker.count + 1 : 1;
-    if (nextCount >= 3) {
-      clickTrackerRef.current = { pageId: null, count: 0, timer: null };
-      setPreviewPageId(null);
-      setEditingPageId(pageId);
-      return;
-    }
-
-    const timer = window.setTimeout(() => {
-      if (clickTrackerRef.current.pageId === pageId && clickTrackerRef.current.count === 2) {
-        setPreviewPageId(pageId);
-      }
-      clickTrackerRef.current = { pageId: null, count: 0, timer: null };
-    }, 250);
-
-    clickTrackerRef.current = { pageId, count: nextCount, timer };
+    setPreviewPageId(pageId);
   };
 
   return (
@@ -711,6 +703,14 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
                 <span>{t.image2pdf.dragHint}</span>
               </div>
               <div className="flex flex-wrap items-center gap-2 text-xs text-[#495057]">
+                <label className="mr-1 flex cursor-pointer items-center gap-1.5 font-semibold text-[#343A40]">
+                  <input
+                    type="checkbox"
+                    checked={loadThumbs}
+                    onChange={(e) => setLoadThumbs(e.target.checked)}
+                  />
+                  {t.image2pdf.loadThumbsLabel}
+                </label>
                 <span className="font-semibold">{t.image2pdf.gridColumnsLabel}</span>
                 {GRID_COL_OPTIONS.map((cols) => (
                   <button
@@ -779,23 +779,19 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
                         key={page.id}
                         ref={(el) => registerCardRef(page.id, el)}
                         onPointerDown={(e) => handleCardPointerDown(e, idx)}
-                        onClick={(e) => handleCardSurfaceClick(e, page.id)}
-                        style={{
-                          contentVisibility: "auto",
-                          containIntrinsicSize: "230px",
-                        }}
+                        onDoubleClick={(e) => handleCardDoubleClick(e, page.id)}
                         className="relative"
                       >
                         {showBarLeft && (
                           <div
                             aria-hidden="true"
-                            className="pointer-events-none absolute -left-2 bottom-0 top-0 z-20 w-1 rounded-full bg-[#007BFF] shadow-[0_0_8px_rgba(0,123,255,0.65)]"
+                            className="pointer-events-none absolute -left-1.5 bottom-0 top-0 z-30 w-1.5 rounded-full bg-[#007BFF] shadow-[0_0_8px_rgba(0,123,255,0.75)]"
                           />
                         )}
                         {showBarRight && (
                           <div
                             aria-hidden="true"
-                            className="pointer-events-none absolute -right-2 bottom-0 top-0 z-20 w-1 rounded-full bg-[#007BFF] shadow-[0_0_8px_rgba(0,123,255,0.65)]"
+                            className="pointer-events-none absolute -right-1.5 bottom-0 top-0 z-30 w-1.5 rounded-full bg-[#007BFF] shadow-[0_0_8px_rgba(0,123,255,0.75)]"
                           />
                         )}
 
@@ -804,33 +800,35 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
                             dragIndex !== null ? "cursor-grabbing" : "cursor-grab"
                           } ${isDragged ? "opacity-40 ring-2 ring-[#007BFF]" : "opacity-100"}`}
                         >
-                          <div className="relative flex h-36 items-center justify-center overflow-hidden bg-[#F1F3F5] p-2">
-                            {thumbCache[page.id] ? (
-                              <img
-                                src={thumbCache[page.id]}
-                                alt={page.label}
-                                loading="lazy"
-                                decoding="async"
-                                draggable={false}
-                                className={`pointer-events-none object-contain ${
-                                  isQuarterRotated
-                                    ? "max-h-[112px] max-w-[112px]"
-                                    : "max-h-full max-w-full"
-                                }`}
-                                style={{ transform: `rotate(${page.rotation_deg}deg)` }}
-                              />
-                            ) : (
-                              <Layers className="h-6 w-6 text-[#ADB5BD]" />
-                            )}
-                            <span className="absolute left-1.5 top-1.5 flex items-center gap-0.5 rounded-[4px] bg-[#343A40] px-1.5 py-0.5 font-mono-code text-[11px] text-white">
-                              <GripVertical className="h-3 w-3 opacity-80" />#{idx + 1}
-                            </span>
-                            {hasEdits && (
-                              <span className="absolute right-1.5 top-1.5 rounded-[4px] bg-[#17A2B8] px-1.5 py-0.5 text-[11px] font-semibold text-white">
-                                {t.image2pdf.editedBadge}
+                          {loadThumbs && (
+                            <div className="relative flex h-36 items-center justify-center overflow-hidden bg-[#F1F3F5] p-2">
+                              {thumbCache[page.id] ? (
+                                <img
+                                  src={thumbCache[page.id]}
+                                  alt={page.label}
+                                  loading="lazy"
+                                  decoding="async"
+                                  draggable={false}
+                                  className={`pointer-events-none object-contain ${
+                                    isQuarterRotated
+                                      ? "max-h-[112px] max-w-[112px]"
+                                      : "max-h-full max-w-full"
+                                  }`}
+                                  style={{ transform: `rotate(${page.rotation_deg}deg)` }}
+                                />
+                              ) : (
+                                <Layers className="h-6 w-6 text-[#ADB5BD]" />
+                              )}
+                              <span className="absolute left-1.5 top-1.5 flex items-center gap-0.5 rounded-[4px] bg-[#343A40] px-1.5 py-0.5 font-mono-code text-[11px] text-white">
+                                <GripVertical className="h-3 w-3 opacity-80" />#{idx + 1}
                               </span>
-                            )}
-                          </div>
+                              {hasEdits && (
+                                <span className="absolute right-1.5 top-1.5 rounded-[4px] bg-[#17A2B8] px-1.5 py-0.5 text-[11px] font-semibold text-white">
+                                  {t.image2pdf.editedBadge}
+                                </span>
+                              )}
+                            </div>
+                          )}
                           <div className="border-t border-[#DEE2E6] p-2">
                             <div
                               className="truncate text-sm font-semibold text-[#212529]"
@@ -854,8 +852,9 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
                               <div className="flex items-center gap-1">
                                 <button
                                   type="button"
+                                  disabled={!loadThumbs}
                                   onClick={() => setEditingPageId(page.id)}
-                                  className="rounded-[4px] border border-[#007BFF] px-2 py-0.5 text-xs font-semibold text-[#007BFF] hover:bg-[#007BFF] hover:text-white"
+                                  className="rounded-[4px] border border-[#007BFF] px-2 py-0.5 text-xs font-semibold text-[#007BFF] hover:bg-[#007BFF] hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
                                   title={t.image2pdf.editBtnTitle}
                                 >
                                   <Edit3 className="mr-0.5 inline h-3 w-3" />
@@ -933,12 +932,13 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
               <div className="flex items-center gap-2">
                 <button
                   type="button"
+                  disabled={!loadThumbs}
                   onClick={() => {
                     const id = previewPage.id;
                     setPreviewPageId(null);
                     setEditingPageId(id);
                   }}
-                  className="inline-flex items-center gap-1.5 rounded-[4px] bg-[#007BFF] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#0069D9]"
+                  className="inline-flex items-center gap-1.5 rounded-[4px] bg-[#007BFF] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#0069D9] disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <Edit3 className="h-3.5 w-3.5" />
                   {t.image2pdf.editBtn}

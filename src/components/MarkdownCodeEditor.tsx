@@ -19,6 +19,8 @@ import type { SourceRange } from "../lib/markdownSearch";
 export interface MarkdownCodeEditorHandle {
   jumpToRange: (from: number, to: number, focus?: boolean) => void;
   setSearchHighlights: (ranges: SourceRange[], activeIndex: number | null) => void;
+  getScrollRatio: () => number;
+  setScrollRatio: (ratio: number) => void;
 }
 
 interface MarkdownCodeEditorProps {
@@ -26,6 +28,7 @@ interface MarkdownCodeEditorProps {
   onChange: (value: string) => void;
   onSave?: () => void;
   onOpenFind?: () => void;
+  onScrollRatioChange?: (ratio: number) => void;
   placeholder?: string;
 }
 
@@ -135,12 +138,13 @@ const editorBaseTheme = EditorView.theme({
 export const MarkdownCodeEditor = React.forwardRef<
   MarkdownCodeEditorHandle,
   MarkdownCodeEditorProps
->(({ value, onChange, onSave, onOpenFind, placeholder = "" }, ref) => {
+>(({ value, onChange, onSave, onOpenFind, onScrollRatioChange, placeholder = "" }, ref) => {
   const hostRef = React.useRef<HTMLDivElement | null>(null);
   const viewRef = React.useRef<EditorView | null>(null);
   const onChangeRef = React.useRef(onChange);
   const onSaveRef = React.useRef(onSave);
   const onOpenFindRef = React.useRef(onOpenFind);
+  const onScrollRatioRef = React.useRef(onScrollRatioChange);
 
   React.useEffect(() => {
     onChangeRef.current = onChange;
@@ -153,6 +157,10 @@ export const MarkdownCodeEditor = React.forwardRef<
   React.useEffect(() => {
     onOpenFindRef.current = onOpenFind;
   }, [onOpenFind]);
+
+  React.useEffect(() => {
+    onScrollRatioRef.current = onScrollRatioChange;
+  }, [onScrollRatioChange]);
 
   React.useImperativeHandle(
     ref,
@@ -182,6 +190,20 @@ export const MarkdownCodeEditor = React.forwardRef<
           effects.push(EditorView.scrollIntoView(target.from, { y: "center" }));
         }
         view.dispatch({ effects });
+      },
+      getScrollRatio: () => {
+        const scroller = viewRef.current?.scrollDOM;
+        if (!scroller) return 0;
+        const maxScroll = scroller.scrollHeight - scroller.clientHeight;
+        return maxScroll > 0 ? scroller.scrollTop / maxScroll : 0;
+      },
+      setScrollRatio: (ratio: number) => {
+        const scroller = viewRef.current?.scrollDOM;
+        if (!scroller) return;
+        const maxScroll = scroller.scrollHeight - scroller.clientHeight;
+        if (maxScroll > 0) {
+          scroller.scrollTop = Math.min(1, Math.max(0, ratio)) * maxScroll;
+        }
       },
     }),
     [],
@@ -234,7 +256,15 @@ export const MarkdownCodeEditor = React.forwardRef<
     const view = new EditorView({ state, parent: host });
     viewRef.current = view;
 
+    const handleScroll = () => {
+      const scroller = view.scrollDOM;
+      const maxScroll = scroller.scrollHeight - scroller.clientHeight;
+      onScrollRatioRef.current?.(maxScroll > 0 ? scroller.scrollTop / maxScroll : 0);
+    };
+    view.scrollDOM.addEventListener("scroll", handleScroll, { passive: true });
+
     return () => {
+      view.scrollDOM.removeEventListener("scroll", handleScroll);
       view.destroy();
       viewRef.current = null;
     };
