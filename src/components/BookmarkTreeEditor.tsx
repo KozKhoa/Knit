@@ -12,7 +12,7 @@ interface BookmarkTreeEditorProps {
   onChange: (next: BookmarkNode[]) => void;
 }
 
-export const BookmarkTreeEditor: React.FC<BookmarkTreeEditorProps> = ({
+export const BookmarkTreeEditor: React.FC<BookmarkTreeEditorProps> = React.memo(({
   nodes,
   totalPages,
   onChange,
@@ -92,7 +92,7 @@ export const BookmarkTreeEditor: React.FC<BookmarkTreeEditorProps> = ({
       )}
     </div>
   );
-};
+});
 
 interface BookmarkRowProps {
   node: BookmarkNode;

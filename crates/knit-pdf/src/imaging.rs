@@ -11,11 +11,13 @@ use image::codecs::webp::WebPDecoder;
 use image::metadata::Orientation;
 use image::{AnimationDecoder, DynamicImage, ImageDecoder, ImageFormat, ImageReader, Rgba, RgbaImage};
 use imageproc::drawing::{draw_filled_circle_mut, draw_line_segment_mut, draw_text_mut};
-use knit_core::{natural_cmp, KnitError, Result};
+use knit_core::{natural_cmp, JobLogLevel, JobProgress, JobReporter, KnitError, NoopReporter, Result};
+use rayon::prelude::*;
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{BufReader, Cursor, Write};
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
 use uuid::Uuid;
 
@@ -60,9 +62,226 @@ fn default_font() -> Result<&'static FontArc> {
         .ok_or_else(|| KnitError::InvalidInput("Khong tim thay font UTF-8 mac dinh".into()))
 }
 
+/// Đọc riêng các box header ISOBMFF (`ftyp`, `meta`, `moov`) của file AVIF,
+/// bỏ qua `mdat` bằng `seek` để không nạp hàng chục MB pixel nén vào RAM khi scan.
+fn read_avif_header_boxes(path: &Path) -> Result<Option<Vec<u8>>> {
+    const MAX_HEADER_BOX_BYTES: u64 = 16 * 1024 * 1024;
+    let mut file = BufReader::new(File::open(path)?);
+    let mut header_buf = Vec::new();
+    let mut has_ftyp = false;
+    let mut has_meta_or_moov = false;
+
+    loop {
+        let mut hdr8 = [0u8; 8];
+        match file.read_exact(&mut hdr8) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(e.into()),
+        }
+
+        let size32 = u32::from_be_bytes([hdr8[0], hdr8[1], hdr8[2], hdr8[3]]) as u64;
+        let box_type = [hdr8[4], hdr8[5], hdr8[6], hdr8[7]];
+
+        let (box_size, header_len, ext_hdr) = if size32 == 1 {
+            let mut size64_bytes = [0u8; 8];
+            if file.read_exact(&mut size64_bytes).is_err() {
+                return Ok(None);
+            }
+            let size64 = u64::from_be_bytes(size64_bytes);
+            if size64 < 16 {
+                return Ok(None);
+            }
+            (size64, 16u64, Some(size64_bytes))
+        } else if size32 == 0 {
+            // Box kéo dài tới EOF: fallback đọc nguyên file nếu cần
+            return Ok(None);
+        } else {
+            if size32 < 8 {
+                return Ok(None);
+            }
+            (size32, 8u64, None)
+        };
+
+        let payload_len = box_size - header_len;
+        let is_header_box = matches!(&box_type, b"ftyp" | b"meta" | b"moov");
+
+        if is_header_box {
+            if payload_len > MAX_HEADER_BOX_BYTES {
+                return Ok(None);
+            }
+            if &box_type == b"ftyp" {
+                has_ftyp = true;
+            } else {
+                has_meta_or_moov = true;
+            }
+            header_buf.extend_from_slice(&hdr8);
+            if let Some(ext) = ext_hdr {
+                header_buf.extend_from_slice(&ext);
+            }
+            let start = header_buf.len();
+            header_buf.resize(start + payload_len as usize, 0);
+            if file.read_exact(&mut header_buf[start..]).is_err() {
+                return Ok(None);
+            }
+            if has_ftyp && has_meta_or_moov {
+                // Phần lớn AVIF chỉ có ftyp + meta trước mdat; nếu không phải sequence có thể dừng sớm
+                // trừ trường hợp ftyp báo sequence (avis) cần thêm moov.
+                if &box_type != b"ftyp" && !header_buf.windows(4).any(|w| w == b"avis") {
+                    break;
+                }
+            }
+        } else {
+            let Ok(offset) = i64::try_from(payload_len) else {
+                return Ok(None);
+            };
+            if file.seek(SeekFrom::Current(offset)).is_err() {
+                return Ok(None);
+            }
+        }
+    }
+
+    if has_ftyp && has_meta_or_moov {
+        Ok(Some(header_buf))
+    } else {
+        Ok(None)
+    }
+}
+
+fn read_exif_u16(buf: &[u8], off: usize, little: bool) -> Option<u16> {
+    let bytes: [u8; 2] = buf.get(off..off + 2)?.try_into().ok()?;
+    Some(if little {
+        u16::from_le_bytes(bytes)
+    } else {
+        u16::from_be_bytes(bytes)
+    })
+}
+
+fn read_exif_u32(buf: &[u8], off: usize, little: bool) -> Option<u32> {
+    let bytes: [u8; 4] = buf.get(off..off + 4)?.try_into().ok()?;
+    Some(if little {
+        u32::from_le_bytes(bytes)
+    } else {
+        u32::from_be_bytes(bytes)
+    })
+}
+
+fn parse_exif_swaps_axes(payload: &[u8]) -> Option<bool> {
+    let tiff = payload.strip_prefix(b"Exif\0\0")?;
+    let little = match tiff.get(0..2)? {
+        b"II" => true,
+        b"MM" => false,
+        _ => return None,
+    };
+    if read_exif_u16(tiff, 2, little)? != 0x002A {
+        return None;
+    }
+    let ifd0 = read_exif_u32(tiff, 4, little)? as usize;
+    let count = read_exif_u16(tiff, ifd0, little)?.min(128) as usize;
+    for idx in 0..count {
+        let entry = ifd0 + 2 + idx * 12;
+        if entry + 12 > tiff.len() {
+            break;
+        }
+        let tag = read_exif_u16(tiff, entry, little)?;
+        if tag == 0x0112 {
+            let field_type = read_exif_u16(tiff, entry + 2, little)?;
+            let val_count = read_exif_u32(tiff, entry + 4, little)?;
+            if field_type == 3 && val_count >= 1 {
+                let orient = read_exif_u16(tiff, entry + 8, little)?;
+                return Some(matches!(orient, 5..=8));
+            }
+        }
+    }
+    None
+}
+
+/// Đọc trực tiếp kích thước SOF và EXIF orientation từ phần header JPEG
+/// thay vì đọc toàn bộ file vào RAM như `image::codecs::jpeg::JpegDecoder::new`.
+fn read_jpeg_header_dimensions(path: &Path) -> Result<Option<(u32, u32)>> {
+    let mut file = BufReader::new(File::open(path)?);
+    let mut soi = [0u8; 2];
+    if file.read_exact(&mut soi).is_err() || soi != [0xFF, 0xD8] {
+        return Ok(None);
+    }
+
+    let mut swap_axes: Option<bool> = None;
+    let mut one = [0u8; 1];
+
+    loop {
+        if file.read_exact(&mut one).is_err() || one[0] != 0xFF {
+            return Ok(None);
+        }
+        let mut marker = one[0];
+        while marker == 0xFF {
+            if file.read_exact(&mut one).is_err() {
+                return Ok(None);
+            }
+            marker = one[0];
+        }
+
+        if matches!(marker, 0x00 | 0xD9 | 0xDA) {
+            return Ok(None);
+        }
+        if marker == 0xD8 || marker == 0x01 || (0xD0..=0xD7).contains(&marker) {
+            continue;
+        }
+
+        let mut len_bytes = [0u8; 2];
+        if file.read_exact(&mut len_bytes).is_err() {
+            return Ok(None);
+        }
+        let seg_len = u16::from_be_bytes(len_bytes) as usize;
+        if seg_len < 2 {
+            return Ok(None);
+        }
+        let payload_len = seg_len - 2;
+
+        if marker == 0xE1 && swap_axes.is_none() && (14..=256 * 1024).contains(&payload_len) {
+            let mut payload = vec![0u8; payload_len];
+            if file.read_exact(&mut payload).is_err() {
+                return Ok(None);
+            }
+            swap_axes = parse_exif_swaps_axes(&payload);
+            continue;
+        }
+
+        if matches!(marker, 0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF)
+            && payload_len >= 5
+        {
+            let mut sof = [0u8; 5];
+            if file.read_exact(&mut sof).is_err() {
+                return Ok(None);
+            }
+            let h = u16::from_be_bytes([sof[1], sof[2]]) as u32;
+            let w = u16::from_be_bytes([sof[3], sof[4]]) as u32;
+            if w > 0 && h > 0 {
+                return Ok(Some(if swap_axes.unwrap_or(false) {
+                    (h, w)
+                } else {
+                    (w, h)
+                }));
+            }
+            return Ok(None);
+        }
+
+        if file.seek(SeekFrom::Current(payload_len as i64)).is_err() {
+            return Ok(None);
+        }
+    }
+}
+
 pub fn inspect_image_dimensions(path: &Path) -> Result<(u32, u32)> {
     let ext = ext_lower(path);
-    if ext == "avif" {
+    if matches!(ext.as_str(), "jpg" | "jpeg" | "jfif") {
+        if let Some(dims) = read_jpeg_header_dimensions(path)? {
+            return Ok(dims);
+        }
+    } else if ext == "avif" {
+        if let Ok(Some(header_bytes)) = read_avif_header_boxes(path) {
+            if let Ok(info) = oxideav_avif::info(&header_bytes) {
+                return Ok((info.width, info.height));
+            }
+        }
         let bytes = std::fs::read(path)?;
         let info = oxideav_avif::info(&bytes)
             .map_err(|e| KnitError::InvalidInput(format!("AVIF loi ({}): {e}", path.display())))?;
@@ -87,37 +306,109 @@ pub fn inspect_image_dimensions(path: &Path) -> Result<(u32, u32)> {
     }
 }
 
+fn scan_files_parallel_drafts(
+    paths: &[PathBuf],
+    animated_policy: AnimatedImagePolicy,
+    reporter: &dyn JobReporter,
+) -> (Vec<Vec<PageDraft>>, Vec<String>) {
+    let total = paths.len() as u64;
+    let done_counter = AtomicUsize::new(0);
+
+    let results: Vec<(Option<Vec<PageDraft>>, Option<String>)> = paths
+        .par_iter()
+        .map(|path| {
+            let outcome = match build_image_drafts(path, animated_policy) {
+                Ok(drafts) => (Some(drafts), None),
+                Err(err) => {
+                    let msg = format!("Bỏ qua ảnh lỗi {}: {err}", path.display());
+                    reporter.on_log(JobLogLevel::Warn, &msg);
+                    (None, Some(msg))
+                }
+            };
+            let done = done_counter.fetch_add(1, Ordering::Relaxed) + 1;
+            let name = path
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            reporter.on_progress(JobProgress {
+                phase: "scan_images".to_string(),
+                done: done as u64,
+                total,
+                bytes_done: 0,
+                bytes_total: 0,
+                current_item: name,
+            });
+            outcome
+        })
+        .collect();
+
+    let mut chunks = Vec::with_capacity(results.len());
+    let mut warnings = Vec::new();
+    for (drafts, warn) in results {
+        if let Some(w) = warn {
+            warnings.push(w);
+        }
+        chunks.push(drafts.unwrap_or_default());
+    }
+    (chunks, warnings)
+}
+
 pub fn scan_image_files(
     paths: &[PathBuf],
     animated_policy: AnimatedImagePolicy,
 ) -> Result<ImageScanResult> {
+    scan_image_files_with_reporter(paths, animated_policy, &NoopReporter)
+}
+
+pub fn scan_image_files_with_reporter(
+    paths: &[PathBuf],
+    animated_policy: AnimatedImagePolicy,
+    reporter: &dyn JobReporter,
+) -> Result<ImageScanResult> {
     let mut sorted = paths.to_vec();
     sorted.sort_by(|a, b| natural_cmp(&a.to_string_lossy(), &b.to_string_lossy()));
 
-    let mut pages = Vec::new();
-    for path in sorted {
-        if !path.is_file() || !is_supported_image(&path) {
-            continue;
-        }
-        append_image_drafts(&path, animated_policy, &mut pages)?;
-    }
+    let valid_paths: Vec<PathBuf> = sorted
+        .into_iter()
+        .filter(|path| path.is_file() && is_supported_image(path))
+        .collect();
+
+    let (chunks, warnings) = scan_files_parallel_drafts(&valid_paths, animated_policy, reporter);
+    let pages = chunks.into_iter().flatten().collect();
 
     Ok(ImageScanResult {
         pages,
         bookmarks: Vec::new(),
+        warnings,
     })
+}
+
+struct BookmarkBlueprint {
+    title: String,
+    start_file_idx: usize,
+    end_file_idx: usize,
+    is_cover: bool,
+    children: Vec<BookmarkBlueprint>,
 }
 
 pub fn scan_image_folder(
     root: &Path,
     animated_policy: AnimatedImagePolicy,
 ) -> Result<ImageScanResult> {
+    scan_image_folder_with_reporter(root, animated_policy, &NoopReporter)
+}
+
+pub fn scan_image_folder_with_reporter(
+    root: &Path,
+    animated_policy: AnimatedImagePolicy,
+    reporter: &dyn JobReporter,
+) -> Result<ImageScanResult> {
     if !root.is_dir() {
         return Err(KnitError::NotFound(root.display().to_string()));
     }
 
-    let mut pages = Vec::new();
-    let mut bookmarks = Vec::new();
+    let mut files_plan: Vec<PathBuf> = Vec::new();
+    let mut bookmark_blueprints: Vec<BookmarkBlueprint> = Vec::new();
     let mut seen_covers: HashSet<PathBuf> = HashSet::new();
 
     // Cover ở cấp root nếu có (cover.jpg/png/webp...)
@@ -125,59 +416,79 @@ pub fn scan_image_folder(
     if let Some(cover_idx) = root_files.iter().position(|p| is_cover_name(p)) {
         let cover = root_files.remove(cover_idx);
         seen_covers.insert(cover.clone());
-        let start = pages.len();
-        append_image_drafts(&cover, animated_policy, &mut pages)?;
-        if pages.len() > start {
-            bookmarks.push(BookmarkNode {
-                title: "Cover".to_string(),
-                target_page_index: start,
-                children: Vec::new(),
-            });
-        }
+        let start_file_idx = files_plan.len();
+        files_plan.push(cover);
+        bookmark_blueprints.push(BookmarkBlueprint {
+            title: "Cover".to_string(),
+            start_file_idx,
+            end_file_idx: files_plan.len(),
+            is_cover: true,
+            children: Vec::new(),
+        });
     }
 
-    for img in root_files {
-        append_image_drafts(&img, animated_policy, &mut pages)?;
-    }
+    files_plan.extend(root_files);
 
     let subdirs = collect_sorted_subdirs(root)?;
     for sub in subdirs {
-        if let Some(bm) = scan_subtree(&sub, animated_policy, &mut pages, &mut seen_covers)? {
-            bookmarks.push(bm);
+        if let Some(bm) = collect_subtree_plan(&sub, &mut files_plan, &mut seen_covers)? {
+            bookmark_blueprints.push(bm);
         }
     }
 
-    Ok(ImageScanResult { pages, bookmarks })
+    // Kiểm tra kích thước ảnh & frame song song qua rayon nhưng vẫn giữ nguyên thứ tự cây thư mục
+    let (chunks, warnings) = scan_files_parallel_drafts(&files_plan, animated_policy, reporter);
+
+    let mut file_to_page_offset = Vec::with_capacity(chunks.len() + 1);
+    let mut total_pages = 0usize;
+    for chunk in &chunks {
+        file_to_page_offset.push(total_pages);
+        total_pages += chunk.len();
+    }
+    file_to_page_offset.push(total_pages);
+
+    let mut pages = Vec::with_capacity(total_pages);
+    for chunk in chunks {
+        pages.extend(chunk);
+    }
+
+    let bookmarks = materialize_bookmarks(&bookmark_blueprints, &file_to_page_offset);
+
+    Ok(ImageScanResult {
+        pages,
+        bookmarks,
+        warnings,
+    })
 }
 
-fn scan_subtree(
+fn collect_subtree_plan(
     dir: &Path,
-    animated_policy: AnimatedImagePolicy,
-    pages: &mut Vec<PageDraft>,
+    files_plan: &mut Vec<PathBuf>,
     seen: &mut HashSet<PathBuf>,
-) -> Result<Option<BookmarkNode>> {
-    let start_idx = pages.len();
+) -> Result<Option<BookmarkBlueprint>> {
+    let start_file_idx = files_plan.len();
     let mut files = collect_dir_images(dir)?;
     if let Some(cover_idx) = files.iter().position(|p| is_cover_name(p)) {
         let cover = files.remove(cover_idx);
         if seen.insert(cover.clone()) {
-            append_image_drafts(&cover, animated_policy, pages)?;
+            files_plan.push(cover);
         }
     }
     for f in files {
         if seen.insert(f.clone()) {
-            append_image_drafts(&f, animated_policy, pages)?;
+            files_plan.push(f);
         }
     }
 
     let mut children = Vec::new();
     for sub in collect_sorted_subdirs(dir)? {
-        if let Some(child_bm) = scan_subtree(&sub, animated_policy, pages, seen)? {
+        if let Some(child_bm) = collect_subtree_plan(&sub, files_plan, seen)? {
             children.push(child_bm);
         }
     }
 
-    if pages.len() == start_idx && children.is_empty() {
+    let end_file_idx = files_plan.len();
+    if end_file_idx == start_file_idx && children.is_empty() {
         return Ok(None);
     }
 
@@ -185,11 +496,37 @@ fn scan_subtree(
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Section".to_string());
-    Ok(Some(BookmarkNode {
+    Ok(Some(BookmarkBlueprint {
         title,
-        target_page_index: start_idx,
+        start_file_idx,
+        end_file_idx,
+        is_cover: false,
         children,
     }))
+}
+
+fn materialize_bookmarks(
+    blueprints: &[BookmarkBlueprint],
+    file_to_page_offset: &[usize],
+) -> Vec<BookmarkNode> {
+    let mut out = Vec::with_capacity(blueprints.len());
+    for bp in blueprints {
+        let start_page = file_to_page_offset[bp.start_file_idx];
+        let end_page = file_to_page_offset[bp.end_file_idx];
+        let children = materialize_bookmarks(&bp.children, file_to_page_offset);
+        if bp.is_cover && end_page <= start_page {
+            continue;
+        }
+        if !bp.is_cover && end_page == start_page && children.is_empty() {
+            continue;
+        }
+        out.push(BookmarkNode {
+            title: bp.title.clone(),
+            target_page_index: start_page,
+            children,
+        });
+    }
+    out
 }
 
 fn collect_dir_images(dir: &Path) -> Result<Vec<PathBuf>> {
@@ -236,18 +573,20 @@ fn is_cover_name(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn append_image_drafts(
+fn build_image_drafts(
     path: &Path,
     animated_policy: AnimatedImagePolicy,
-    out: &mut Vec<PageDraft>,
-) -> Result<()> {
+) -> Result<Vec<PageDraft>> {
+    let mut out = Vec::new();
     let file_name = path
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "image".to_string());
+    let file_size_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
 
     if animated_policy == AnimatedImagePolicy::UnpackAllFrames {
         if let Some(frames) = probe_animation_frames(path)? {
+            out.reserve(frames.len());
             for (idx, (w, h, dur_ms)) in frames.into_iter().enumerate() {
                 out.push(PageDraft {
                     id: Uuid::new_v4().to_string(),
@@ -262,9 +601,10 @@ fn append_image_drafts(
                     label: format!("{file_name} #{}", idx + 1),
                     width_px: w,
                     height_px: h,
+                    file_size_bytes,
                 });
             }
-            return Ok(());
+            return Ok(out);
         }
     }
 
@@ -281,11 +621,13 @@ fn append_image_drafts(
         label: file_name,
         width_px: w,
         height_px: h,
+        file_size_bytes,
     });
-    Ok(())
+    Ok(out)
 }
 
 /// Trả về danh sách `(width, height, duration_ms)` nếu file là GIF/WebP động (>1 frame).
+/// Duyệt từng frame thay vì `collect_frames()` để giải phóng ngay pixel buffer sau mỗi frame.
 fn probe_animation_frames(path: &Path) -> Result<Option<Vec<(u32, u32, u32)>>> {
     let ext = ext_lower(path);
     match ext.as_str() {
@@ -293,23 +635,20 @@ fn probe_animation_frames(path: &Path) -> Result<Option<Vec<(u32, u32, u32)>>> {
             let file = BufReader::new(File::open(path)?);
             let decoder = GifDecoder::new(file)
                 .map_err(|e| KnitError::InvalidInput(format!("GIF loi {}: {e}", path.display())))?;
-            let frames = decoder.into_frames().collect_frames().map_err(|e| {
-                KnitError::InvalidInput(format!("Loi doc frames GIF {}: {e}", path.display()))
-            })?;
-            if frames.len() <= 1 {
+            let mut frames_meta = Vec::new();
+            for frame_res in decoder.into_frames() {
+                let f = frame_res.map_err(|e| {
+                    KnitError::InvalidInput(format!("Loi doc frames GIF {}: {e}", path.display()))
+                })?;
+                let (num, den) = f.delay().numer_denom_ms();
+                let ms = num / den.max(1);
+                let buf = f.into_buffer();
+                frames_meta.push((buf.width(), buf.height(), ms.max(20)));
+            }
+            if frames_meta.len() <= 1 {
                 return Ok(None);
             }
-            Ok(Some(
-                frames
-                    .into_iter()
-                    .map(|f| {
-                        let (num, den) = f.delay().numer_denom_ms();
-                        let ms = num / den.max(1);
-                        let buf = f.into_buffer();
-                        (buf.width(), buf.height(), ms.max(20))
-                    })
-                    .collect(),
-            ))
+            Ok(Some(frames_meta))
         }
         "webp" => {
             let file = BufReader::new(File::open(path)?);
@@ -318,23 +657,20 @@ fn probe_animation_frames(path: &Path) -> Result<Option<Vec<(u32, u32, u32)>>> {
             if !decoder.has_animation() {
                 return Ok(None);
             }
-            let frames = decoder.into_frames().collect_frames().map_err(|e| {
-                KnitError::InvalidInput(format!("Loi doc frames WebP {}: {e}", path.display()))
-            })?;
-            if frames.len() <= 1 {
+            let mut frames_meta = Vec::new();
+            for frame_res in decoder.into_frames() {
+                let f = frame_res.map_err(|e| {
+                    KnitError::InvalidInput(format!("Loi doc frames WebP {}: {e}", path.display()))
+                })?;
+                let (num, den) = f.delay().numer_denom_ms();
+                let ms = num / den.max(1);
+                let buf = f.into_buffer();
+                frames_meta.push((buf.width(), buf.height(), ms.max(20)));
+            }
+            if frames_meta.len() <= 1 {
                 return Ok(None);
             }
-            Ok(Some(
-                frames
-                    .into_iter()
-                    .map(|f| {
-                        let (num, den) = f.delay().numer_denom_ms();
-                        let ms = num / den.max(1);
-                        let buf = f.into_buffer();
-                        (buf.width(), buf.height(), ms.max(20))
-                    })
-                    .collect(),
-            ))
+            Ok(Some(frames_meta))
         }
         _ => Ok(None),
     }
@@ -633,6 +969,31 @@ pub fn render_image_thumbnail_jpeg(path: &Path, max_width: u32, quality: u8) -> 
     encoder
         .encode_image(&DynamicImage::ImageRgb8(rgb))
         .map_err(|e| KnitError::InvalidInput(format!("Loi encode JPEG thumbnail: {e}")))?;
+    Ok(out)
+}
+
+/// Render ảnh preview/thumbnail của một `PageDraft` đã áp dụng đầy đủ crop, xoay và annotation.
+pub fn render_page_draft_preview_jpeg(
+    draft: &PageDraft,
+    max_size: u32,
+    quality: u8,
+) -> Result<Vec<u8>> {
+    let img = load_source_image(&draft.source)?;
+    let edited = apply_edits(img, draft)?;
+    let resized = if max_size > 0 && (edited.width() > max_size || edited.height() > max_size) {
+        edited.thumbnail(max_size, max_size)
+    } else {
+        edited
+    };
+    let rgb = match resized {
+        DynamicImage::ImageRgb8(rgb) => rgb,
+        other => alpha_to_white_rgb(&other),
+    };
+    let mut out = Vec::new();
+    let mut encoder = JpegEncoder::new_with_quality(&mut out, quality.clamp(40, 95));
+    encoder
+        .encode_image(&DynamicImage::ImageRgb8(rgb))
+        .map_err(|e| KnitError::InvalidInput(format!("Loi encode JPEG preview: {e}")))?;
     Ok(out)
 }
 

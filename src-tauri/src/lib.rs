@@ -14,10 +14,10 @@ use knit_docs::{
 use knit_manga::{default_output_name, pack_stories, scan_stories, MangaPackOptions, MangaPackSummary, MangaScanMode, Story};
 use knit_pdf::{
     build_pdf_from_drafts, inspect_pdf, merge_pdfs, render_image_thumbnail,
-    render_image_thumbnail_jpeg, render_pdf_bytes_thumbnails, render_pdf_thumbnail,
-    scan_image_files, scan_image_folder, split_pdf, AnimatedImagePolicy, BookmarkNode,
-    Image2PdfConfig, ImageScanResult, PageDraft, PdfBuildResult, PdfInfo, PdfMergeConfig,
-    PdfSplitRule,
+    render_image_thumbnail_jpeg, render_page_draft_preview_jpeg, render_pdf_bytes_thumbnails,
+    render_pdf_thumbnail, scan_image_files_with_reporter, scan_image_folder_with_reporter,
+    split_pdf, AnimatedImagePolicy, BookmarkNode, Image2PdfConfig, ImageScanResult, PageDraft,
+    PageSource, PdfBuildResult, PdfInfo, PdfMergeConfig, PdfSplitRule,
 };
 use knit_renamer::{
     apply_rename_plan, build_rename_plan, compile_rule, recompute_collisions, scan_items,
@@ -30,9 +30,9 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::ipc::Channel;
-use tauri::{State, Window};
+use tauri::{Manager, State, Window};
 use tauri_plugin_dialog::DialogExt;
 
 #[derive(Clone, Serialize)]
@@ -65,11 +65,24 @@ struct CachedRenamerScan {
     items: Vec<RenameItem>,
 }
 
+struct CpuSample {
+    instant: Instant,
+    cpu_nanos: u64,
+}
+
+#[derive(Clone, Serialize)]
+pub struct AppMetrics {
+    pub cpu_percent: f64,
+    pub ram_bytes: u64,
+    pub process_count: usize,
+}
+
 pub struct AppState {
     jobs: Mutex<HashMap<String, CancellationToken>>,
     preset_store: Mutex<PresetStore>,
     undo_manifest_path: PathBuf,
     renamer_scan_cache: Mutex<Option<CachedRenamerScan>>,
+    last_cpu_sample: Mutex<Option<CpuSample>>,
 }
 
 impl Default for AppState {
@@ -79,6 +92,7 @@ impl Default for AppState {
             preset_store: Mutex::new(PresetStore::default_os()),
             undo_manifest_path: app_config_dir().join("last_rename_undo.json"),
             renamer_scan_cache: Mutex::new(None),
+            last_cpu_sample: Mutex::new(None),
         }
     }
 }
@@ -244,38 +258,47 @@ async fn pdf_scan_images(
     paths: Vec<PathBuf>,
     is_folder: bool,
     animated_policy: AnimatedImagePolicy,
+    on_event: Channel<JobEvent>,
 ) -> Result<ImageScanResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         if paths.is_empty() {
             return Err("Chua chon anh hoac thu muc anh".to_string());
         }
+        let reporter = make_reporter(on_event);
         let mut all_pages = Vec::new();
         let mut all_bookmarks = Vec::new();
+        let mut all_warnings = Vec::new();
         let mut loose_files = Vec::new();
 
         for p in paths {
             if is_folder || p.is_dir() {
-                let mut res = scan_image_folder(&p, animated_policy).map_err(|e| e.to_string())?;
+                let mut res = scan_image_folder_with_reporter(&p, animated_policy, &reporter)
+                    .map_err(|e| e.to_string())?;
                 let offset = all_pages.len();
                 shift_bookmarks_offset(&mut res.bookmarks, offset);
                 all_pages.extend(res.pages);
                 all_bookmarks.extend(res.bookmarks);
+                all_warnings.extend(res.warnings);
             } else {
                 loose_files.push(p);
             }
         }
 
         if !loose_files.is_empty() {
-            let mut res = scan_image_files(&loose_files, animated_policy).map_err(|e| e.to_string())?;
+            let mut res =
+                scan_image_files_with_reporter(&loose_files, animated_policy, &reporter)
+                    .map_err(|e| e.to_string())?;
             let offset = all_pages.len();
             shift_bookmarks_offset(&mut res.bookmarks, offset);
             all_pages.extend(res.pages);
             all_bookmarks.extend(res.bookmarks);
+            all_warnings.extend(res.warnings);
         }
 
         Ok(ImageScanResult {
             pages: all_pages,
             bookmarks: all_bookmarks,
+            warnings: all_warnings,
         })
     })
     .await
@@ -391,6 +414,95 @@ async fn render_image_thumb_file(path: PathBuf, max_width: u32) -> Result<PathBu
                 .file_name()
                 .and_then(|s| s.to_str())
                 .unwrap_or("thumb"),
+            std::process::id()
+        );
+        let tmp_path = cache_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join(tmp_name);
+        std::fs::write(&tmp_path, &jpg).map_err(|e| e.to_string())?;
+        let _ = std::fs::rename(&tmp_path, &cache_path);
+        Ok(cache_path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn draft_preview_cache_file_path(draft: &PageDraft, max_size: u32) -> PathBuf {
+    let mut h1 = DefaultHasher::new();
+    let mut h2 = DefaultHasher::new();
+    "knit_draft_preview_v1".hash(&mut h1);
+    max_size.hash(&mut h1);
+    max_size.hash(&mut h2);
+
+    let (src_path, frame_idx) = match &draft.source {
+        PageSource::ImageFile { path } => (Some(path.as_path()), 0usize),
+        PageSource::AnimatedFrame { path, frame_index } => (Some(path.as_path()), *frame_index),
+        PageSource::PdfPage { path, page_index } => (Some(path.as_path()), *page_index),
+    };
+    frame_idx.hash(&mut h1);
+    frame_idx.hash(&mut h2);
+
+    if let Some(path) = src_path {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        canonical.hash(&mut h1);
+        canonical.hash(&mut h2);
+        if let Ok(meta) = std::fs::metadata(path) {
+            meta.len().hash(&mut h1);
+            if let Ok(modified) = meta.modified() {
+                if let Ok(dur) = modified.duration_since(UNIX_EPOCH) {
+                    dur.as_nanos().hash(&mut h1);
+                    dur.as_secs().hash(&mut h2);
+                }
+            }
+        }
+    }
+
+    draft.rotation_deg.rem_euclid(360).hash(&mut h1);
+    if let Ok(crop_json) = serde_json::to_string(&draft.crop) {
+        crop_json.hash(&mut h1);
+        crop_json.hash(&mut h2);
+    }
+    if let Ok(ann_json) = serde_json::to_string(&draft.annotations) {
+        ann_json.hash(&mut h1);
+        ann_json.hash(&mut h2);
+    }
+
+    let name = format!("draft_{:016x}{:016x}_{}.jpg", h1.finish(), h2.finish(), max_size);
+    thumb_cache_dir().join(name)
+}
+
+#[tauri::command]
+async fn render_page_draft_preview_file(
+    draft: PageDraft,
+    max_size: u32,
+) -> Result<PathBuf, String> {
+    let cache_path = draft_preview_cache_file_path(&draft, max_size);
+    if cache_path.is_file() {
+        return Ok(cache_path);
+    }
+
+    let _permit = thumb_semaphore()
+        .acquire()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if cache_path.is_file() {
+        return Ok(cache_path);
+    }
+
+    tauri::async_runtime::spawn_blocking(move || {
+        if cache_path.is_file() {
+            return Ok(cache_path);
+        }
+        let jpg = render_page_draft_preview_jpeg(&draft, max_size, 82)
+            .map_err(|e| e.to_string())?;
+        let tmp_name = format!(
+            ".{}.{}.tmp",
+            cache_path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("draft"),
             std::process::id()
         );
         let tmp_path = cache_path
@@ -825,11 +937,254 @@ fn renamer_delete_preset(
     guard.load().map_err(|e| e.to_string())
 }
 
+#[cfg(target_os = "linux")]
+fn collect_process_tree_stats() -> (u64, u64, usize) {
+    let root_pid = std::process::id();
+    let mut children_map: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut cpu_ticks_map: HashMap<u32, u64> = HashMap::new();
+
+    if let Ok(entries) = std::fs::read_dir("/proc") {
+        for entry in entries.flatten() {
+            let Ok(fname) = entry.file_name().into_string() else {
+                continue;
+            };
+            let Ok(pid) = fname.parse::<u32>() else {
+                continue;
+            };
+            let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
+                continue;
+            };
+            let Some(rparen) = stat.rfind(')') else {
+                continue;
+            };
+            let after = stat[rparen + 1..].trim_start();
+            let fields: Vec<&str> = after.split_whitespace().collect();
+            if fields.len() <= 12 {
+                continue;
+            }
+            let ppid = fields[1].parse::<u32>().unwrap_or(0);
+            let utime = fields[11].parse::<u64>().unwrap_or(0);
+            let stime = fields[12].parse::<u64>().unwrap_or(0);
+            children_map.entry(ppid).or_default().push(pid);
+            cpu_ticks_map.insert(pid, utime.saturating_add(stime));
+        }
+    }
+
+    let mut queue = std::collections::VecDeque::new();
+    let mut visited = std::collections::HashSet::new();
+    queue.push_back(root_pid);
+    visited.insert(root_pid);
+
+    while let Some(pid) = queue.pop_front() {
+        if let Some(children) = children_map.get(&pid) {
+            for &c in children {
+                if visited.insert(c) {
+                    queue.push_back(c);
+                }
+            }
+        }
+    }
+
+    let mut total_ticks = 0u64;
+    let mut total_ram_bytes = 0u64;
+    for &pid in &visited {
+        total_ticks = total_ticks.saturating_add(cpu_ticks_map.get(&pid).copied().unwrap_or(0));
+        if let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) {
+            for line in status.lines() {
+                if let Some(rest) = line.strip_prefix("VmRSS:") {
+                    let kb = rest
+                        .split_whitespace()
+                        .next()
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .unwrap_or(0);
+                    total_ram_bytes = total_ram_bytes.saturating_add(kb.saturating_mul(1024));
+                    break;
+                }
+            }
+        }
+    }
+
+    // Linux USER_HZ is 100 ticks/sec -> 10_000_000 ns per tick
+    (total_ticks.saturating_mul(10_000_000), total_ram_bytes, visited.len())
+}
+
+#[cfg(target_os = "windows")]
+fn collect_process_tree_stats() -> (u64, u64, usize) {
+    use std::ffi::c_void;
+    use std::mem::{size_of, zeroed};
+
+    const TH32CS_SNAPPROCESS: u32 = 0x0000_0002;
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const INVALID_HANDLE_VALUE: *mut c_void = (-1isize) as *mut c_void;
+
+    #[repr(C)]
+    struct ProcessEntry32W {
+        dw_size: u32,
+        cnt_usage: u32,
+        th32_process_id: u32,
+        th32_default_heap_id: usize,
+        th32_module_id: u32,
+        cnt_threads: u32,
+        th32_parent_process_id: u32,
+        pc_pri_class_base: i32,
+        dw_flags: u32,
+        sz_exe_file: [u16; 260],
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct FileTime {
+        low: u32,
+        high: u32,
+    }
+
+    #[repr(C)]
+    struct ProcessMemoryCounters {
+        cb: u32,
+        page_fault_count: u32,
+        peak_working_set_size: usize,
+        working_set_size: usize,
+        quota_peak_paged_pool_usage: usize,
+        quota_paged_pool_usage: usize,
+        quota_peak_non_paged_pool_usage: usize,
+        quota_non_paged_pool_usage: usize,
+        pagefile_usage: usize,
+        peak_pagefile_usage: usize,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateToolhelp32Snapshot(dw_flags: u32, th32_process_id: u32) -> *mut c_void;
+        fn Process32FirstW(h_snapshot: *mut c_void, lppe: *mut ProcessEntry32W) -> i32;
+        fn Process32NextW(h_snapshot: *mut c_void, lppe: *mut ProcessEntry32W) -> i32;
+        fn OpenProcess(dw_desired_access: u32, b_inherit_handle: i32, dw_process_id: u32) -> *mut c_void;
+        fn GetProcessTimes(
+            h_process: *mut c_void,
+            lp_creation_time: *mut FileTime,
+            lp_exit_time: *mut FileTime,
+            lp_kernel_time: *mut FileTime,
+            lp_user_time: *mut FileTime,
+        ) -> i32;
+        fn K32GetProcessMemoryInfo(
+            process: *mut c_void,
+            ppsmem_counters: *mut ProcessMemoryCounters,
+            cb: u32,
+        ) -> i32;
+        fn CloseHandle(h_object: *mut c_void) -> i32;
+    }
+
+    let root_pid = std::process::id();
+    let mut children_map: HashMap<u32, Vec<u32>> = HashMap::new();
+
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if !snap.is_null() && snap != INVALID_HANDLE_VALUE {
+            let mut pe: ProcessEntry32W = zeroed();
+            pe.dw_size = size_of::<ProcessEntry32W>() as u32;
+            if Process32FirstW(snap, &mut pe) != 0 {
+                loop {
+                    children_map
+                        .entry(pe.th32_parent_process_id)
+                        .or_default()
+                        .push(pe.th32_process_id);
+                    if Process32NextW(snap, &mut pe) == 0 {
+                        break;
+                    }
+                }
+            }
+            CloseHandle(snap);
+        }
+
+        let mut queue = std::collections::VecDeque::new();
+        let mut visited = std::collections::HashSet::new();
+        queue.push_back(root_pid);
+        visited.insert(root_pid);
+        while let Some(pid) = queue.pop_front() {
+            if let Some(children) = children_map.get(&pid) {
+                for &c in children {
+                    if visited.insert(c) {
+                        queue.push_back(c);
+                    }
+                }
+            }
+        }
+
+        let mut total_100ns = 0u64;
+        let mut total_ram_bytes = 0u64;
+        for &pid in &visited {
+            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if !h.is_null() {
+                let mut c_t: FileTime = zeroed();
+                let mut e_t: FileTime = zeroed();
+                let mut k_t: FileTime = zeroed();
+                let mut u_t: FileTime = zeroed();
+                if GetProcessTimes(h, &mut c_t, &mut e_t, &mut k_t, &mut u_t) != 0 {
+                    let k = ((k_t.high as u64) << 32) | (k_t.low as u64);
+                    let u = ((u_t.high as u64) << 32) | (u_t.low as u64);
+                    total_100ns = total_100ns.saturating_add(k).saturating_add(u);
+                }
+                let mut pmc: ProcessMemoryCounters = zeroed();
+                pmc.cb = size_of::<ProcessMemoryCounters>() as u32;
+                if K32GetProcessMemoryInfo(h, &mut pmc, pmc.cb) != 0 {
+                    total_ram_bytes = total_ram_bytes.saturating_add(pmc.working_set_size as u64);
+                }
+                CloseHandle(h);
+            }
+        }
+        (total_100ns.saturating_mul(100), total_ram_bytes, visited.len())
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn collect_process_tree_stats() -> (u64, u64, usize) {
+    (0, 0, 1)
+}
+
+#[tauri::command]
+fn get_app_metrics(state: State<'_, Arc<AppState>>) -> Result<AppMetrics, String> {
+    let (cpu_nanos, ram_bytes, process_count) = collect_process_tree_stats();
+    let now = Instant::now();
+    let logical_cpus = std::thread::available_parallelism()
+        .map(|n| n.get() as f64)
+        .unwrap_or(1.0)
+        .max(1.0);
+
+    let mut cpu_percent = 0.0;
+    if let Ok(mut guard) = state.last_cpu_sample.lock() {
+        if let Some(prev) = guard.as_ref() {
+            let elapsed_nanos = now.duration_since(prev.instant).as_nanos() as f64;
+            if elapsed_nanos > 1_000_000.0 && cpu_nanos >= prev.cpu_nanos {
+                let delta_cpu = (cpu_nanos - prev.cpu_nanos) as f64;
+                cpu_percent = ((delta_cpu / (elapsed_nanos * logical_cpus)) * 100.0).clamp(0.0, 100.0);
+            }
+        }
+        *guard = Some(CpuSample {
+            instant: now,
+            cpu_nanos,
+        });
+    }
+
+    Ok(AppMetrics {
+        cpu_percent,
+        ram_bytes,
+        process_count,
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let shared_state = Arc::new(AppState::default());
     tauri::Builder::default()
         .manage(shared_state)
+        .setup(|app| {
+            // Tauri FsScope on Unix blocks `**` from matching dot-segments like `.cache`,
+            // so explicitly allow our thumbnail cache folder on the asset protocol scope.
+            let thumbs_dir = thumb_cache_dir();
+            if let Err(err) = app.asset_protocol_scope().allow_directory(&thumbs_dir, true) {
+                eprintln!("Failed to allow thumbnail cache directory in asset scope: {err}");
+            }
+            Ok(())
+        })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
@@ -839,7 +1194,9 @@ pub fn run() {
             pdf_scan_images,
             render_image_thumb,
             render_image_thumb_file,
+            render_page_draft_preview_file,
             render_pdf_thumb,
+            get_app_metrics,
             pdf_build_from_images,
             pdf_inspect,
             pdf_merge,

@@ -11,6 +11,8 @@ use lopdf::{dictionary, Document, Object, Stream};
 use rayon::prelude::*;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 pub const ISO_MIN_PT: f32 = 3.0;
 pub const ISO_MAX_PT: f32 = 14400.0;
@@ -41,11 +43,12 @@ pub fn build_pdf_from_drafts(
 
     reporter.info("Dang xu ly anh va chuan bi trang PDF");
     let total = drafts.len();
+    let completed = AtomicUsize::new(0);
+    let report_lock = Mutex::new(());
 
     let prepared_res: Vec<Result<RenderedPageData>> = drafts
         .par_iter()
-        .enumerate()
-        .map(|(idx, draft)| {
+        .map(|draft| {
             if cancel.is_cancelled() {
                 return Err(KnitError::Cancelled);
             }
@@ -54,10 +57,16 @@ pub fn build_pdf_from_drafts(
                 config.jpeg_quality,
                 config.lossless_passthrough,
             )?;
-            if idx % 4 == 0 || idx + 1 == total {
+            let done = completed.fetch_add(1, Ordering::SeqCst) + 1;
+            let guard = if done == total {
+                report_lock.lock().ok()
+            } else {
+                report_lock.try_lock().ok()
+            };
+            if let Some(_g) = guard {
                 reporter.on_progress(JobProgress {
                     phase: "render".into(),
-                    done: (idx + 1) as u64,
+                    done: done as u64,
                     total: total as u64,
                     bytes_done: 0,
                     bytes_total: 0,
@@ -105,13 +114,14 @@ pub fn build_pdf_from_drafts(
         .max_mb
         .filter(|&mb| mb > 0.0)
         .map(|mb| (mb * 1024.0 * 1024.0) as usize);
+    let max_pages_per_file = config.max_pages_per_file.filter(|&n| n > 0);
 
     let mut output_files = Vec::new();
     let mut total_bytes = 0u64;
 
-    if let Some(limit) = max_bytes {
-        reporter.info("Dang dong goi va tach PDF theo gioi han dung luong");
-        let chunks = partition_pages_by_bytes(&prepared, limit);
+    if max_bytes.is_some() || max_pages_per_file.is_some() {
+        reporter.info("Dang dong goi va tach PDF theo gioi han da chon");
+        let chunks = partition_pages(&prepared, max_bytes, max_pages_per_file);
         let multi = chunks.len() > 1;
         for (part_idx, (start, end)) in chunks.into_iter().enumerate() {
             if cancel.is_cancelled() {
@@ -152,7 +162,11 @@ pub fn build_pdf_from_drafts(
     })
 }
 
-fn partition_pages_by_bytes(pages: &[RenderedPageData], limit_bytes: usize) -> Vec<(usize, usize)> {
+fn partition_pages(
+    pages: &[RenderedPageData],
+    max_bytes: Option<usize>,
+    max_pages_per_file: Option<usize>,
+) -> Vec<(usize, usize)> {
     const OVERHEAD_PER_PAGE: usize = 700;
     const BASE_OVERHEAD: usize = 2048;
 
@@ -166,7 +180,11 @@ fn partition_pages_by_bytes(pages: &[RenderedPageData], limit_bytes: usize) -> V
             PreparedImage::FlateRgbStream { zlib_bytes, .. } => zlib_bytes.len(),
         };
         let page_cost = stream_len + OVERHEAD_PER_PAGE;
-        if idx > start && acc + page_cost > limit_bytes {
+        let current_count = idx - start;
+        let exceeds_pages = max_pages_per_file.is_some_and(|limit| current_count >= limit);
+        let exceeds_bytes = max_bytes.is_some_and(|limit| idx > start && acc + page_cost > limit);
+
+        if exceeds_pages || exceeds_bytes {
             ranges.push((start, idx));
             start = idx;
             acc = BASE_OVERHEAD + page_cost;

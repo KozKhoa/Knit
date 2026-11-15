@@ -2,6 +2,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import type {
   AnimatedImagePolicy,
+  AppMetrics,
   ArchiveOptions,
   ArchiveSummary,
   BookmarkNode,
@@ -140,8 +141,14 @@ export async function scanImagesForPdf(
   paths: string[],
   isFolder: boolean,
   animatedPolicy: AnimatedImagePolicy,
+  onEvent?: (ev: JobEvent) => void,
 ): Promise<ImageScanResult> {
-  return await invoke("pdf_scan_images", { paths, isFolder, animatedPolicy });
+  return await invoke("pdf_scan_images", {
+    paths,
+    isFolder,
+    animatedPolicy,
+    onEvent: makeChannel(onEvent),
+  });
 }
 
 export async function renderImageThumbBase64(
@@ -156,6 +163,17 @@ export async function renderImageThumbFile(
   maxWidth = 360,
 ): Promise<string> {
   return await invoke("render_image_thumb_file", { path, maxWidth });
+}
+
+export async function renderPageDraftPreviewFile(
+  draft: PageDraft,
+  maxSize = 360,
+): Promise<string> {
+  return await invoke("render_page_draft_preview_file", { draft, maxSize });
+}
+
+export async function getAppMetrics(): Promise<AppMetrics> {
+  return await invoke("get_app_metrics");
 }
 
 export async function renderPdfThumbBase64(

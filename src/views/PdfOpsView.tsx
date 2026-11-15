@@ -27,6 +27,8 @@ import {
   splitPdfFile,
 } from "../lib/ipc";
 import { usePersistentState } from "../lib/storage";
+import { useVerticalResize } from "../hooks/useVerticalResize";
+import { Check, GripHorizontal } from "lucide-react";
 import type { JobEvent, PageSelection, PdfInfo, PdfSplitRule } from "../types/ipc";
 import type { DroppedBatch } from "./Image2PdfView";
 
@@ -57,6 +59,7 @@ interface SplitSectionDraft {
 
 type SplitDragPayload =
   | { kind: "source"; page_index: number }
+  | { kind: "source_many"; page_indices: number[] }
   | { kind: "section_item"; sectionId: string; itemIndex: number };
 
 const INITIAL_THUMB_LIMIT = 48;
@@ -92,6 +95,113 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
   const [activeSectionId, setActiveSectionId] = React.useState<string | null>(null);
   const [hoverSectionId, setHoverSectionId] = React.useState<string | null>(null);
   const splitDragRef = React.useRef<SplitDragPayload | null>(null);
+
+  // Split workbench resize & source page multi-select
+  const [splitLeftRatio, setSplitLeftRatio] = usePersistentState<number>(
+    "knit.pdfops.splitLeftRatio",
+    0.42,
+  );
+  const [liveSplitRatio, setLiveSplitRatio] = React.useState(splitLeftRatio);
+  React.useEffect(() => {
+    setLiveSplitRatio(splitLeftRatio);
+  }, [splitLeftRatio]);
+
+  const [sourcePaneHeightPx, setSourcePaneHeightPx] = usePersistentState<number>(
+    "knit.pdfops.sourcePaneHeightPx",
+    540,
+  );
+  const [sectionsPaneHeightPx, setSectionsPaneHeightPx] = usePersistentState<number>(
+    "knit.pdfops.sectionsPaneHeightPx",
+    540,
+  );
+
+  const { height: liveSourceHeightPx, handlePointerDown: handleSourceHeightResize } =
+    useVerticalResize({
+      value: sourcePaneHeightPx,
+      min: 240,
+      max: 1100,
+      onCommit: setSourcePaneHeightPx,
+    });
+  const { height: liveSectionsHeightPx, handlePointerDown: handleSectionsHeightResize } =
+    useVerticalResize({
+      value: sectionsPaneHeightPx,
+      min: 240,
+      max: 1100,
+      onCommit: setSectionsPaneHeightPx,
+    });
+
+  const splitGridRef = React.useRef<HTMLDivElement | null>(null);
+  const handleSplitWidthResize = React.useCallback(
+    (e: React.PointerEvent<HTMLElement>) => {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      const container = splitGridRef.current;
+      if (!container) return;
+      e.preventDefault();
+      const rect = container.getBoundingClientRect();
+      if (rect.width <= 0) return;
+      let latest = liveSplitRatio;
+      const clampRatio = (r: number) => Math.min(0.72, Math.max(0.24, r));
+
+      const onMove = (ev: PointerEvent) => {
+        latest = clampRatio((ev.clientX - rect.left) / rect.width);
+        setLiveSplitRatio(latest);
+      };
+      const finish = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", finish);
+        window.removeEventListener("pointercancel", finish);
+        setSplitLeftRatio(Number(latest.toFixed(4)));
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", finish);
+      window.addEventListener("pointercancel", finish);
+    },
+    [liveSplitRatio, setSplitLeftRatio],
+  );
+
+  const [selectedSourcePages, setSelectedSourcePages] = React.useState<Set<number>>(
+    () => new Set(),
+  );
+  const [lastClickedSourceIdx, setLastClickedSourceIdx] = React.useState<number | null>(null);
+
+  const sourcePdfPath = files[0]?.path ?? null;
+  React.useEffect(() => {
+    setSelectedSourcePages(new Set());
+    setLastClickedSourceIdx(null);
+  }, [sourcePdfPath]);
+
+  const handleSourcePageClick = (e: React.MouseEvent, pIdx: number) => {
+    if (e.shiftKey && lastClickedSourceIdx !== null) {
+      const start = Math.min(lastClickedSourceIdx, pIdx);
+      const end = Math.max(lastClickedSourceIdx, pIdx);
+      setSelectedSourcePages((prev) => {
+        const next = e.ctrlKey || e.metaKey ? new Set(prev) : new Set<number>();
+        for (let i = start; i <= end; i++) next.add(i);
+        return next;
+      });
+      return;
+    }
+    if (e.ctrlKey || e.metaKey) {
+      setSelectedSourcePages((prev) => {
+        const next = new Set(prev);
+        if (next.has(pIdx)) {
+          next.delete(pIdx);
+        } else {
+          next.add(pIdx);
+        }
+        return next;
+      });
+      setLastClickedSourceIdx(pIdx);
+      return;
+    }
+    setSelectedSourcePages(new Set([pIdx]));
+    setLastClickedSourceIdx(pIdx);
+  };
+
+  const sortedSelectedSourcePages = React.useMemo(
+    () => Array.from(selectedSourcePages).sort((a, b) => a - b),
+    [selectedSourcePages],
+  );
   const lastHandledDropSeq = React.useRef<number>(0);
 
   const loadPdfThumbsRange = React.useCallback(
@@ -262,22 +372,29 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
     setActiveSectionId(id);
   };
 
-  const appendSourcePageToSection = (pageIndex: number, targetSectionId?: string) => {
+  const appendSourcePagesToSection = (pageIndices: number[], targetSectionId?: string) => {
+    if (pageIndices.length === 0) return;
     const targetId = targetSectionId ?? activeSectionId ?? splitSections[0]?.id;
     if (!targetId) return;
+    const items: SplitSectionItem[] = pageIndices.map((pageIndex) => ({
+      uid: crypto.randomUUID(),
+      page_index: pageIndex,
+      rotation_deg: 0,
+    }));
     setSplitSections((prev) =>
       prev.map((sec) =>
         sec.id === targetId
           ? {
               ...sec,
-              pages: [
-                ...sec.pages,
-                { uid: crypto.randomUUID(), page_index: pageIndex, rotation_deg: 0 },
-              ],
+              pages: [...sec.pages, ...items],
             }
           : sec,
       ),
     );
+  };
+
+  const appendSourcePageToSection = (pageIndex: number, targetSectionId?: string) => {
+    appendSourcePagesToSection([pageIndex], targetSectionId);
   };
 
   const handleDropOnSection = (targetSectionId: string, insertAtIndex?: number) => {
@@ -286,19 +403,21 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
     setHoverSectionId(null);
     if (!payload) return;
 
-    if (payload.kind === "source") {
-      const item: SplitSectionItem = {
+    if (payload.kind === "source" || payload.kind === "source_many") {
+      const indices =
+        payload.kind === "source_many" ? payload.page_indices : [payload.page_index];
+      const items: SplitSectionItem[] = indices.map((page_index) => ({
         uid: crypto.randomUUID(),
-        page_index: payload.page_index,
+        page_index,
         rotation_deg: 0,
-      };
+      }));
       setSplitSections((prev) =>
         prev.map((sec) => {
           if (sec.id !== targetSectionId) return sec;
           const nextPages = [...sec.pages];
           const idx =
             insertAtIndex !== undefined ? Math.max(0, Math.min(nextPages.length, insertAtIndex)) : nextPages.length;
-          nextPages.splice(idx, 0, item);
+          nextPages.splice(idx, 0, ...items);
           return { ...sec, pages: nextPages };
         }),
       );
@@ -704,44 +823,103 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
           </div>
 
           {/* Visual Drag-and-Drop Source Pages + Output Sections */}
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
+          <div
+            ref={splitGridRef}
+            style={
+              {
+                "--split-left": `${(liveSplitRatio * 100).toFixed(2)}%`,
+              } as React.CSSProperties
+            }
+            className="grid grid-cols-1 items-start gap-3 lg:gap-0 lg:[grid-template-columns:var(--split-left)_12px_minmax(0,1fr)]"
+          >
             {/* Source PDF Pages Strip */}
-            <div className="space-y-2.5 rounded-[4px] border border-[#DEE2E6] bg-white p-3.5 lg:col-span-5">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <div className="text-sm font-bold text-[#343A40]">
-                    {t.pdfOps.sourcePagesTitle(sourcePdf.page_count)}
+            <div className="flex min-w-0 flex-col overflow-hidden rounded-[4px] border border-[#DEE2E6] bg-white">
+              <div className="space-y-2 border-b border-[#E9ECEF] p-3.5 pb-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-bold text-[#343A40]">
+                      {t.pdfOps.sourcePagesTitle(sourcePdf.page_count)}
+                    </div>
+                    <div className="text-xs text-[#6C757D]">{t.pdfOps.sourcePagesHint}</div>
                   </div>
-                  <div className="text-xs text-[#6C757D]">{t.pdfOps.sourcePagesHint}</div>
+                  {sourcePdf.page_count > thumbLimit && (
+                    <button
+                      type="button"
+                      onClick={handleLoadMoreSplitThumbs}
+                      className="knit-control-sm rounded-[4px] border border-[#CED4DA] bg-[#F8F9FA] px-2.5 text-xs font-semibold text-[#343A40] hover:bg-[#E9ECEF]"
+                    >
+                      {t.pdfOps.loadMoreThumbsBtn(thumbLimit, sourcePdf.page_count)}
+                    </button>
+                  )}
                 </div>
-                {sourcePdf.page_count > thumbLimit && (
-                  <button
-                    type="button"
-                    onClick={handleLoadMoreSplitThumbs}
-                    className="knit-control-sm rounded-[4px] border border-[#CED4DA] bg-[#F8F9FA] px-2.5 text-xs font-semibold text-[#343A40] hover:bg-[#E9ECEF]"
-                  >
-                    {t.pdfOps.loadMoreThumbsBtn(thumbLimit, sourcePdf.page_count)}
-                  </button>
+
+                {sortedSelectedSourcePages.length > 0 && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-[4px] border border-[#B8DAFF] bg-[#E7F1FF] px-2.5 py-1.5 text-xs">
+                    <span className="font-semibold text-[#0056B3]">
+                      {t.pdfOps.selectedCount(sortedSelectedSourcePages.length)}
+                    </span>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          appendSourcePagesToSection(sortedSelectedSourcePages)
+                        }
+                        className="rounded-[4px] bg-[#007BFF] px-2 py-0.5 font-semibold text-white hover:bg-[#0069D9]"
+                      >
+                        {t.pdfOps.addSelectedBtn(sortedSelectedSourcePages.length)}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedSourcePages(new Set());
+                          setLastClickedSourceIdx(null);
+                        }}
+                        className="rounded-[4px] border border-[#CED4DA] bg-white px-2 py-0.5 font-medium text-[#495057] hover:bg-[#F8F9FA]"
+                      >
+                        {t.pdfOps.clearSelectionBtn}
+                      </button>
+                    </div>
+                  </div>
                 )}
               </div>
 
-              <div className="grid max-h-[540px] grid-cols-3 gap-2 overflow-y-auto pr-1 sm:grid-cols-4 lg:grid-cols-3">
+              <div
+                style={{ height: `${liveSourceHeightPx}px` }}
+                className="grid grid-cols-3 content-start gap-2 overflow-y-auto p-3.5 sm:grid-cols-4 lg:grid-cols-3"
+              >
                 {Array.from({ length: sourcePdf.page_count }, (_, pIdx) => {
                   const thumbKey = `0:${pIdx}`;
+                  const isSelected = selectedSourcePages.has(pIdx);
                   return (
                     <div
                       key={pIdx}
                       draggable
+                      onClick={(e) => handleSourcePageClick(e, pIdx)}
                       onDragStart={(e) => {
-                        splitDragRef.current = { kind: "source", page_index: pIdx };
+                        if (isSelected && sortedSelectedSourcePages.length > 1) {
+                          splitDragRef.current = {
+                            kind: "source_many",
+                            page_indices: sortedSelectedSourcePages,
+                          };
+                          e.dataTransfer.setData(
+                            "text/plain",
+                            `source_many:${sortedSelectedSourcePages.join(",")}`,
+                          );
+                        } else {
+                          splitDragRef.current = { kind: "source", page_index: pIdx };
+                          e.dataTransfer.setData("text/plain", `source:${pIdx}`);
+                        }
                         e.dataTransfer.effectAllowed = "copy";
-                        e.dataTransfer.setData("text/plain", `source:${pIdx}`);
                       }}
                       onDragEnd={() => {
                         splitDragRef.current = null;
                         setHoverSectionId(null);
                       }}
-                      className="group flex cursor-grab flex-col overflow-hidden rounded-[4px] border border-[#DEE2E6] bg-[#F8F9FA] active:cursor-grabbing hover:border-[#007BFF]"
+                      className={`group flex cursor-grab select-none flex-col overflow-hidden rounded-[4px] border active:cursor-grabbing ${
+                        isSelected
+                          ? "border-[#007BFF] bg-[#E7F1FF] ring-2 ring-[#007BFF]/40"
+                          : "border-[#DEE2E6] bg-[#F8F9FA] hover:border-[#007BFF]"
+                      }`}
                     >
                       <div className="relative flex h-24 items-center justify-center bg-white p-1">
                         {thumbs[thumbKey] ? (
@@ -756,13 +934,24 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
                             P{pIdx + 1}
                           </span>
                         )}
-                        <span className="absolute left-1 top-1 flex items-center gap-0.5 rounded-[4px] bg-[#343A40] px-1 py-0.5 font-mono-code text-[10px] text-white">
-                          <GripVertical className="h-2.5 w-2.5 text-[#ADB5BD]" />
+                        <span
+                          className={`absolute left-1 top-1 flex items-center gap-0.5 rounded-[4px] px-1 py-0.5 font-mono-code text-[10px] text-white ${
+                            isSelected ? "bg-[#007BFF]" : "bg-[#343A40]"
+                          }`}
+                        >
+                          {isSelected ? (
+                            <Check className="h-2.5 w-2.5" />
+                          ) : (
+                            <GripVertical className="h-2.5 w-2.5 text-[#ADB5BD]" />
+                          )}
                           {pIdx + 1}
                         </span>
                         <button
                           type="button"
-                          onClick={() => appendSourcePageToSection(pIdx)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            appendSourcePageToSection(pIdx);
+                          }}
                           title="Add to active section"
                           className="absolute bottom-1 right-1 flex h-6 w-6 items-center justify-center rounded-[4px] bg-[#007BFF] text-white opacity-90 hover:opacity-100"
                         >
@@ -773,11 +962,32 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
                   );
                 })}
               </div>
+
+              <div
+                role="separator"
+                aria-orientation="horizontal"
+                title={t.pdfOps.resizeHeightTitle}
+                onPointerDown={handleSourceHeightResize}
+                className="flex h-3 cursor-row-resize items-center justify-center border-t border-[#E9ECEF] bg-[#F8F9FA] text-[#868E96] transition-colors hover:bg-[#E7F1FF] hover:text-[#007BFF]"
+              >
+                <GripHorizontal className="h-3.5 w-3.5" />
+              </div>
+            </div>
+
+            {/* Width Splitter (Desktop) */}
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              title={t.pdfOps.resizeWidthTitle}
+              onPointerDown={handleSplitWidthResize}
+              className="hidden h-full min-h-[280px] cursor-col-resize select-none items-center justify-center lg:flex"
+            >
+              <div className="h-14 w-1 rounded-[2px] bg-[#CED4DA] transition-colors hover:bg-[#007BFF]" />
             </div>
 
             {/* Output Sections Builder */}
-            <div className="space-y-3 lg:col-span-7">
-              <div className="flex flex-wrap items-center justify-between gap-2 rounded-[4px] border border-[#DEE2E6] bg-white px-3.5 py-2.5">
+            <div className="flex min-w-0 flex-col overflow-hidden rounded-[4px] border border-[#DEE2E6] bg-white">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#E9ECEF] px-3.5 py-2.5">
                 <span className="text-sm font-bold text-[#343A40]">
                   {t.pdfOps.splitBuilderTitle}
                 </span>
@@ -790,7 +1000,10 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
                 </button>
               </div>
 
-              <div className="space-y-3">
+              <div
+                style={{ height: `${liveSectionsHeightPx}px` }}
+                className="space-y-3 overflow-y-auto p-3.5"
+              >
                 {splitSections.map((section, sIdx) => {
                   const isActive = activeSectionId === section.id;
                   const isHovered = hoverSectionId === section.id;
@@ -802,7 +1015,10 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
                         if (!splitDragRef.current) return;
                         e.preventDefault();
                         e.dataTransfer.dropEffect =
-                          splitDragRef.current.kind === "source" ? "copy" : "move";
+                          splitDragRef.current.kind === "source" ||
+                          splitDragRef.current.kind === "source_many"
+                            ? "copy"
+                            : "move";
                         if (hoverSectionId !== section.id) setHoverSectionId(section.id);
                       }}
                       onDragLeave={() => {
@@ -986,6 +1202,16 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
                     </div>
                   );
                 })}
+              </div>
+
+              <div
+                role="separator"
+                aria-orientation="horizontal"
+                title={t.pdfOps.resizeHeightTitle}
+                onPointerDown={handleSectionsHeightResize}
+                className="flex h-3 cursor-row-resize items-center justify-center border-t border-[#E9ECEF] bg-[#F8F9FA] text-[#868E96] transition-colors hover:bg-[#E7F1FF] hover:text-[#007BFF]"
+              >
+                <GripHorizontal className="h-3.5 w-3.5" />
               </div>
             </div>
           </div>

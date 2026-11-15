@@ -70,6 +70,8 @@ pub struct PageDraft {
     pub width_px: u32,
     #[serde(default)]
     pub height_px: u32,
+    #[serde(default)]
+    pub file_size_bytes: u64,
 }
 
 impl PageDraft {
@@ -149,6 +151,8 @@ pub struct Image2PdfConfig {
     pub animated_policy: AnimatedImagePolicy,
     #[serde(default)]
     pub max_mb: Option<f64>,
+    #[serde(default)]
+    pub max_pages_per_file: Option<usize>,
 }
 
 fn default_jpeg_quality() -> u8 {
@@ -163,6 +167,8 @@ fn default_true() -> bool {
 pub struct ImageScanResult {
     pub pages: Vec<PageDraft>,
     pub bookmarks: Vec<BookmarkNode>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

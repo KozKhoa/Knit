@@ -302,3 +302,62 @@ A[Top] --> B[Bottom]
     assert!(pages >= 1);
     assert!(pdf_bytes.starts_with(b"%PDF-"));
 }
+
+#[test]
+fn dejavu_sans_mono_font_deserializes_from_frontend_key_and_renders() {
+    let parsed: DocFont = serde_json::from_str("\"dejavu_sans_mono\"").unwrap();
+    assert_eq!(parsed, DocFont::DejaVuSansMono);
+    let legacy_alias: DocFont = serde_json::from_str("\"deja_vu_sans_mono\"").unwrap();
+    assert_eq!(legacy_alias, DocFont::DejaVuSansMono);
+
+    let opts = DocConvertOptions {
+        font: parsed,
+        ..DocConvertOptions::default()
+    };
+    let (pdf_bytes, pages) =
+        compile_text_to_pdf_bytes("# Test Mono\n\n`println!(\"ok\")`", DocInputKind::Markdown, None, &opts)
+            .unwrap();
+    assert!(pages >= 1);
+    assert!(pdf_bytes.starts_with(b"%PDF-"));
+}
+
+#[test]
+fn orientation_line_spacing_page_numbering_and_toc_at_page_n_work() {
+    use knit_docs::{
+        PageNumberFormat, PageNumberPosition, PageNumberingOptions, PageOrientation,
+    };
+
+    let mut md = String::from("# Trang Bìa Mở Đầu\n\nĐây là đoạn giới thiệu ngắn ở trang 1.\n\n");
+    for idx in 1..=28 {
+        md.push_str(&format!(
+            "## Mục Số {idx}\n\nĐoạn nội dung mẫu thứ {idx} với đủ độ dài để dàn trải qua nhiều trang trong PDF kiểm thử bố cục và mục lục.\n\n"
+        ));
+    }
+
+    let opts = DocConvertOptions {
+        orientation: PageOrientation::Landscape,
+        line_spacing: Some(1.75),
+        include_toc: true,
+        toc_page: 2,
+        page_numbering: PageNumberingOptions {
+            enabled: true,
+            start_number: 1,
+            start_from_page: 2,
+            position: PageNumberPosition::TopRight,
+            format: PageNumberFormat::PageOfTotal,
+            label_prefix: Some("Trang".into()),
+        },
+        ..DocConvertOptions::default()
+    };
+
+    let typ = markdown_to_typst(&md, &opts);
+    assert!(typ.contains("flipped: true"));
+    assert!(typ.contains("#set par(leading:"));
+    assert!(typ.contains("header: context"));
+    assert!(typ.contains("if p >= 2"));
+
+    let (pdf_bytes, pages) =
+        compile_text_to_pdf_bytes(&md, DocInputKind::Markdown, None, &opts).unwrap();
+    assert!(pages >= 3, "expected >= 3 pages, got {pages}");
+    assert!(pdf_bytes.starts_with(b"%PDF-"));
+}

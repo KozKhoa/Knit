@@ -6,7 +6,8 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use typst::diag::{FileError, FileResult};
-use typst::foundations::{Bytes, Datetime, Duration};
+use typst::foundations::{Bytes, Datetime, Duration, Label, Selector};
+use typst::introspection::Introspector;
 use typst::syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot};
 use typst::text::{Font, FontBook};
 use typst::utils::LazyHash;
@@ -230,20 +231,103 @@ pub fn compile_typst_to_pdf(
     base_dir: Option<&Path>,
     virtual_files: &HashMap<String, Vec<u8>>,
 ) -> Result<(Vec<u8>, usize)> {
+    compile_typst_to_pdf_with_toc(markup, base_dir, virtual_files, None)
+}
+
+fn compile_typst_doc(
+    markup: &str,
+    base_dir: Option<&Path>,
+    virtual_files: &HashMap<String, Bytes>,
+) -> Result<PagedDocument> {
+    let world = KnitTypstWorld::new(markup, base_dir, virtual_files.clone());
+    let warned = typst::compile::<PagedDocument>(&world);
+    warned.output.map_err(|errs| {
+        let msgs: Vec<String> = errs.iter().map(|e| e.message.to_string()).collect();
+        KnitError::InvalidInput(format!("Loi bien dich Typst: {}", msgs.join("; ")))
+    })
+}
+
+fn strip_knit_blk_markers(markup: &str) -> String {
+    static RE_BLK: OnceLock<Regex> = OnceLock::new();
+    let re = RE_BLK.get_or_init(|| Regex::new(r"(?m)^#metadata\(\d+\)\s*<knit-blk>\r?\n?").unwrap());
+    re.replace_all(markup, "").into_owned()
+}
+
+fn query_label_pages(doc: &PagedDocument, label_name: &'static str) -> Vec<usize> {
+    let Some(label) = Label::new(typst::utils::PicoStr::constant(label_name)) else {
+        return Vec::new();
+    };
+    let selector = Selector::Label(label);
+    let introspector = doc.introspector();
+    introspector
+        .query(&selector)
+        .into_iter()
+        .filter_map(|elem| elem.location().and_then(|loc| introspector.pages(loc)).map(|p| p.get()))
+        .collect()
+}
+
+/// Biên dịch Typst có hỗ trợ chèn Mục lục (`#outline`) tại trang thứ `toc_page` (1-based).
+pub fn compile_typst_to_pdf_with_toc(
+    markup: &str,
+    base_dir: Option<&Path>,
+    virtual_files: &HashMap<String, Vec<u8>>,
+    toc_page: Option<usize>,
+) -> Result<(Vec<u8>, usize)> {
     let mut prepared_virtual: HashMap<String, Bytes> = virtual_files
         .iter()
         .map(|(k, v)| (k.clone(), Bytes::new(v.clone())))
         .collect();
     let prepared_markup = prepare_typst_images(markup, base_dir, &mut prepared_virtual);
 
-    let world = KnitTypstWorld::new(&prepared_markup, base_dir, prepared_virtual);
-    let warned = typst::compile::<PagedDocument>(&world);
-    let doc = warned.output.map_err(|errs| {
-        let msgs: Vec<String> = errs.iter().map(|e| e.message.to_string()).collect();
-        KnitError::InvalidInput(format!("Loi bien dich Typst: {}", msgs.join("; ")))
-    })?;
-    let pages = doc.pages().len();
-    let pdf_bytes = typst_pdf::pdf(&doc, &typst_pdf::PdfOptions::default()).map_err(|errs| {
+    let final_doc = if let Some(target_page) = toc_page.filter(|&p| p > 1 && prepared_markup.contains("<knit-blk>")) {
+        let pass1 = compile_typst_doc(&prepared_markup, base_dir, &prepared_virtual)?;
+        let pages_of_blocks = query_label_pages(&pass1, "knit-blk");
+
+        let build_with_split = |split_idx: Option<usize>| -> String {
+            let toc_snippet = "\n#pagebreak(weak: true)\n#metadata(0) <knit-toc>\n#outline(indent: auto)\n#pagebreak(weak: true)\n";
+            let inserted = match split_idx {
+                Some(k) => {
+                    let needle = format!("#metadata({k}) <knit-blk>");
+                    if let Some(pos) = prepared_markup.find(&needle) {
+                        let mut s = String::with_capacity(prepared_markup.len() + toc_snippet.len());
+                        s.push_str(&prepared_markup[..pos]);
+                        s.push_str(toc_snippet);
+                        s.push_str(&prepared_markup[pos..]);
+                        s
+                    } else {
+                        format!("{prepared_markup}\n#pagebreak(weak: true)\n#metadata(0) <knit-toc>\n#outline(indent: auto)\n")
+                    }
+                }
+                None => format!(
+                    "{prepared_markup}\n#pagebreak(weak: true)\n#metadata(0) <knit-toc>\n#outline(indent: auto)\n"
+                ),
+            };
+            strip_knit_blk_markers(&inserted)
+        };
+
+        let mut split_idx = pages_of_blocks.iter().position(|&p| p >= target_page);
+        let mut candidate_markup = build_with_split(split_idx);
+        let mut candidate_doc = compile_typst_doc(&candidate_markup, base_dir, &prepared_virtual)?;
+
+        if let (Some(k), Some(&toc_actual)) = (split_idx, query_label_pages(&candidate_doc, "knit-toc").first()) {
+            if toc_actual > target_page && k > 0 {
+                split_idx = Some(k - 1);
+                candidate_markup = build_with_split(split_idx);
+                candidate_doc = compile_typst_doc(&candidate_markup, base_dir, &prepared_virtual)?;
+            }
+        }
+        candidate_doc
+    } else {
+        let clean = if prepared_markup.contains("<knit-blk>") {
+            strip_knit_blk_markers(&prepared_markup)
+        } else {
+            prepared_markup
+        };
+        compile_typst_doc(&clean, base_dir, &prepared_virtual)?
+    };
+
+    let pages = final_doc.pages().len();
+    let pdf_bytes = typst_pdf::pdf(&final_doc, &typst_pdf::PdfOptions::default()).map_err(|errs| {
         let msgs: Vec<String> = errs.iter().map(|e| e.message.to_string()).collect();
         KnitError::InvalidInput(format!("Loi xuat PDF tu Typst: {}", msgs.join("; ")))
     })?;

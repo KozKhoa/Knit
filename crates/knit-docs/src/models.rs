@@ -71,21 +71,88 @@ pub enum DocFont {
     Lora,
     LibertinusSerif,
     NewComputerModern,
+    #[serde(rename = "dejavu_sans_mono", alias = "deja_vu_sans_mono")]
     DejaVuSansMono,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PageOrientation {
+    #[default]
+    Portrait,
+    Landscape,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PageNumberPosition {
+    #[default]
+    BottomCenter,
+    BottomRight,
+    BottomLeft,
+    TopCenter,
+    TopLeft,
+    TopRight,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PageNumberFormat {
+    #[default]
+    NumberOnly,
+    PageOfTotal,
+    PageLabel,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PageNumberingOptions {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_one_u32")]
+    pub start_number: u32,
+    #[serde(default = "default_one_u32")]
+    pub start_from_page: u32,
+    #[serde(default)]
+    pub position: PageNumberPosition,
+    #[serde(default)]
+    pub format: PageNumberFormat,
+    #[serde(default)]
+    pub label_prefix: Option<String>,
+}
+
+impl Default for PageNumberingOptions {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            start_number: 1,
+            start_from_page: 1,
+            position: PageNumberPosition::BottomCenter,
+            format: PageNumberFormat::NumberOnly,
+            label_prefix: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocConvertOptions {
     #[serde(default)]
     pub page_size: PageSizePreset,
+    #[serde(default)]
+    pub orientation: PageOrientation,
     #[serde(default = "default_margin_mm")]
     pub margin_mm: f32,
     #[serde(default = "default_font_size_pt")]
     pub font_size_pt: f32,
     #[serde(default)]
+    pub line_spacing: Option<f32>,
+    #[serde(default)]
     pub title: Option<String>,
     #[serde(default)]
     pub include_toc: bool,
+    #[serde(default = "default_toc_page")]
+    pub toc_page: usize,
+    #[serde(default)]
+    pub page_numbering: PageNumberingOptions,
     #[serde(default)]
     pub theme: DocTheme,
     #[serde(default)]
@@ -98,10 +165,14 @@ impl Default for DocConvertOptions {
     fn default() -> Self {
         Self {
             page_size: PageSizePreset::A4,
+            orientation: PageOrientation::Portrait,
             margin_mm: default_margin_mm(),
             font_size_pt: default_font_size_pt(),
+            line_spacing: None,
             title: None,
             include_toc: false,
+            toc_page: default_toc_page(),
+            page_numbering: PageNumberingOptions::default(),
             theme: DocTheme::GitHub,
             font: DocFont::Default,
             mermaid_svgs: HashMap::new(),
@@ -115,6 +186,18 @@ fn default_margin_mm() -> f32 {
 
 fn default_font_size_pt() -> f32 {
     11.0
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_one_u32() -> u32 {
+    1
+}
+
+fn default_toc_page() -> usize {
+    1
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

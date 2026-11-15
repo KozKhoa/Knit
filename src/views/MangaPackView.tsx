@@ -6,13 +6,13 @@ import {
   ChevronDown,
   ChevronRight,
   FileJson,
+  FilePlus2,
   Folder,
   GripHorizontal,
   PackageCheck,
-  Save,
-  X,
 } from "lucide-react";
 import { Dropzone } from "../components/Dropzone";
+import { MangaInfoModal } from "../components/MangaInfoModal";
 import { NumberInput } from "../components/NumberInput";
 import { Select } from "../components/Select";
 import { useVerticalResize } from "../hooks/useVerticalResize";
@@ -26,6 +26,12 @@ import {
   scanMangaFolder,
   writeDocTextFile,
 } from "../lib/ipc";
+import {
+  createDefaultInfoTemplate,
+  joinStoryPath,
+  jsonObjectToStoryInfo,
+  storyInfoToTemplateObject,
+} from "../lib/mangaInfo";
 import { usePersistentState } from "../lib/storage";
 import type {
   Chapter,
@@ -137,60 +143,100 @@ export const MangaPackView: React.FC<MangaPackViewProps> = ({
     }
   };
 
-  const [treeHeightPx, setTreeHeightPx] = usePersistentState<number>(
-    "knit.manga.treeHeightPx",
-    220,
+  const [treeHeightsByPath, setTreeHeightsByPath] = usePersistentState<Record<string, number>>(
+    "knit.manga.treeHeightsByPath",
+    {},
   );
-  const { height: liveTreeHeightPx, handlePointerDown: handleTreeResizeStart } = useVerticalResize({
-    value: treeHeightPx,
-    min: 140,
-    max: 680,
-    onCommit: setTreeHeightPx,
-  });
-  const [openInfoStoryPath, setOpenInfoStoryPath] = React.useState<string | null>(null);
-  const [infoJsonText, setInfoJsonText] = React.useState<string>("");
-  const [infoJsonError, setInfoJsonError] = React.useState<string | null>(null);
-  const [infoJsonSavedMsg, setInfoJsonSavedMsg] = React.useState<string | null>(null);
+  const [modalStoryPath, setModalStoryPath] = React.useState<string | null>(null);
+  const [modalInitialJson, setModalInitialJson] = React.useState<string>("");
+  const [modalLoading, setModalLoading] = React.useState(false);
+  const [modalSaving, setModalSaving] = React.useState(false);
+  const [modalError, setModalError] = React.useState<string | null>(null);
+  const [savedStoryPath, setSavedStoryPath] = React.useState<string | null>(null);
   const [collapsedDirs, setCollapsedDirs] = React.useState<Record<string, boolean>>({});
 
-  const handleToggleInfoEditor = async (st: Story) => {
-    if (!st.info_file) return;
-    if (openInfoStoryPath === st.path) {
-      setOpenInfoStoryPath(null);
+  const modalStory = React.useMemo(
+    () => (modalStoryPath ? stories.find((s) => s.path === modalStoryPath) ?? null : null),
+    [stories, modalStoryPath],
+  );
+
+  const handleCommitStoryTreeHeight = React.useCallback(
+    (storyPath: string, nextHeight: number) => {
+      setTreeHeightsByPath((prev) =>
+        prev[storyPath] === nextHeight ? prev : { ...prev, [storyPath]: nextHeight },
+      );
+    },
+    [setTreeHeightsByPath],
+  );
+
+  const handleOpenInfoModal = async (st: Story) => {
+    setModalError(null);
+    setModalStoryPath(st.path);
+
+    if (!st.info_file) {
+      const tpl = createDefaultInfoTemplate(st.dir_name);
+      setModalInitialJson(JSON.stringify(tpl, null, 2));
+      setModalLoading(false);
       return;
     }
-    setInfoJsonError(null);
-    setInfoJsonSavedMsg(null);
-    setOpenInfoStoryPath(st.path);
+
+    const fullPath = joinStoryPath(st.path, st.info_file);
     if (isTauriRuntime()) {
+      setModalLoading(true);
+      setModalInitialJson(
+        JSON.stringify(
+          st.info ? storyInfoToTemplateObject(st.info) : createDefaultInfoTemplate(st.dir_name),
+          null,
+          2,
+        ),
+      );
       try {
-        const raw = await readDocTextFile(st.info_file);
-        setInfoJsonText(raw);
+        const raw = await readDocTextFile(fullPath);
+        setModalInitialJson(raw);
       } catch (e) {
-        setInfoJsonError(String(e));
+        setModalError(String(e));
+      } finally {
+        setModalLoading(false);
       }
-    } else if (st.info) {
-      setInfoJsonText(JSON.stringify(st.info, null, 2));
+    } else {
+      const obj = st.info ? storyInfoToTemplateObject(st.info) : createDefaultInfoTemplate(st.dir_name);
+      setModalInitialJson(JSON.stringify(obj, null, 2));
+      setModalLoading(false);
     }
   };
 
-  const handleSaveInfoJson = async (infoFilePath: string) => {
-    setInfoJsonError(null);
-    setInfoJsonSavedMsg(null);
-    try {
-      JSON.parse(infoJsonText);
-    } catch {
-      setInfoJsonError(t.mangaPack.invalidJsonError);
-      return;
-    }
+  const handleSaveInfoModal = async (jsonText: string, parsedObj: Record<string, unknown>) => {
+    if (!modalStory) return;
+    const targetFileName = modalStory.info_file || "info.json";
+    const fullPath = joinStoryPath(modalStory.path, targetFileName);
+    setModalSaving(true);
+    setModalError(null);
     try {
       if (isTauriRuntime()) {
-        await writeDocTextFile(infoFilePath, infoJsonText);
+        await writeDocTextFile(fullPath, jsonText);
       }
-      setInfoJsonSavedMsg(t.mangaPack.savedInfoJson);
-      window.setTimeout(() => setInfoJsonSavedMsg(null), 2500);
+      const nextInfo = jsonObjectToStoryInfo(parsedObj);
+      setStories((prev) =>
+        prev.map((s) =>
+          s.path === modalStory.path
+            ? {
+                ...s,
+                info_file: targetFileName,
+                info: nextInfo,
+                warnings: s.warnings.filter((w) => !w.includes("info.json")),
+              }
+            : s,
+        ),
+      );
+      setSavedStoryPath(modalStory.path);
+      window.setTimeout(() => {
+        setSavedStoryPath((curr) => (curr === modalStory.path ? null : curr));
+      }, 2500);
+      setModalStoryPath(null);
     } catch (e) {
-      setInfoJsonError(String(e));
+      setModalError(String(e));
+    } finally {
+      setModalSaving(false);
     }
   };
 
@@ -297,148 +343,153 @@ export const MangaPackView: React.FC<MangaPackViewProps> = ({
 
       {stories.length > 0 && (
         <div className="space-y-3">
-          {stories.map((st) => {
-            const totalImgs = st.chapters.reduce((acc, c) => acc + c.images.length, 0);
-            return (
-              <div
-                key={st.path}
-                className="space-y-2 rounded-[4px] border border-[#DEE2E6] bg-white p-4"
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <BookOpen className="h-4 w-4 text-[#007BFF]" />
-                    <span className="text-base font-bold text-[#212529]">
-                      {st.info?.title || st.dir_name}
-                    </span>
-                    {st.info_file ? (
-                      <span className="inline-flex items-center gap-1 rounded-[4px] bg-[#D4EDDA] px-2 py-0.5 text-xs text-[#155724]">
-                        <CheckCircle2 className="h-3.5 w-3.5" />
-                        {st.info_file}
-                      </span>
-                    ) : (
-                      <span className="rounded-[4px] bg-[#F1F3F5] px-2 py-0.5 text-xs text-[#6C757D]">
-                        {t.mangaPack.noInfoJson}
-                      </span>
-                    )}
-                    {st.cover && (
-                      <span className="rounded-[4px] bg-[#E7F1FF] px-2 py-0.5 font-mono-code text-xs text-[#0056B3]">
-                        cover: {st.cover}
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono-code text-xs text-[#495057]">
-                      {t.mangaPack.chaptersAndPages(st.chapters.length, totalImgs)}
-                    </span>
-                    {st.info_file && (
-                      <button
-                        type="button"
-                        onClick={() => void handleToggleInfoEditor(st)}
-                        className={`knit-control-sm inline-flex items-center gap-1 rounded-[4px] border px-2.5 text-xs font-semibold ${
-                          openInfoStoryPath === st.path
-                            ? "border-[#007BFF] bg-[#E7F1FF] text-[#0056B3]"
-                            : "border-[#CED4DA] bg-white text-[#343A40] hover:bg-[#E9ECEF]"
-                        }`}
-                      >
-                        <FileJson className="h-3.5 w-3.5 text-[#007BFF]" />
-                        {t.mangaPack.editInfoJsonBtn}
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {st.warnings.length > 0 && (
-                  <div className="space-y-1 rounded-[4px] border border-[#FFEEBA] bg-[#FFF3CD] px-3 py-2 text-sm text-[#856404]">
-                    {st.warnings.map((w, i) => (
-                      <div key={i} className="flex items-center gap-1.5">
-                        <AlertCircle className="h-4 w-4 shrink-0" />
-                        <span>{w}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                <div
-                  className={`grid grid-cols-1 gap-3 ${
-                    openInfoStoryPath === st.path && st.info_file ? "lg:grid-cols-2" : ""
-                  }`}
-                >
-                  <div>
-                    <div
-                      style={{ height: `${liveTreeHeightPx}px` }}
-                      className="overflow-y-auto rounded-[4px] border border-[#E9ECEF] bg-[#F8F9FA] p-2"
-                    >
-                      <FolderTree
-                        rootName={st.dir_name}
-                        chapters={st.chapters}
-                        collapsedDirs={collapsedDirs}
-                        onToggleDir={(key) =>
-                          setCollapsedDirs((prev) => ({ ...prev, [key]: !prev[key] }))
-                        }
-                      />
-                    </div>
-                    <div
-                      role="separator"
-                      aria-orientation="horizontal"
-                      onPointerDown={handleTreeResizeStart}
-                      title={`${liveTreeHeightPx}px`}
-                      className="mt-1 flex h-4 cursor-ns-resize select-none items-center justify-center rounded-[4px] border border-dashed border-[#CED4DA] bg-[#F8F9FA] text-[#6C757D] hover:border-[#007BFF] hover:bg-[#E7F1FF] hover:text-[#007BFF]"
-                    >
-                      <GripHorizontal className="h-3.5 w-3.5" />
-                    </div>
-                  </div>
-
-                  {openInfoStoryPath === st.path && st.info_file && (
-                    <div className="flex flex-col rounded-[4px] border border-[#CED4DA] bg-white">
-                      <div className="flex items-center justify-between border-b border-[#DEE2E6] bg-[#F8F9FA] px-3 py-1.5">
-                        <div className="flex items-center gap-1.5 text-xs font-bold text-[#343A40]">
-                          <FileJson className="h-3.5 w-3.5 text-[#007BFF]" />
-                          <span>{t.mangaPack.infoJsonTitle}</span>
-                          {infoJsonSavedMsg && (
-                            <span className="rounded bg-[#D4EDDA] px-1.5 py-0.5 text-[11px] font-semibold text-[#155724]">
-                              {infoJsonSavedMsg}
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => void handleSaveInfoJson(st.info_file!)}
-                            className="knit-control-sm inline-flex items-center gap-1 rounded-[4px] bg-[#007BFF] px-2.5 text-xs font-semibold text-white hover:bg-[#0069D9]"
-                          >
-                            <Save className="h-3 w-3" />
-                            {t.mangaPack.saveInfoJsonBtn}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setOpenInfoStoryPath(null)}
-                            aria-label={t.common.close}
-                            className="rounded-[4px] p-1 text-[#6C757D] hover:bg-[#E9ECEF]"
-                          >
-                            <X className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
-                      </div>
-                      {infoJsonError && (
-                        <div className="border-b border-[#F5C6CB] bg-[#F8D7DA] px-3 py-1 text-xs text-[#721C24]">
-                          {infoJsonError}
-                        </div>
-                      )}
-                      <textarea
-                        value={infoJsonText}
-                        onChange={(e) => setInfoJsonText(e.target.value)}
-                        spellCheck={false}
-                        style={{ height: `${liveTreeHeightPx - 32}px` }}
-                        className="w-full resize-none p-2.5 font-mono-code text-xs text-[#212529] focus:outline-none"
-                      />
-                    </div>
-                  )}
-                </div>
-              </div>
-            );
-          })}
+          {stories.map((st) => (
+            <StoryCard
+              key={st.path}
+              story={st}
+              treeHeightPx={treeHeightsByPath[st.path] ?? 220}
+              onCommitTreeHeight={handleCommitStoryTreeHeight}
+              isSavedRecently={savedStoryPath === st.path}
+              collapsedDirs={collapsedDirs}
+              onToggleDir={(key) =>
+                setCollapsedDirs((prev) => ({ ...prev, [key]: !prev[key] }))
+              }
+              onOpenInfoModal={(s) => void handleOpenInfoModal(s)}
+            />
+          ))}
         </div>
       )}
+
+      {modalStory && (
+        <MangaInfoModal
+          story={modalStory}
+          isNewFile={!modalStory.info_file}
+          initialJsonText={modalInitialJson}
+          loading={modalLoading}
+          errorMsg={modalError}
+          saving={modalSaving}
+          onSave={handleSaveInfoModal}
+          onClose={() => {
+            if (!modalSaving) setModalStoryPath(null);
+          }}
+        />
+      )}
+    </div>
+  );
+};
+
+interface StoryCardProps {
+  story: Story;
+  treeHeightPx: number;
+  onCommitTreeHeight: (storyPath: string, nextHeight: number) => void;
+  isSavedRecently: boolean;
+  collapsedDirs: Record<string, boolean>;
+  onToggleDir: (key: string) => void;
+  onOpenInfoModal: (story: Story) => void;
+}
+
+const StoryCard: React.FC<StoryCardProps> = ({
+  story: st,
+  treeHeightPx,
+  onCommitTreeHeight,
+  isSavedRecently,
+  collapsedDirs,
+  onToggleDir,
+  onOpenInfoModal,
+}) => {
+  const { t } = useI18n();
+  const totalImgs = React.useMemo(
+    () => st.chapters.reduce((acc, c) => acc + c.images.length, 0),
+    [st.chapters],
+  );
+  const { height: liveTreeHeightPx, handlePointerDown: handleTreeResizeStart } = useVerticalResize({
+    value: treeHeightPx,
+    min: 140,
+    max: 680,
+    onCommit: (nextHeight) => onCommitTreeHeight(st.path, nextHeight),
+  });
+
+  return (
+    <div className="space-y-2 rounded-[4px] border border-[#DEE2E6] bg-white p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <BookOpen className="h-4 w-4 text-[#007BFF]" />
+          <span className="text-base font-bold text-[#212529]">
+            {st.info?.title || st.dir_name}
+          </span>
+          {st.info_file ? (
+            <span className="inline-flex items-center gap-1 rounded-[4px] bg-[#D4EDDA] px-2 py-0.5 text-xs text-[#155724]">
+              <CheckCircle2 className="h-3.5 w-3.5" />
+              {st.info_file}
+            </span>
+          ) : (
+            <span className="rounded-[4px] bg-[#F1F3F5] px-2 py-0.5 text-xs text-[#6C757D]">
+              {t.mangaPack.noInfoJson}
+            </span>
+          )}
+          {isSavedRecently && (
+            <span className="rounded-[4px] bg-[#D4EDDA] px-2 py-0.5 text-xs font-semibold text-[#155724]">
+              {t.mangaPack.savedInfoJson}
+            </span>
+          )}
+          {st.cover && (
+            <span className="rounded-[4px] bg-[#E7F1FF] px-2 py-0.5 font-mono-code text-xs text-[#0056B3]">
+              cover: {st.cover}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="font-mono-code text-xs text-[#495057]">
+            {t.mangaPack.chaptersAndPages(st.chapters.length, totalImgs)}
+          </span>
+          <button
+            type="button"
+            onClick={() => onOpenInfoModal(st)}
+            className="knit-control-sm inline-flex items-center gap-1 rounded-[4px] border border-[#CED4DA] bg-white px-2.5 text-xs font-semibold text-[#343A40] hover:bg-[#E9ECEF]"
+          >
+            {st.info_file ? (
+              <FileJson className="h-3.5 w-3.5 text-[#007BFF]" />
+            ) : (
+              <FilePlus2 className="h-3.5 w-3.5 text-[#007BFF]" />
+            )}
+            {st.info_file ? t.mangaPack.editInfoJsonBtn : t.mangaPack.addInfoJsonBtn}
+          </button>
+        </div>
+      </div>
+
+      {st.warnings.length > 0 && (
+        <div className="space-y-1 rounded-[4px] border border-[#FFEEBA] bg-[#FFF3CD] px-3 py-2 text-sm text-[#856404]">
+          {st.warnings.map((w, i) => (
+            <div key={i} className="flex items-center gap-1.5">
+              <AlertCircle className="h-4 w-4 shrink-0" />
+              <span>{w}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div>
+        <div
+          style={{ height: `${liveTreeHeightPx}px` }}
+          className="overflow-y-auto rounded-[4px] border border-[#E9ECEF] bg-[#F8F9FA] p-2"
+        >
+          <FolderTree
+            rootName={st.dir_name}
+            chapters={st.chapters}
+            collapsedDirs={collapsedDirs}
+            onToggleDir={onToggleDir}
+          />
+        </div>
+        <div
+          role="separator"
+          aria-orientation="horizontal"
+          onPointerDown={handleTreeResizeStart}
+          title={`${liveTreeHeightPx}px`}
+          className="mt-1 flex h-4 cursor-ns-resize select-none items-center justify-center rounded-[4px] border border-dashed border-[#CED4DA] bg-[#F8F9FA] text-[#6C757D] hover:border-[#007BFF] hover:bg-[#E7F1FF] hover:text-[#007BFF]"
+        >
+          <GripHorizontal className="h-3.5 w-3.5" />
+        </div>
+      </div>
     </div>
   );
 };
@@ -490,25 +541,25 @@ const FolderTree: React.FC<{
         <div
           style={{ paddingLeft: `${depth * 14}px` }}
           onClick={() => hasChildren && onToggleDir(node.key)}
-          className={`flex items-center justify-between rounded-[3px] px-1.5 py-1 text-xs ${
+          className={`flex items-center justify-between rounded-[3px] px-1.5 py-1 text-base ${
             hasChildren ? "cursor-pointer hover:bg-[#E9ECEF]" : ""
           }`}
         >
           <div className="flex min-w-0 items-center gap-1.5">
             {hasChildren ? (
               isCollapsed ? (
-                <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[#6C757D]" />
+                <ChevronRight className="h-4 w-4 shrink-0 text-[#6C757D]" />
               ) : (
-                <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[#6C757D]" />
+                <ChevronDown className="h-4 w-4 shrink-0 text-[#6C757D]" />
               )
             ) : (
-              <span className="w-3.5 shrink-0" />
+              <span className="w-4 shrink-0" />
             )}
-            <Folder className="h-3.5 w-3.5 shrink-0 text-[#007BFF]" />
+            <Folder className="h-4 w-4 shrink-0 text-[#007BFF]" />
             <span className="truncate font-medium text-[#212529]">{node.name}</span>
           </div>
           {node.pageCount !== undefined && (
-            <span className="ml-2 shrink-0 font-mono-code text-[11px] text-[#6C757D]">
+            <span className="ml-2 shrink-0 font-mono-code text-base text-[#6C757D]">
               {node.pageCount}p
             </span>
           )}

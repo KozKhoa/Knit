@@ -7,7 +7,9 @@ pub mod packer;
 pub use bookmarks::{read_outlines, remap_tree, write_outlines};
 pub use imaging::{
     apply_edits, inspect_image_dimensions, rasterize_annotations, render_image_thumbnail,
-    render_image_thumbnail_jpeg, scan_image_files, scan_image_folder, SUPPORTED_IMAGE_EXTS,
+    render_image_thumbnail_jpeg, render_page_draft_preview_jpeg, scan_image_files,
+    scan_image_files_with_reporter, scan_image_folder, scan_image_folder_with_reporter,
+    SUPPORTED_IMAGE_EXTS,
 };
 pub use models::{
     AnimatedImagePolicy, AnnotationLayer, BookmarkNode, CropRect, Image2PdfConfig,

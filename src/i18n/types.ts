@@ -1,4 +1,11 @@
-import type { AppFontFamily, DocFont, DocTheme } from "../types/ipc";
+import type {
+  AppFontFamily,
+  DocFont,
+  DocTheme,
+  PageNumberFormat,
+  PageNumberPosition,
+  PageOrientation,
+} from "../types/ipc";
 
 export type Language = "vi" | "en";
 
@@ -37,6 +44,8 @@ export interface Translations {
     emptyHistory: string;
     collapseSidebar: string;
     expandSidebar: string;
+    metricsLabel: string;
+    metricsTooltip: (cpu: string, ram: string, procs: number) => string;
     nav: {
       image2pdf: { label: string; subtitle: string };
       pdfOps: { label: string; subtitle: string };
@@ -71,6 +80,20 @@ export interface Translations {
     animatedUnpackAll: string;
     splitMbHeading: string;
     splitMbPlaceholder: string;
+    splitModeNone: string;
+    splitModeMb: string;
+    splitModePages: string;
+    splitPagesPlaceholder: string;
+    sortLabel: string;
+    sortManual: string;
+    sortImportOrder: string;
+    sortName: string;
+    sortSize: string;
+    sortType: string;
+    sortAsc: string;
+    sortDesc: string;
+    undoBtn: string;
+    undoTooltip: string;
     dropzoneTitle: string;
     dropzoneDesc: string;
     pickFilesLabel: string;
@@ -92,6 +115,9 @@ export interface Translations {
     deletePageTitle: string;
     editedBadge: string;
     exportDoneSummary: (pages: number, files: number, passthrough: number) => string;
+    scanningProgress: (done: number, total: number, currentItem: string) => string;
+    scanWarningsTitle: (count: number) => string;
+    dismissBtn: string;
   };
   bookmarks: {
     title: string;
@@ -154,6 +180,11 @@ export interface Translations {
     sectionNamePlaceholder: string;
     sourcePagesTitle: (count: number) => string;
     sourcePagesHint: string;
+    selectedCount: (count: number) => string;
+    addSelectedBtn: (count: number) => string;
+    clearSelectionBtn: string;
+    resizeWidthTitle: string;
+    resizeHeightTitle: string;
     emptySectionHint: string;
     clearSectionTitle: string;
     deleteSectionTitle: string;
@@ -180,8 +211,11 @@ export interface Translations {
     saveMdDialog: string;
     selectedFileLabel: string;
     paperSizeLabel: string;
+    orientationLabel: string;
+    orientations: Record<PageOrientation, string>;
     marginMmLabel: string;
     fontSizeLabel: string;
+    lineSpacingLabel: string;
     themeLabel: string;
     themes: Record<DocTheme, string>;
     pdfFontLabel: string;
@@ -189,6 +223,16 @@ export interface Translations {
     titleAndTocLabel: string;
     titlePlaceholder: string;
     includeTocLabel: string;
+    tocPageLabel: string;
+    pageNumberingLabel: string;
+    pageNumberEnabledLabel: string;
+    pageNumberStartNumLabel: string;
+    pageNumberStartPageLabel: string;
+    pageNumberPosLabel: string;
+    pageNumberPositions: Record<PageNumberPosition, string>;
+    pageNumberFormatLabel: string;
+    pageNumberFormats: Record<PageNumberFormat, string>;
+    pageLabelPrefix: string;
     mermaidThemeLabel: string;
     mermaidThemes: Record<"default" | "neutral" | "forest" | "dark" | "base", string>;
     findPlaceholder: string;
@@ -267,7 +311,23 @@ export interface Translations {
     noInfoJson: string;
     chaptersAndPages: (chapters: number, pages: number) => string;
     editInfoJsonBtn: string;
+    addInfoJsonBtn: string;
     infoJsonTitle: string;
+    infoModalNewBadge: string;
+    infoTabForm: string;
+    infoTabRaw: string;
+    formatJsonBtn: string;
+    fieldTitle: string;
+    fieldDescription: string;
+    fieldAuthors: string;
+    fieldGenres: string;
+    fieldOtherTitles: string;
+    fieldNation: string;
+    fieldNationId: string;
+    fieldPosterId: string;
+    fieldType: string;
+    fieldStatus: string;
+    commaSeparatedHint: string;
     saveInfoJsonBtn: string;
     savedInfoJson: string;
     invalidJsonError: string;

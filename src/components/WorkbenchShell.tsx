@@ -2,6 +2,7 @@ import React from "react";
 import {
   Archive,
   BookOpen,
+  Cpu,
   FileCode2,
   FileSpreadsheet,
   FolderKanban,
@@ -16,9 +17,15 @@ import {
   XCircle,
 } from "lucide-react";
 import { useI18n } from "../i18n";
-import { revealInExplorer } from "../lib/ipc";
+import {
+  formatBytes,
+  getAppMetrics,
+  isTauriRuntime,
+  revealInExplorer,
+} from "../lib/ipc";
 import { usePersistentState } from "../lib/storage";
 import type {
+  AppMetrics,
   JobHistoryItem,
   JobLogEntry,
   JobProgress,
@@ -74,7 +81,29 @@ export const WorkbenchShell: React.FC<WorkbenchShellProps> = ({
   );
   const [drawerOpen, setDrawerOpen] = React.useState(false);
   const [drawerTab, setDrawerTab] = React.useState<"logs" | "history">("logs");
+  const [metrics, setMetrics] = React.useState<AppMetrics | null>(null);
   const shellRef = React.useRef<HTMLDivElement | null>(null);
+
+  React.useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const next = await getAppMetrics();
+        if (!cancelled) setMetrics(next);
+      } catch {
+        // Ignore transient metric polling errors
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => {
+      void poll();
+    }, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   React.useEffect(() => {
     const el = shellRef.current;
@@ -248,6 +277,36 @@ export const WorkbenchShell: React.FC<WorkbenchShellProps> = ({
                 </span>
               )}
             </button>
+
+            {metrics && (
+              <div
+                title={t.shell.metricsTooltip(
+                  metrics.cpu_percent.toFixed(1),
+                  formatBytes(metrics.ram_bytes),
+                  metrics.process_count,
+                )}
+                className={`mt-1 flex items-center rounded-[4px] border border-[#343A40] bg-[#16191D] font-mono-code text-[11px] text-[#ADB5BD] ${
+                  sidebarCollapsed
+                    ? "flex-col justify-center gap-0.5 px-1 py-1.5 text-[10px]"
+                    : "justify-between px-2.5 py-1.5"
+                }`}
+              >
+                <span className="flex items-center gap-1.5 text-[#DEE2E6]">
+                  <Cpu className="h-3.5 w-3.5 shrink-0 text-[#4DABF7]" />
+                  {!sidebarCollapsed && (
+                    <span>CPU {metrics.cpu_percent.toFixed(1)}%</span>
+                  )}
+                  {sidebarCollapsed && (
+                    <span>{metrics.cpu_percent.toFixed(0)}%</span>
+                  )}
+                </span>
+                <span className="text-[#CED4DA]">
+                  {sidebarCollapsed
+                    ? formatBytes(metrics.ram_bytes).replace(/\s+/g, "")
+                    : formatBytes(metrics.ram_bytes)}
+                </span>
+              </div>
+            )}
           </div>
         </aside>
 

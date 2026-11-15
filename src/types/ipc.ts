@@ -85,6 +85,7 @@ export interface PageDraft {
   label: string;
   width_px: number;
   height_px: number;
+  file_size_bytes?: number;
 }
 
 export interface BookmarkNode {
@@ -113,11 +114,13 @@ export interface Image2PdfConfig {
   lossless_passthrough: boolean;
   animated_policy: AnimatedImagePolicy;
   max_mb: number | null;
+  max_pages_per_file?: number | null;
 }
 
 export interface ImageScanResult {
   pages: PageDraft[];
   bookmarks: BookmarkNode[];
+  warnings?: string[];
 }
 
 export interface PdfInfo {
@@ -169,6 +172,24 @@ export type DocInputKind =
   | "pptx";
 
 export type PageSizePreset = "a4" | "letter" | "a5";
+export type PageOrientation = "portrait" | "landscape";
+export type PageNumberPosition =
+  | "bottom_center"
+  | "bottom_right"
+  | "bottom_left"
+  | "top_center"
+  | "top_left"
+  | "top_right";
+export type PageNumberFormat = "number_only" | "page_of_total" | "page_label";
+
+export interface PageNumberingOptions {
+  enabled: boolean;
+  start_number: number;
+  start_from_page: number;
+  position: PageNumberPosition;
+  format: PageNumberFormat;
+  label_prefix?: string | null;
+}
 
 export type DocTheme =
   | "github"
@@ -190,13 +211,23 @@ export type DocFont =
 
 export interface DocConvertOptions {
   page_size: PageSizePreset;
+  orientation?: PageOrientation;
   margin_mm: number;
   font_size_pt: number;
+  line_spacing?: number | null;
   title: string | null;
   include_toc: boolean;
+  toc_page?: number;
+  page_numbering?: PageNumberingOptions;
   theme: DocTheme;
   font: DocFont;
   mermaid_svgs?: Record<string, string>;
+}
+
+export interface AppMetrics {
+  cpu_percent: number;
+  ram_bytes: number;
+  process_count: number;
 }
 
 export interface MarkdownPreviewResult {

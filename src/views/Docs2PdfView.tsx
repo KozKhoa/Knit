@@ -49,6 +49,12 @@ import type {
   PageSizePreset,
 } from "../types/ipc";
 import type { DroppedBatch } from "./Image2PdfView";
+import type {
+  PageNumberFormat,
+  PageNumberPosition,
+  PageNumberingOptions,
+  PageOrientation,
+} from "../types/ipc";
 
 interface Docs2PdfViewProps {
   onStartJob: (jobId: string, label: string) => void;
@@ -128,6 +134,35 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
   );
   const [titleOverride, setTitleOverride] = usePersistentState<string>("knit.docs.titleOverride", "");
   const [includeToc, setIncludeToc] = usePersistentState<boolean>("knit.docs.includeToc", false);
+  const [tocPage, setTocPage] = usePersistentState<number>("knit.docs.tocPage", 1);
+  const [orientation, setOrientation] = usePersistentState<PageOrientation>(
+    "knit.docs.orientation",
+    "portrait",
+  );
+  const [lineSpacing, setLineSpacing] = usePersistentState<number>(
+    "knit.docs.lineSpacing",
+    1.4,
+  );
+  const [pageNumEnabled, setPageNumEnabled] = usePersistentState<boolean>(
+    "knit.docs.pageNumEnabled",
+    false,
+  );
+  const [pageNumStartNumber, setPageNumStartNumber] = usePersistentState<number>(
+    "knit.docs.pageNumStartNumber",
+    1,
+  );
+  const [pageNumStartFromPage, setPageNumStartFromPage] = usePersistentState<number>(
+    "knit.docs.pageNumStartFromPage",
+    1,
+  );
+  const [pageNumPosition, setPageNumPosition] = usePersistentState<PageNumberPosition>(
+    "knit.docs.pageNumPosition",
+    "bottom_center",
+  );
+  const [pageNumFormat, setPageNumFormat] = usePersistentState<PageNumberFormat>(
+    "knit.docs.pageNumFormat",
+    "number_only",
+  );
   const [workspaceHeightPx, setWorkspaceHeightPx] = usePersistentState<number>(
     "knit.docs.workspaceHeightPx",
     560,
@@ -178,17 +213,52 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
   const isOfficeFile = docKind === "docx" || docKind === "pptx";
   const isDirty = isEditableText && editorText !== savedText;
 
+  const pageNumbering = React.useMemo<PageNumberingOptions>(
+    () => ({
+      enabled: pageNumEnabled,
+      start_number: Math.max(1, pageNumStartNumber),
+      start_from_page: Math.max(1, pageNumStartFromPage),
+      position: pageNumPosition,
+      format: pageNumFormat,
+      label_prefix: t.docs2pdf.pageLabelPrefix,
+    }),
+    [
+      pageNumEnabled,
+      pageNumStartNumber,
+      pageNumStartFromPage,
+      pageNumPosition,
+      pageNumFormat,
+      t.docs2pdf.pageLabelPrefix,
+    ],
+  );
+
   const docOptions = React.useMemo<DocConvertOptions>(
     () => ({
       page_size: pageSize,
+      orientation,
       margin_mm: marginMm,
       font_size_pt: fontSizePt,
+      line_spacing: lineSpacing,
       title: titleOverride.trim() !== "" ? titleOverride.trim() : null,
       include_toc: includeToc,
+      toc_page: includeToc ? Math.max(1, tocPage) : 1,
+      page_numbering: pageNumbering,
       theme,
       font: pdfFont,
     }),
-    [pageSize, marginMm, fontSizePt, titleOverride, includeToc, theme, pdfFont],
+    [
+      pageSize,
+      orientation,
+      marginMm,
+      fontSizePt,
+      lineSpacing,
+      titleOverride,
+      includeToc,
+      tocPage,
+      pageNumbering,
+      theme,
+      pdfFont,
+    ],
   );
 
   const checkEngine = React.useCallback(async () => {
@@ -603,113 +673,262 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
       )}
 
       {/* Formatting, Theme & Font Options Bar */}
-      <div className="grid grid-cols-1 gap-3.5 rounded-[4px] border border-[#DEE2E6] bg-white p-4 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
-        <div>
-          <label className="block text-xs font-semibold uppercase text-[#6C757D]">
-            {t.docs2pdf.themeLabel}
-          </label>
-          <Select
-            ariaLabel={t.docs2pdf.themeLabel}
-            value={theme}
-            onChange={(val) => setTheme(val as DocTheme)}
-            className="mt-1 w-full"
-            options={THEMES.map((th) => ({ value: th, label: t.docs2pdf.themes[th] }))}
-          />
-        </div>
-
-        <div>
-          <label className="block text-xs font-semibold uppercase text-[#6C757D]">
-            {t.docs2pdf.pdfFontLabel}
-          </label>
-          <Select
-            ariaLabel={t.docs2pdf.pdfFontLabel}
-            value={pdfFont}
-            onChange={(val) => setPdfFont(val as DocFont)}
-            className="mt-1 w-full"
-            options={PDF_FONTS.map((f) => ({ value: f, label: t.docs2pdf.fonts[f] }))}
-          />
-        </div>
-
-        <div>
-          <label className="block text-xs font-semibold uppercase text-[#6C757D]">
-            {t.docs2pdf.mermaidThemeLabel}
-          </label>
-          <Select
-            ariaLabel={t.docs2pdf.mermaidThemeLabel}
-            value={mermaidTheme}
-            onChange={(val) => setMermaidTheme(val as MermaidTheme)}
-            className="mt-1 w-full"
-            options={MERMAID_THEMES.map((mt) => ({
-              value: mt,
-              label: t.docs2pdf.mermaidThemes[mt],
-            }))}
-          />
-        </div>
-
-        <div>
-          <label className="block text-xs font-semibold uppercase text-[#6C757D]">
-            {t.docs2pdf.paperSizeLabel}
-          </label>
-          <Select
-            ariaLabel={t.docs2pdf.paperSizeLabel}
-            value={pageSize}
-            onChange={(val) => setPageSize(val as PageSizePreset)}
-            className="mt-1 w-full"
-            options={[
-              { value: "a4", label: "A4" },
-              { value: "letter", label: "US Letter" },
-              { value: "a5", label: "A5" },
-            ]}
-          />
-        </div>
-
-        <div>
-          <label className="block text-xs font-semibold uppercase text-[#6C757D]">
-            {t.docs2pdf.marginMmLabel}
-          </label>
-          <NumberInput
-            ariaLabel={t.docs2pdf.marginMmLabel}
-            min={5}
-            max={50}
-            value={marginMm}
-            onChange={setMarginMm}
-            className="mt-1 w-full"
-          />
-        </div>
-
-        <div>
-          <label className="block text-xs font-semibold uppercase text-[#6C757D]">
-            {t.docs2pdf.fontSizeLabel}
-          </label>
-          <NumberInput
-            ariaLabel={t.docs2pdf.fontSizeLabel}
-            min={8}
-            max={20}
-            value={fontSizePt}
-            onChange={setFontSizePt}
-            className="mt-1 w-full"
-          />
-        </div>
-
-        <div>
-          <label className="block text-xs font-semibold uppercase text-[#6C757D]">
-            {t.docs2pdf.titleAndTocLabel}
-          </label>
-          <input
-            type="text"
-            placeholder={t.docs2pdf.titlePlaceholder}
-            value={titleOverride}
-            onChange={(e) => setTitleOverride(e.target.value)}
-            className="knit-control mt-1 w-full rounded-[4px] border border-[#CED4DA] px-2.5 text-sm"
-          />
-          <label className="mt-2 flex items-center gap-2 text-sm text-[#212529]">
-            <input
-              type="checkbox"
-              checked={includeToc}
-              onChange={(e) => setIncludeToc(e.target.checked)}
+      <div className="space-y-3.5 rounded-[4px] border border-[#DEE2E6] bg-white p-4">
+        <div className="grid grid-cols-1 gap-3.5 md:grid-cols-4 xl:grid-cols-8">
+          <div>
+            <label className="block text-xs font-semibold uppercase text-[#6C757D]">
+              {t.docs2pdf.themeLabel}
+            </label>
+            <Select
+              ariaLabel={t.docs2pdf.themeLabel}
+              value={theme}
+              onChange={(val) => setTheme(val as DocTheme)}
+              className="mt-1 w-full"
+              options={THEMES.map((th) => ({ value: th, label: t.docs2pdf.themes[th] }))}
             />
-            {t.docs2pdf.includeTocLabel}
-          </label>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold uppercase text-[#6C757D]">
+              {t.docs2pdf.pdfFontLabel}
+            </label>
+            <Select
+              ariaLabel={t.docs2pdf.pdfFontLabel}
+              value={pdfFont}
+              onChange={(val) => setPdfFont(val as DocFont)}
+              className="mt-1 w-full"
+              options={PDF_FONTS.map((f) => ({ value: f, label: t.docs2pdf.fonts[f] }))}
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold uppercase text-[#6C757D]">
+              {t.docs2pdf.mermaidThemeLabel}
+            </label>
+            <Select
+              ariaLabel={t.docs2pdf.mermaidThemeLabel}
+              value={mermaidTheme}
+              onChange={(val) => setMermaidTheme(val as MermaidTheme)}
+              className="mt-1 w-full"
+              options={MERMAID_THEMES.map((mt) => ({
+                value: mt,
+                label: t.docs2pdf.mermaidThemes[mt],
+              }))}
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold uppercase text-[#6C757D]">
+              {t.docs2pdf.paperSizeLabel}
+            </label>
+            <Select
+              ariaLabel={t.docs2pdf.paperSizeLabel}
+              value={pageSize}
+              onChange={(val) => setPageSize(val as PageSizePreset)}
+              className="mt-1 w-full"
+              options={[
+                { value: "a4", label: "A4" },
+                { value: "letter", label: "US Letter" },
+                { value: "a5", label: "A5" },
+              ]}
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold uppercase text-[#6C757D]">
+              {t.docs2pdf.orientationLabel}
+            </label>
+            <Select
+              ariaLabel={t.docs2pdf.orientationLabel}
+              value={orientation}
+              onChange={(val) => setOrientation(val as PageOrientation)}
+              className="mt-1 w-full"
+              options={[
+                { value: "portrait", label: t.docs2pdf.orientations.portrait },
+                { value: "landscape", label: t.docs2pdf.orientations.landscape },
+              ]}
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold uppercase text-[#6C757D]">
+              {t.docs2pdf.marginMmLabel}
+            </label>
+            <NumberInput
+              ariaLabel={t.docs2pdf.marginMmLabel}
+              min={5}
+              max={50}
+              value={marginMm}
+              onChange={setMarginMm}
+              className="mt-1 w-full"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold uppercase text-[#6C757D]">
+              {t.docs2pdf.fontSizeLabel}
+            </label>
+            <NumberInput
+              ariaLabel={t.docs2pdf.fontSizeLabel}
+              min={8}
+              max={20}
+              value={fontSizePt}
+              onChange={setFontSizePt}
+              className="mt-1 w-full"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold uppercase text-[#6C757D]">
+              {t.docs2pdf.lineSpacingLabel}
+            </label>
+            <NumberInput
+              ariaLabel={t.docs2pdf.lineSpacingLabel}
+              min={0.8}
+              max={3.0}
+              step={0.05}
+              value={lineSpacing}
+              onChange={setLineSpacing}
+              className="mt-1 w-full"
+            />
+          </div>
+        </div>
+
+        {/* Title, TOC Placement & Page Numbering Row */}
+        <div className="grid grid-cols-1 gap-3.5 border-t border-[#E9ECEF] pt-3 lg:grid-cols-12">
+          <div className="space-y-2 lg:col-span-5">
+            <label className="block text-xs font-semibold uppercase text-[#6C757D]">
+              {t.docs2pdf.titleAndTocLabel}
+            </label>
+            <div className="flex flex-wrap items-center gap-2.5">
+              <input
+                type="text"
+                placeholder={t.docs2pdf.titlePlaceholder}
+                value={titleOverride}
+                onChange={(e) => setTitleOverride(e.target.value)}
+                className="knit-control min-w-[180px] flex-1 rounded-[4px] border border-[#CED4DA] px-2.5 text-sm"
+              />
+              <label className="flex items-center gap-2 text-sm text-[#212529]">
+                <input
+                  type="checkbox"
+                  checked={includeToc}
+                  onChange={(e) => setIncludeToc(e.target.checked)}
+                />
+                {t.docs2pdf.includeTocLabel}
+              </label>
+              {includeToc && (
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs font-medium text-[#495057]">
+                    {t.docs2pdf.tocPageLabel}:
+                  </span>
+                  <NumberInput
+                    ariaLabel={t.docs2pdf.tocPageLabel}
+                    size="sm"
+                    min={1}
+                    max={999}
+                    value={tocPage}
+                    onChange={setTocPage}
+                    className="w-20"
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="space-y-2 lg:col-span-7">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="text-xs font-semibold uppercase text-[#6C757D]">
+                {t.docs2pdf.pageNumberingLabel}
+              </span>
+              <label className="flex items-center gap-2 text-sm font-medium text-[#212529]">
+                <input
+                  type="checkbox"
+                  checked={pageNumEnabled}
+                  onChange={(e) => setPageNumEnabled(e.target.checked)}
+                />
+                {t.docs2pdf.pageNumberEnabledLabel}
+              </label>
+            </div>
+
+            {pageNumEnabled && (
+              <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+                <div>
+                  <label className="block text-[11px] font-medium text-[#6C757D]">
+                    {t.docs2pdf.pageNumberPosLabel}
+                  </label>
+                  <Select
+                    ariaLabel={t.docs2pdf.pageNumberPosLabel}
+                    size="sm"
+                    value={pageNumPosition}
+                    onChange={(val) => setPageNumPosition(val as PageNumberPosition)}
+                    className="mt-1 w-full"
+                    options={(
+                      [
+                        "bottom_center",
+                        "bottom_right",
+                        "bottom_left",
+                        "top_center",
+                        "top_left",
+                        "top_right",
+                      ] as PageNumberPosition[]
+                    ).map((pos) => ({
+                      value: pos,
+                      label: t.docs2pdf.pageNumberPositions[pos],
+                    }))}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-medium text-[#6C757D]">
+                    {t.docs2pdf.pageNumberFormatLabel}
+                  </label>
+                  <Select
+                    ariaLabel={t.docs2pdf.pageNumberFormatLabel}
+                    size="sm"
+                    value={pageNumFormat}
+                    onChange={(val) => setPageNumFormat(val as PageNumberFormat)}
+                    className="mt-1 w-full"
+                    options={(
+                      ["number_only", "page_of_total", "page_label"] as PageNumberFormat[]
+                    ).map((fmt) => ({
+                      value: fmt,
+                      label: t.docs2pdf.pageNumberFormats[fmt],
+                    }))}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-medium text-[#6C757D]">
+                    {t.docs2pdf.pageNumberStartNumLabel}
+                  </label>
+                  <NumberInput
+                    ariaLabel={t.docs2pdf.pageNumberStartNumLabel}
+                    size="sm"
+                    min={1}
+                    max={9999}
+                    value={pageNumStartNumber}
+                    onChange={setPageNumStartNumber}
+                    className="mt-1 w-full"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-medium text-[#6C757D]">
+                    {t.docs2pdf.pageNumberStartPageLabel}
+                  </label>
+                  <NumberInput
+                    ariaLabel={t.docs2pdf.pageNumberStartPageLabel}
+                    size="sm"
+                    min={1}
+                    max={9999}
+                    value={pageNumStartFromPage}
+                    onChange={setPageNumStartFromPage}
+                    className="mt-1 w-full"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

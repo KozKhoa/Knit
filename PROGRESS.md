@@ -25,3 +25,11 @@
   - Hoàn thiện frontend React/TypeScript/Tailwind theo `DESIGIN.md` (`tsc --noEmit`, `vite build`, và Vitest đều pass).
   - Hoàn thiện `src-tauri` (21 IPC commands, `ThrottledReporter`, icons), CI/Release workflows, và sửa bug loop `roots` trong `renamer_preview`.
   - Sau khi cài `webkit2gtk4.1-devel gtk3-devel libsoup3-devel librsvg2-devel`, đã build thành công `target/release/knit-desktop` (`45,559,640 bytes`) và `target/release/bundle/rpm/Knit-0.1.0-1.x86_64.rpm` (`20.67 MiB`).
+
+## Review v1.8 Implementation (2026-11-15)
+- **Manga Packager JSON Editor**: Replaced raw JSON `<textarea>` with light-themed CodeMirror 6 `JsonCodeEditor` (syntax highlighting + `color-scheme: light` scrollbars).
+- **PDF Merge & Split**: Added horizontal pane width splitter, independent vertical pane height resizing, and `Shift`/`Ctrl`/`Meta` multi-select + multi-page drag-and-drop into output sections.
+- **MD → PDF**: Added paper orientation (`portrait`/`landscape`), line spacing, exact TOC page placement (`toc_page` via 2-pass Typst introspection), and configurable page numbering (toggle, start number, start page, 6 positions, 3 formats).
+- **Sidebar Resource Monitor**: Added native `/proc` (Linux) and Win32 ToolHelp/Psapi (Windows) process-tree CPU% + RAM aggregation (`get_app_metrics`) displayed at bottom-left of the sidebar.
+- **Image → PDF**: Fixed parallel progress bar jumps (`AtomicUsize` + monotonic guard), added Auto Sort (`manual`, `import_order`, `name`, `size`, `type` + Asc/Desc) with `Ctrl+Z` / Undo stack, added `max_pages_per_file` split mode, and rendered edited previews (`render_page_draft_preview_file`) in both grid thumbnails and large preview modal.
+- **Verification**: `cargo test` (42/42), `cargo check -p knit-desktop` (exit 0), `pnpm build` (exit 0), `pnpm test` (23/23 across 8 files).

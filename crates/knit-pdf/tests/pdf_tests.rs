@@ -2,9 +2,10 @@ use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
 use knit_core::{CancellationToken, NoopReporter};
 use knit_pdf::{
     build_pdf_from_drafts, inspect_image_dimensions, inspect_pdf, merge_pdfs, parse_page_ranges,
-    remap_tree, render_pdf_thumbnail, scan_image_folder, split_pdf, AnimatedImagePolicy,
-    AnnotationLayer, BookmarkNode, CropRect, Image2PdfConfig, PageDraft, PageLayoutPolicy,
-    PageSelection, PageSource, PdfMergeConfig, PdfSplitRule, StrokeAnnotation, TextAnnotation,
+    remap_tree, render_page_draft_preview_jpeg, render_pdf_thumbnail, scan_image_folder,
+    split_pdf, AnimatedImagePolicy, AnnotationLayer, BookmarkNode, CropRect, Image2PdfConfig,
+    PageDraft, PageLayoutPolicy, PageSelection, PageSource, PdfMergeConfig, PdfSplitRule,
+    StrokeAnnotation, TextAnnotation,
 };
 use std::io::Cursor;
 use tempfile::tempdir;
@@ -63,6 +64,7 @@ fn image2pdf_passthrough_jpg_and_avif_webp_and_bookmarks() {
             lossless_passthrough: true,
             animated_policy: AnimatedImagePolicy::FirstFrameOnly,
             max_mb: None,
+            max_pages_per_file: None,
         },
         &CancellationToken::new(),
         &NoopReporter,
@@ -120,6 +122,7 @@ fn non_destructive_crop_rotate_text_and_draw_render_into_pdf() {
         label: "photo.png".into(),
         width_px: 400,
         height_px: 300,
+        file_size_bytes: 0,
     };
 
     let out_pdf = tmp.path().join("edited.pdf");
@@ -133,6 +136,7 @@ fn non_destructive_crop_rotate_text_and_draw_render_into_pdf() {
             lossless_passthrough: true,
             animated_policy: AnimatedImagePolicy::FirstFrameOnly,
             max_mb: None,
+            max_pages_per_file: None,
         },
         &CancellationToken::new(),
         &NoopReporter,
@@ -168,6 +172,7 @@ fn pdf_merge_and_split_preserve_outlines_and_page_selection() {
         lossless_passthrough: true,
         animated_policy: AnimatedImagePolicy::FirstFrameOnly,
         max_mb: None,
+        max_pages_per_file: None,
     };
 
     let d1 = PageDraft {
@@ -180,6 +185,7 @@ fn pdf_merge_and_split_preserve_outlines_and_page_selection() {
         label: "a".into(),
         width_px: 100,
         height_px: 100,
+        file_size_bytes: 0,
     };
     let d2 = PageDraft {
         id: "2".into(),
@@ -191,6 +197,7 @@ fn pdf_merge_and_split_preserve_outlines_and_page_selection() {
         label: "b".into(),
         width_px: 100,
         height_px: 100,
+        file_size_bytes: 0,
     };
 
     build_pdf_from_drafts(
@@ -333,6 +340,7 @@ fn animated_gif_unpacks_frames_with_duration() {
             lossless_passthrough: true,
             animated_policy: AnimatedImagePolicy::UnpackAllFrames,
             max_mb: None,
+            max_pages_per_file: None,
         },
         &CancellationToken::new(),
         &NoopReporter,
@@ -368,6 +376,7 @@ fn a4_background_colors_and_padding_render_correctly() {
             lossless_passthrough: true,
             animated_policy: AnimatedImagePolicy::FirstFrameOnly,
             max_mb: None,
+            max_pages_per_file: None,
         },
         &CancellationToken::new(),
         &NoopReporter,
@@ -399,6 +408,7 @@ fn a4_background_colors_and_padding_render_correctly() {
             lossless_passthrough: true,
             animated_policy: AnimatedImagePolicy::FirstFrameOnly,
             max_mb: None,
+            max_pages_per_file: None,
         },
         &CancellationToken::new(),
         &NoopReporter,
@@ -433,6 +443,7 @@ fn split_pdf_custom_groups_supports_reordering_duplication_and_rotation() {
             lossless_passthrough: true,
             animated_policy: AnimatedImagePolicy::FirstFrameOnly,
             max_mb: None,
+            max_pages_per_file: None,
         },
         &CancellationToken::new(),
         &NoopReporter,
@@ -476,4 +487,183 @@ fn split_pdf_custom_groups_supports_reordering_duplication_and_rotation() {
     let (count, thumbs) = knit_pdf::render_pdf_bytes_thumbnails(&thumb_bytes, Some(2), 160).unwrap();
     assert_eq!(count, 2);
     assert_eq!(thumbs.len(), 2);
+}
+
+#[test]
+fn parallel_scan_preserves_order_and_avif_header_inspection() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path().join("manga");
+    let ch1 = root.join("Chap 1");
+    let ch2 = root.join("Chap 2");
+    std::fs::create_dir_all(&ch1).unwrap();
+    std::fs::create_dir_all(&ch2).unwrap();
+
+    // AVIF dimension inspection via header-only box skip
+    let avif_path = ch1.join("1.avif");
+    let avif_rgba = RgbaImage::from_fn(96, 48, |x, y| Rgba([x as u8, y as u8, 120, 255]));
+    let avif_bytes = oxideav_avif::encode_rgba8(
+        96,
+        48,
+        avif_rgba.as_raw(),
+        &oxideav_avif::EncodeOptions::default().with_quality(75),
+    )
+    .unwrap();
+    std::fs::write(&avif_path, avif_bytes).unwrap();
+    assert_eq!(inspect_image_dimensions(&avif_path).unwrap(), (96, 48));
+
+    // Natural sort order: 2.jpg, 10.jpg in Chap 1, cover.jpg + 1.png in Chap 2
+    make_sample_jpg(&ch1.join("10.jpg"), 20, 30, [1, 2, 3]);
+    make_sample_jpg(&ch1.join("2.jpg"), 20, 30, [4, 5, 6]);
+    make_sample_jpg(&ch2.join("cover.jpg"), 40, 60, [7, 8, 9]);
+    make_sample_png(&ch2.join("1.png"), 30, 40, [10, 11, 12, 255]);
+
+    let scan = scan_image_folder(&root, AnimatedImagePolicy::FirstFrameOnly).unwrap();
+    let labels: Vec<&str> = scan.pages.iter().map(|p| p.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        vec!["1.avif", "2.jpg", "10.jpg", "cover.jpg", "1.png"]
+    );
+    assert_eq!(scan.bookmarks.len(), 2);
+    assert_eq!(scan.bookmarks[0].title, "Chap 1");
+    assert_eq!(scan.bookmarks[0].target_page_index, 0);
+    assert_eq!(scan.bookmarks[1].title, "Chap 2");
+    assert_eq!(scan.bookmarks[1].target_page_index, 3);
+    assert!(scan.warnings.is_empty());
+}
+
+#[test]
+fn jpeg_header_inspection_handles_exif_rotation_and_skips_corrupt_images_with_warning() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path().join("broken_mix");
+    let ch1 = root.join("Chap 1");
+    let ch2 = root.join("Chap 2");
+    std::fs::create_dir_all(&ch1).unwrap();
+    std::fs::create_dir_all(&ch2).unwrap();
+
+    // Minimal valid JPEG with APP1 EXIF Orientation = 6 (90 deg CW -> swaps 100x200 into 200x100)
+    #[rustfmt::skip]
+    let exif_rotated_jpeg: Vec<u8> = vec![
+        0xFF, 0xD8, // SOI
+        0xFF, 0xE1, 0x00, 0x22, // APP1 length 34 (2 + 32)
+        b'E', b'x', b'i', b'f', 0x00, 0x00,
+        b'M', b'M', 0x00, 0x2A, 0x00, 0x00, 0x00, 0x08, // TIFF MM header, IFD0 @ 8
+        0x00, 0x01, // 1 IFD entry
+        0x01, 0x12, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, 0x00, 0x06, 0x00, 0x00, // Orientation = 6
+        0x00, 0x00, 0x00, 0x00, // next IFD = 0
+        0xFF, 0xC0, 0x00, 0x0B, // SOF0
+        0x08, 0x00, 0xC8, 0x00, 0x64, // precision=8, height=200, width=100
+        0x01, 0x01, 0x11, 0x00,
+        0xFF, 0xD9, // EOI
+    ];
+    let rotated_path = ch1.join("01_exif.jpg");
+    std::fs::write(&rotated_path, &exif_rotated_jpeg).unwrap();
+    assert_eq!(inspect_image_dimensions(&rotated_path).unwrap(), (200, 100));
+
+    // Corrupt JPEG in Chap 1 (entirely invalid bytes) + valid image in Chap 2
+    std::fs::write(ch1.join("02_corrupt.jpg"), b"not-a-valid-jpeg").unwrap();
+    make_sample_jpg(&ch2.join("01_ok.jpg"), 64, 48, [20, 40, 60]);
+
+    let scan = scan_image_folder(&root, AnimatedImagePolicy::FirstFrameOnly).unwrap();
+    assert_eq!(scan.pages.len(), 2);
+    assert_eq!(scan.pages[0].label, "01_exif.jpg");
+    assert_eq!((scan.pages[0].width_px, scan.pages[0].height_px), (200, 100));
+    assert_eq!(scan.pages[1].label, "01_ok.jpg");
+    assert_eq!(scan.warnings.len(), 1);
+    assert!(scan.warnings[0].contains("02_corrupt.jpg"));
+    assert_eq!(scan.bookmarks.len(), 2);
+    assert_eq!(scan.bookmarks[1].target_page_index, 1);
+}
+
+#[test]
+fn split_by_max_pages_per_file_and_preview_draft_edits_and_monotonic_progress() {
+    use knit_core::{JobLogLevel, JobProgress, JobReporter};
+    use std::sync::Mutex;
+
+    struct RecordingReporter(Mutex<Vec<u64>>);
+    impl JobReporter for RecordingReporter {
+        fn on_progress(&self, p: JobProgress) {
+            self.0.lock().unwrap().push(p.done);
+        }
+        fn on_log(&self, _level: JobLogLevel, _msg: &str) {}
+    }
+
+    let tmp = tempdir().unwrap();
+    let mut paths = Vec::new();
+    for i in 0..5 {
+        let p = tmp.path().join(format!("p{i}.png"));
+        make_sample_png(&p, 120, 80, [240, 240, 240, 255]);
+        paths.push(p);
+    }
+
+    let mut scan = knit_pdf::scan_image_files(&paths, AnimatedImagePolicy::FirstFrameOnly).unwrap();
+    assert!(scan.pages.iter().all(|p| p.file_size_bytes > 0));
+
+    // Edit page 0: crop half + rotate 90 + red stroke -> verify rendered preview reflects edits
+    scan.pages[0].crop = Some(CropRect {
+        x: 0.0,
+        y: 0.0,
+        width: 0.5,
+        height: 1.0,
+    }); // 60x80 -> rotated 90 -> 80x60
+    scan.pages[0].rotation_deg = 90;
+    scan.pages[0].annotations.strokes.push(StrokeAnnotation {
+        id: "st1".into(),
+        points: vec![[0.1, 0.5], [0.9, 0.5]],
+        stroke_width_ratio: 0.08,
+        color_hex: "#DC3545".into(),
+    });
+
+    let preview_jpeg = render_page_draft_preview_jpeg(&scan.pages[0], 400, 80).unwrap();
+    let preview_img = image::load_from_memory(&preview_jpeg).unwrap().to_rgb8();
+    assert_eq!(preview_img.width(), 80);
+    assert_eq!(preview_img.height(), 60);
+    assert!(preview_img
+        .pixels()
+        .any(|p| p[0] > 180 && p[1] < 100 && p[2] < 100));
+
+    let out_pdf = tmp.path().join("split_pages.pdf");
+    let reporter = RecordingReporter(Mutex::new(Vec::new()));
+    let bookmarks = vec![
+        BookmarkNode {
+            title: "Part 1".into(),
+            target_page_index: 0,
+            children: vec![],
+        },
+        BookmarkNode {
+            title: "Part 2".into(),
+            target_page_index: 3,
+            children: vec![],
+        },
+    ];
+    let res = build_pdf_from_drafts(
+        &scan.pages,
+        &bookmarks,
+        &Image2PdfConfig {
+            output_path: out_pdf,
+            layout: PageLayoutPolicy::OriginalSize { dpi: 72.0 },
+            jpeg_quality: 85,
+            lossless_passthrough: true,
+            animated_policy: AnimatedImagePolicy::FirstFrameOnly,
+            max_mb: None,
+            max_pages_per_file: Some(2),
+        },
+        &CancellationToken::new(),
+        &reporter,
+    )
+    .unwrap();
+
+    assert_eq!(res.output_files.len(), 3); // 2 + 2 + 1 pages
+    assert_eq!(inspect_pdf(&res.output_files[0]).unwrap().page_count, 2);
+    assert_eq!(inspect_pdf(&res.output_files[1]).unwrap().page_count, 2);
+    assert_eq!(inspect_pdf(&res.output_files[2]).unwrap().page_count, 1);
+    let p2_info = inspect_pdf(&res.output_files[1]).unwrap();
+    assert_eq!(p2_info.bookmarks[0].title, "Part 2");
+    assert_eq!(p2_info.bookmarks[0].target_page_index, 1);
+
+    let dones = reporter.0.lock().unwrap();
+    assert!(!dones.is_empty());
+    for pair in dones.windows(2) {
+        assert!(pair[1] >= pair[0], "progress went backwards: {:?}", *dones);
+    }
+    assert_eq!(*dones.last().unwrap(), 5);
 }

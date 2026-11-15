@@ -8,10 +8,10 @@ pub use html_epub::{compile_epub_to_pdf_bytes, convert_epub_to_pdf, html_to_typs
 pub use markdown::{markdown_to_typst, markdown_to_typst_with_assets, txt_to_typst};
 pub use models::{
     DocConvertOptions, DocConvertResult, DocFont, DocInputKind, DocTheme, EngineStatus,
-    PageSizePreset,
+    PageNumberFormat, PageNumberPosition, PageNumberingOptions, PageOrientation, PageSizePreset,
 };
 pub use office::{convert_office_to_pdf, detect_libreoffice};
-pub use world::compile_typst_to_pdf;
+pub use world::{compile_typst_to_pdf, compile_typst_to_pdf_with_toc};
 
 use knit_core::{
     atomic_write_file, ensure_disk_space, CancellationToken, JobProgress, JobReporter,
@@ -48,7 +48,12 @@ pub fn compile_text_to_pdf_bytes(
         DocInputKind::Markdown | DocInputKind::Html => base_dir,
         _ => None,
     };
-    compile_typst_to_pdf(&markup, effective_base, &assets)
+    let toc_target = if opts.include_toc && opts.toc_page > 1 {
+        Some(opts.toc_page)
+    } else {
+        None
+    };
+    compile_typst_to_pdf_with_toc(&markup, effective_base, &assets, toc_target)
 }
 
 /// Chuyển nội dung văn bản trong bộ nhớ thành file PDF (dùng cho editor có chỉnh sửa trực tiếp).

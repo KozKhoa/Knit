@@ -1,4 +1,6 @@
-use crate::models::{DocConvertOptions, DocFont, DocTheme};
+use crate::models::{
+    DocConvertOptions, DocFont, DocTheme, PageNumberFormat, PageNumberPosition, PageOrientation,
+};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -28,13 +30,51 @@ pub(crate) fn typst_preamble(opts: &DocConvertOptions) -> String {
     let margin = opts.margin_mm.clamp(5.0, 60.0);
     let font_size = opts.font_size_pt.clamp(7.0, 24.0);
     let font_tuple = typst_font_tuple(opts.font, opts.theme);
+    let flipped = opts.orientation == PageOrientation::Landscape;
 
-    let _ = writeln!(
-        s,
-        "#set page(paper: \"{}\", margin: {}mm, numbering: \"1\")",
-        opts.page_size.typst_name(),
-        margin
-    );
+    if opts.page_numbering.enabled {
+        let pn = &opts.page_numbering;
+        let start_from = pn.start_from_page.max(1);
+        let start_num = pn.start_number;
+        let h_align = match pn.position {
+            PageNumberPosition::BottomLeft | PageNumberPosition::TopLeft => "left",
+            PageNumberPosition::BottomCenter | PageNumberPosition::TopCenter => "center",
+            PageNumberPosition::BottomRight | PageNumberPosition::TopRight => "right",
+        };
+        let is_top = matches!(
+            pn.position,
+            PageNumberPosition::TopLeft
+                | PageNumberPosition::TopCenter
+                | PageNumberPosition::TopRight
+        );
+        let label_prefix = pn
+            .label_prefix
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .unwrap_or("Trang");
+        let display_expr = match pn.format {
+            PageNumberFormat::NumberOnly => "[#num]".to_string(),
+            PageNumberFormat::PageOfTotal => "[#num / #tot]".to_string(),
+            PageNumberFormat::PageLabel => {
+                format!("[{} #num]", escape_typst_text(label_prefix))
+            }
+        };
+        let slot = if is_top { "header" } else { "footer" };
+        let _ = writeln!(
+            s,
+            "#set page(paper: \"{}\", flipped: {flipped}, margin: {}mm, numbering: none, {slot}: context {{\n  let p = counter(page).get().first()\n  if p >= {start_from} {{\n    let num = p - {start_from} + {start_num}\n    let tot = calc.max(num, counter(page).final().first() - {start_from} + {start_num})\n    align({h_align}, text(size: 9pt, fill: rgb(\"#6C757D\")){display_expr})\n  }}\n}})",
+            opts.page_size.typst_name(),
+            margin
+        );
+    } else {
+        let _ = writeln!(
+            s,
+            "#set page(paper: \"{}\", flipped: {flipped}, margin: {}mm, numbering: none)",
+            opts.page_size.typst_name(),
+            margin
+        );
+    }
 
     match opts.theme {
         DocTheme::GitHub => {
@@ -180,12 +220,22 @@ pub(crate) fn typst_preamble(opts: &DocConvertOptions) -> String {
         }
     }
 
+    if let Some(ls) = opts.line_spacing {
+        let clamped = ls.clamp(0.8, 3.0);
+        let leading_em = (clamped - 0.75).clamp(0.15, 2.4);
+        let spacing_em = (leading_em + 0.25).clamp(0.3, 2.8);
+        let _ = writeln!(
+            s,
+            "#set par(leading: {leading_em:.3}em, spacing: {spacing_em:.3}em)"
+        );
+    }
+
     if let Some(ref title) = opts.title {
         if !title.trim().is_empty() {
             let _ = writeln!(s, "= {}\n", escape_typst_text(title.trim()));
         }
     }
-    if opts.include_toc {
+    if opts.include_toc && opts.toc_page <= 1 {
         let _ = writeln!(s, "#outline(indent: auto)\n#pagebreak(weak: true)");
     }
     s
@@ -261,6 +311,8 @@ pub(crate) fn typst_string_literal(input: &str) -> String {
 
 pub fn txt_to_typst(txt: &str, opts: &DocConvertOptions) -> String {
     let mut out = typst_preamble(opts);
+    let emit_blk_markers = opts.include_toc && opts.toc_page > 1;
+    let mut blk_idx = 0usize;
     let _ = writeln!(
         out,
         "#set text(font: (\"DejaVu Sans Mono\", \"Libertinus Serif\", {EMOJI_FALLBACK_FONTS}), size: {}pt)",
@@ -270,6 +322,10 @@ pub fn txt_to_typst(txt: &str, opts: &DocConvertOptions) -> String {
         if line.is_empty() {
             out.push_str("\n\n");
         } else {
+            if emit_blk_markers {
+                let _ = writeln!(out, "#metadata({blk_idx}) <knit-blk>");
+                blk_idx += 1;
+            }
             out.push_str(&escape_typst_text(line));
             out.push_str("\\\n");
         }
@@ -568,6 +624,9 @@ pub fn markdown_to_typst_with_assets(
     let parser = Parser::new_ext(body_md, cm_opts);
 
     let mut list_stack: Vec<Option<u64>> = Vec::new();
+    let mut blockquote_depth: usize = 0;
+    let emit_blk_markers = opts.include_toc && opts.toc_page > 1;
+    let mut blk_idx = 0usize;
     let mut in_code_block = false;
     let mut code_lang: Option<String> = None;
     let mut code_buf = String::new();
@@ -597,10 +656,13 @@ pub fn markdown_to_typst_with_assets(
                             let vname = format!("__knit_mermaid_{mermaid_idx}.svg");
                             mermaid_idx += 1;
                             assets.insert(vname.clone(), svg_content.as_bytes().to_vec());
-                            let page_h_mm = match opts.page_size {
-                                crate::models::PageSizePreset::A4 => 297.0_f32,
-                                crate::models::PageSizePreset::Letter => 279.4_f32,
-                                crate::models::PageSizePreset::A5 => 210.0_f32,
+                            let page_h_mm = match (opts.page_size, opts.orientation) {
+                                (crate::models::PageSizePreset::A4, PageOrientation::Portrait) => 297.0_f32,
+                                (crate::models::PageSizePreset::A4, PageOrientation::Landscape) => 210.0_f32,
+                                (crate::models::PageSizePreset::Letter, PageOrientation::Portrait) => 279.4_f32,
+                                (crate::models::PageSizePreset::Letter, PageOrientation::Landscape) => 215.9_f32,
+                                (crate::models::PageSizePreset::A5, PageOrientation::Portrait) => 210.0_f32,
+                                (crate::models::PageSizePreset::A5, PageOrientation::Landscape) => 148.0_f32,
                             };
                             let margin = opts.margin_mm.clamp(5.0, 60.0);
                             let max_h_mm = (page_h_mm - 2.0 * margin - 18.0).max(70.0);
@@ -708,6 +770,10 @@ pub fn markdown_to_typst_with_assets(
         match event {
             Event::Start(tag) => match tag {
                 Tag::Heading { level, .. } => {
+                    if emit_blk_markers && list_stack.is_empty() && blockquote_depth == 0 && !in_table {
+                        let _ = writeln!(out, "\n#metadata({blk_idx}) <knit-blk>");
+                        blk_idx += 1;
+                    }
                     let depth = match level {
                         HeadingLevel::H1 => 1,
                         HeadingLevel::H2 => 2,
@@ -722,9 +788,25 @@ pub fn markdown_to_typst_with_assets(
                     }
                     out.push(' ');
                 }
-                Tag::Paragraph => {}
-                Tag::BlockQuote(_) => out.push_str("\n#quote(block: true)["),
+                Tag::Paragraph => {
+                    if emit_blk_markers && list_stack.is_empty() && blockquote_depth == 0 && !in_table {
+                        let _ = writeln!(out, "\n#metadata({blk_idx}) <knit-blk>");
+                        blk_idx += 1;
+                    }
+                }
+                Tag::BlockQuote(_) => {
+                    if emit_blk_markers && list_stack.is_empty() && blockquote_depth == 0 && !in_table {
+                        let _ = writeln!(out, "\n#metadata({blk_idx}) <knit-blk>");
+                        blk_idx += 1;
+                    }
+                    blockquote_depth += 1;
+                    out.push_str("\n#quote(block: true)[");
+                }
                 Tag::CodeBlock(kind) => {
+                    if emit_blk_markers && list_stack.is_empty() && blockquote_depth == 0 && !in_table {
+                        let _ = writeln!(out, "\n#metadata({blk_idx}) <knit-blk>");
+                        blk_idx += 1;
+                    }
                     in_code_block = true;
                     code_buf.clear();
                     code_lang = match kind {
@@ -733,6 +815,10 @@ pub fn markdown_to_typst_with_assets(
                     };
                 }
                 Tag::List(start_num) => {
+                    if emit_blk_markers && list_stack.is_empty() && blockquote_depth == 0 && !in_table {
+                        let _ = writeln!(out, "\n#metadata({blk_idx}) <knit-blk>");
+                        blk_idx += 1;
+                    }
                     list_stack.push(start_num);
                 }
                 Tag::Item => {
@@ -768,6 +854,10 @@ pub fn markdown_to_typst_with_assets(
                     image_alt.clear();
                 }
                 Tag::Table(alignments) => {
+                    if emit_blk_markers && list_stack.is_empty() && blockquote_depth == 0 && !in_table {
+                        let _ = writeln!(out, "\n#metadata({blk_idx}) <knit-blk>");
+                        blk_idx += 1;
+                    }
                     in_table = true;
                     table_cols = alignments.len().max(1);
                     table_cells.clear();
@@ -786,7 +876,10 @@ pub fn markdown_to_typst_with_assets(
                         out.push_str("\n\n");
                     }
                 }
-                TagEnd::BlockQuote(_) => out.push_str("];\n\n"),
+                TagEnd::BlockQuote(_) => {
+                    blockquote_depth = blockquote_depth.saturating_sub(1);
+                    out.push_str("];\n\n");
+                }
                 TagEnd::List(_) => {
                     list_stack.pop();
                     if list_stack.is_empty() {
@@ -858,7 +951,13 @@ pub fn markdown_to_typst_with_assets(
                     out.push_str("\\\n");
                 }
             }
-            Event::Rule => out.push_str("\n#line(length: 100%, stroke: 0.5pt + rgb(\"#DEE2E6\"))\n\n"),
+            Event::Rule => {
+                if emit_blk_markers && list_stack.is_empty() && blockquote_depth == 0 && !in_table {
+                    let _ = writeln!(out, "\n#metadata({blk_idx}) <knit-blk>");
+                    blk_idx += 1;
+                }
+                out.push_str("\n#line(length: 100%, stroke: 0.5pt + rgb(\"#DEE2E6\"))\n\n");
+            }
             Event::TaskListMarker(checked) => {
                 let marker = checkbox_typst(checked);
                 if in_cell {

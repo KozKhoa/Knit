@@ -49,6 +49,7 @@
 }
 
 :root {
+  color-scheme: light;
   --knit-primary: #007bff;
   --knit-primary-hover: #0069d9;
   --knit-secondary: #343a40;
@@ -71,6 +72,8 @@
 
 * {
   box-sizing: border-box;
+  scrollbar-color: #ced4da #f1f3f5;
+  scrollbar-width: thin;
 }
 
 html {

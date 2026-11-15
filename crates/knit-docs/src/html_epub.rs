@@ -1,6 +1,6 @@
 use crate::markdown::{escape_typst_text, typst_preamble, typst_string_literal};
 use crate::models::{DocConvertOptions, DocConvertResult, DocInputKind};
-use crate::world::compile_typst_to_pdf;
+use crate::world::compile_typst_to_pdf_with_toc;
 use epub::doc::EpubDoc;
 use knit_core::{
     atomic_write_file, CancellationToken, JobProgress, JobReporter, JobReporterExt, KnitError,
@@ -15,7 +15,20 @@ use std::sync::OnceLock;
 
 pub fn html_to_typst(html: &str, opts: &DocConvertOptions) -> String {
     let mut out = typst_preamble(opts);
-    out.push_str(&html_fragment_to_typst(html, None));
+    let body = html_fragment_to_typst(html, None);
+    if opts.include_toc && opts.toc_page > 1 {
+        let mut blk_idx = 0usize;
+        for chunk in body.split("\n\n") {
+            let trimmed = chunk.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let _ = writeln!(out, "#metadata({blk_idx}) <knit-blk>\n{trimmed}\n");
+            blk_idx += 1;
+        }
+    } else {
+        out.push_str(&body);
+    }
     out
 }
 
@@ -173,6 +186,8 @@ pub fn compile_epub_to_pdf_bytes(
     }
 
     let mut markup = typst_preamble(&effective_opts);
+    let emit_blk_markers = effective_opts.include_toc && effective_opts.toc_page > 1;
+    let mut blk_idx = 0usize;
     let num_chapters = doc.get_num_chapters();
 
     for i in 0..num_chapters {
@@ -199,13 +214,22 @@ pub fn compile_epub_to_pdf_bytes(
                 if i > 0 {
                     markup.push_str("\n#pagebreak(weak: true)\n");
                 }
+                if emit_blk_markers {
+                    let _ = writeln!(markup, "#metadata({blk_idx}) <knit-blk>");
+                    blk_idx += 1;
+                }
                 let _ = writeln!(markup, "{converted}\n");
             }
         }
     }
 
     reporter.info("Dang bien dich EPUB sang PDF (Typst)");
-    compile_typst_to_pdf(&markup, None, &virtual_files)
+    let toc_target = if effective_opts.include_toc && effective_opts.toc_page > 1 {
+        Some(effective_opts.toc_page)
+    } else {
+        None
+    };
+    compile_typst_to_pdf_with_toc(&markup, None, &virtual_files, toc_target)
 }
 
 pub fn convert_epub_to_pdf(
