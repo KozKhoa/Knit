@@ -12,6 +12,7 @@ pub use fs::{
     nfc_normalize, safe_join_within, sanitize_filename,
 };
 pub use job::{
-    CancellationToken, JobLogLevel, JobProgress, JobReporter, JobReporterExt, NoopReporter,
+    CancellationToken, JobLogLevel, JobProgress, JobReporter, JobReporterExt, LogVerbosity,
+    NoopReporter,
 };
 pub use sort::{natural_cmp, natural_sort_by};

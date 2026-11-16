@@ -282,9 +282,21 @@ fn write_zip(
     let total_bytes: u64 = entries.iter().map(|e| e.size_bytes).sum();
     let mut done_bytes = 0u64;
     let mut buf = [0u8; 64 * 1024];
+    let mut last_dir = String::new();
 
     for (idx, entry) in entries.iter().enumerate() {
         token.check()?;
+        let parent_dir = entry
+            .archive_path
+            .rsplit_once('/')
+            .map(|(dir, _)| dir)
+            .unwrap_or("");
+        if !parent_dir.is_empty() && parent_dir != last_dir {
+            last_dir = parent_dir.to_string();
+            reporter.normal(format!("Đang nén: {last_dir}"));
+        }
+        reporter.detailed(format!("Đang đóng gói tệp: {}", entry.archive_path));
+
         let level = entry.compression_override.unwrap_or(options.compression);
         let opts = build_zip_options(level, &options.encryption, entry.size_bytes)?;
         writer
@@ -407,9 +419,20 @@ fn append_tar_entries<W: Write>(
     let total_files = entries.len() as u64;
     let total_bytes: u64 = entries.iter().map(|e| e.size_bytes).sum();
     let mut done_bytes = 0u64;
+    let mut last_dir = String::new();
 
     for (idx, entry) in entries.iter().enumerate() {
         token.check()?;
+        let parent_dir = entry
+            .archive_path
+            .rsplit_once('/')
+            .map(|(dir, _)| dir)
+            .unwrap_or("");
+        if !parent_dir.is_empty() && parent_dir != last_dir {
+            last_dir = parent_dir.to_string();
+            reporter.normal(format!("Đang nén: {last_dir}"));
+        }
+        reporter.detailed(format!("Đang đóng gói tệp: {}", entry.archive_path));
         builder.append_path_with_name(&entry.source_path, &entry.archive_path)?;
         done_bytes += entry.size_bytes;
         reporter.on_progress(JobProgress {
@@ -452,5 +475,14 @@ impl JobReporter for ForwardReporter<'_> {
 
     fn on_log(&self, level: knit_core::JobLogLevel, message: &str) {
         self.0.on_log(level, message);
+    }
+
+    fn on_log_detail(
+        &self,
+        verbosity: knit_core::LogVerbosity,
+        level: knit_core::JobLogLevel,
+        message: &str,
+    ) {
+        self.0.on_log_detail(verbosity, level, message);
     }
 }

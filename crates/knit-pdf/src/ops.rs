@@ -197,6 +197,15 @@ pub fn merge_pdfs(
         if cancel.is_cancelled() {
             return Err(KnitError::Cancelled);
         }
+        reporter.normal(format!(
+            "Chuẩn bị tệp PDF {}/{}: {}",
+            i + 1,
+            total_docs,
+            config.inputs[i]
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("pdf")
+        ));
         reporter.on_progress(JobProgress {
             phase: "prepare".into(),
             done: (i + 1) as u64,
@@ -240,6 +249,14 @@ pub fn merge_pdfs(
         if cancel.is_cancelled() {
             return Err(KnitError::Cancelled);
         }
+        reporter.detailed(format!(
+            "Đang gộp trang {}/{}: Tệp {} · Trang {} (xoay {}°)",
+            merged_idx + 1,
+            selections.len(),
+            sel.file_index + 1,
+            sel.page_index + 1,
+            sel.rotation_deg
+        ));
         let doc_pages = per_doc_pages.get(sel.file_index).ok_or_else(|| {
             KnitError::InvalidInput(format!("file_index {} khong hop le", sel.file_index))
         })?;
@@ -296,11 +313,15 @@ pub fn merge_pdfs(
     merged.trailer.set("Root", catalog_id);
 
     if config.preserve_bookmarks {
-        let mut combined_bookmarks = Vec::new();
-        for (file_idx, tree) in per_doc_bookmarks.iter().enumerate() {
-            combined_bookmarks.extend(remap_bookmarks_for_selection(tree, file_idx, &page_index_map));
+        if let Some(ref custom) = config.custom_bookmarks {
+            write_outlines(&mut merged, &final_page_ids, custom);
+        } else {
+            let mut combined_bookmarks = Vec::new();
+            for (file_idx, tree) in per_doc_bookmarks.iter().enumerate() {
+                combined_bookmarks.extend(remap_bookmarks_for_selection(tree, file_idx, &page_index_map));
+            }
+            write_outlines(&mut merged, &final_page_ids, &combined_bookmarks);
         }
-        write_outlines(&mut merged, &final_page_ids, &combined_bookmarks);
     }
 
     merged.prune_objects();
@@ -444,6 +465,16 @@ pub fn split_pdf(
         if cancel.is_cancelled() {
             return Err(KnitError::Cancelled);
         }
+        reporter.normal(format!(
+            "Đang tách tệp {}/{} ({} trang): {}",
+            idx + 1,
+            total_parts,
+            page_items.len(),
+            out_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("split.pdf")
+        ));
         reporter.on_progress(JobProgress {
             phase: "split".into(),
             done: (idx + 1) as u64,
@@ -533,6 +564,17 @@ fn split_pdf_by_max_bytes(
         total_bytes += best_bytes.len() as u64;
         atomic_write_file(&out_path, |f| Ok(f.write_all(&best_bytes)?))?;
         output_files.push(out_path);
+        reporter.normal(format!(
+            "Đã ghi phần {} (trang {}..={}) -> {}",
+            part,
+            start + 1,
+            best + 1,
+            output_files
+                .last()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("part.pdf")
+        ));
         reporter.on_progress(JobProgress {
             phase: "split".into(),
             done: (best + 1) as u64,

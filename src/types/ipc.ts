@@ -136,11 +136,21 @@ export interface PageSelection {
   rotation_deg: number;
 }
 
+export type LogVerbosity = "minimal" | "normal" | "detailed";
+
+export interface ExportDirStatus {
+  exists: boolean;
+  is_dir: boolean;
+  writable: boolean;
+  error?: string | null;
+}
+
 export interface PdfMergeConfig {
   inputs: string[];
   selected_pages: PageSelection[] | null;
   output_path: string;
   preserve_bookmarks: boolean;
+  custom_bookmarks?: BookmarkNode[] | null;
 }
 
 export interface PdfSplitGroup {

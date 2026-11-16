@@ -33,3 +33,14 @@
 - **Sidebar Resource Monitor**: Added native `/proc` (Linux) and Win32 ToolHelp/Psapi (Windows) process-tree CPU% + RAM aggregation (`get_app_metrics`) displayed at bottom-left of the sidebar.
 - **Image → PDF**: Fixed parallel progress bar jumps (`AtomicUsize` + monotonic guard), added Auto Sort (`manual`, `import_order`, `name`, `size`, `type` + Asc/Desc) with `Ctrl+Z` / Undo stack, added `max_pages_per_file` split mode, and rendered edited previews (`render_page_draft_preview_file`) in both grid thumbnails and large preview modal.
 - **Verification**: `cargo test` (42/42), `cargo check -p knit-desktop` (exit 0), `pnpm build` (exit 0), `pnpm test` (23/23 across 8 files).
+
+## Review v1.9 Implementation (2026-11-16)
+- **Image → PDF RAM Release**: Clicking Clear List now clears the undo stack, import-order refs, `pagesByIdRef`, `editedPreviewCache`, `hiResCache`, `thumbCache`, wipes cached temp thumbnails (`clear_image_preview_cache`), and calls `malloc_trim(0)` on Linux glibc (plus after heavy PDF/Archive/Manga jobs).
+- **Import UX Feedback**: Added `ImportFeedbackToast` (~1.6s) and brief green container highlight when importing files across Image → PDF, PDF Merge & Split, Document → PDF, Archive Packager, and Manga Packager.
+- **PDF Merge & Split Enhancements**:
+  - Added high-res `PdfPageZoomModal` (`render_pdf_page_preview_file`) on double-click in both Split source pages and Merge/Reorder page cards.
+  - Increased Source PDF Pages font sizing (`text-base` heading, `text-sm` hints/badges, `text-xs` page pill).
+  - Replaced Merge page Up/Down arrows with HTML5 drag-and-drop card reordering, added `MERGE_GRID_OPTIONS` columns selector (`2..6`), integrated `BookmarkTreeEditor` (`custom_bookmarks` in `PdfMergeConfig`), and added file removal with confirmation modal warning about removing dependent pages.
+- **Activity Logs & Verbosity**: Added `LogVerbosity` (`minimal` | `normal` | `detailed`) in Settings and `JobReporter::on_log_detail` across `knit-core`, `knit-pdf`, `knit-archive`, `knit-manga`, and `knit-docs`.
+- **Export Filename & Default Export Directory**: Added writable directory validation (`validate_export_directory`) in Settings, per-tool `ExportFilenameControl` with realtime duplicate detection, and `ExportConflictModal` (`Overwrite` / `Auto-append _1, _2` / `Cancel`).
+- **Verification**: `cargo test` (42/42), `cargo check -p knit-desktop` (exit 0), `pnpm build` (exit 0), `pnpm test` (25/25 across 9 files).

@@ -11,7 +11,10 @@ use image::codecs::webp::WebPDecoder;
 use image::metadata::Orientation;
 use image::{AnimationDecoder, DynamicImage, ImageDecoder, ImageFormat, ImageReader, Rgba, RgbaImage};
 use imageproc::drawing::{draw_filled_circle_mut, draw_line_segment_mut, draw_text_mut};
-use knit_core::{natural_cmp, JobLogLevel, JobProgress, JobReporter, KnitError, NoopReporter, Result};
+use knit_core::{
+    natural_cmp, JobLogLevel, JobProgress, JobReporter, JobReporterExt, KnitError, NoopReporter,
+    Result,
+};
 use rayon::prelude::*;
 use std::collections::HashSet;
 use std::fs::File;
@@ -330,6 +333,9 @@ fn scan_files_parallel_drafts(
                 .file_name()
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_default();
+            if outcome.0.is_some() {
+                reporter.detailed(format!("Đã quét ảnh ({done}/{total}): {name}"));
+            }
             reporter.on_progress(JobProgress {
                 phase: "scan_images".to_string(),
                 done: done as u64,

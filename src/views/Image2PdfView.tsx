@@ -36,7 +36,20 @@ import {
   renderImageThumbFile,
   renderPageDraftPreviewFile,
   scanImagesForPdf,
+  clearImagePreviewCache,
+  checkExportConflicts,
+  resolveUniqueExportPath,
 } from "../lib/ipc";
+import { ExportFilenameControl } from "../components/ExportFilenameControl";
+import {
+  ExportConflictModal,
+  type ConflictResolution,
+} from "../components/ExportConflictModal";
+import {
+  ImportFeedbackToast,
+  useImportFeedback,
+} from "../components/ImportFeedbackToast";
+import { useExportFilenameCheck } from "../lib/exportPath";
 import {
   ArrowDownAZ,
   ArrowUpAZ,
@@ -76,6 +89,7 @@ interface Image2PdfViewProps {
   ) => void;
   busy: boolean;
   droppedBatch?: DroppedBatch | null;
+  defaultExportDir?: string;
 }
 
 type BgMode = "transparent" | "white" | "black" | "custom";
@@ -269,8 +283,20 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
   onFinishJob,
   busy,
   droppedBatch,
+  defaultExportDir = "",
 }) => {
   const { t } = useI18n();
+  const { toast: importToast, notifyImported } = useImportFeedback();
+  const [exportFilename, setExportFilename] = usePersistentState<string>(
+    "knit.img2pdf.exportFilename",
+    "output.pdf",
+  );
+  const { effectiveFilename, defaultTargetPath, existsAtDefaultDir } =
+    useExportFilenameCheck(defaultExportDir, exportFilename, "output.pdf", ["pdf"]);
+  const [pendingConflict, setPendingConflict] = React.useState<{
+    outPath: string;
+    conflicts: string[];
+  } | null>(null);
 
   const [pages, setPages] = React.useState<PageDraft[]>([]);
   const [bookmarks, setBookmarks] = React.useState<BookmarkNode[]>([]);
@@ -861,6 +887,7 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
               )
             : combined;
         });
+        notifyImported(t.common.importSuccessToast(`${scan.pages.length}`));
       } catch (e) {
         setErrorMsg(String(e));
       } finally {
@@ -1028,17 +1055,8 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
     }
   };
 
-  const handleExportPdf = async () => {
-    if (pages.length === 0 || busy) return;
-    setErrorMsg(null);
+  const executeExportPdf = async (outPath: string) => {
     try {
-      const outPath = await pickSaveFile({
-        title: t.image2pdf.savePdfDialog,
-        defaultPath: "output.pdf",
-        filters: [{ name: "PDF Document", extensions: ["pdf"] }],
-      });
-      if (!outPath) return;
-
       const marginPt =
         marginUnit === "mm" ? Math.max(0, marginValue) * PT_PER_MM : Math.max(0, marginValue);
       const background = buildPageBackground();
@@ -1092,6 +1110,45 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
         msg.toLowerCase().includes("cancel") || msg.includes("huy") ? "cancelled" : "error",
       );
     }
+  };
+
+  const handleExportPdf = async () => {
+    if (pages.length === 0 || busy) return;
+    setErrorMsg(null);
+    try {
+      let outPath: string | null = defaultTargetPath;
+      if (!outPath) {
+        outPath = await pickSaveFile({
+          title: t.image2pdf.savePdfDialog,
+          defaultPath: effectiveFilename,
+          filters: [{ name: "PDF Document", extensions: ["pdf"] }],
+        });
+      }
+      if (!outPath) return;
+
+      if (defaultTargetPath) {
+        const conflicts = await checkExportConflicts([outPath]);
+        if (conflicts.length > 0) {
+          setPendingConflict({ outPath, conflicts });
+          return;
+        }
+      }
+      await executeExportPdf(outPath);
+    } catch (e) {
+      setErrorMsg(String(e));
+    }
+  };
+
+  const handleConflictResolution = async (choice: ConflictResolution) => {
+    const pending = pendingConflict;
+    setPendingConflict(null);
+    if (!pending || choice === "cancel") return;
+    if (choice === "overwrite") {
+      await executeExportPdf(pending.outPath);
+      return;
+    }
+    const uniquePath = await resolveUniqueExportPath(pending.outPath);
+    await executeExportPdf(uniquePath);
   };
 
   const previewPage = pages.find((p) => p.id === previewPageId) ?? null;
@@ -1225,8 +1282,13 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
             <button
               type="button"
               onClick={() => {
-                pushUndoSnapshot();
                 thumbGenRef.current += 1;
+                undoStackRef.current = [];
+                setUndoCount(0);
+                importOrderMapRef.current = {};
+                nextImportOrderRef.current = 1;
+                pagesByIdRef.current.clear();
+                cardRefs.current.clear();
                 visibleIdsRef.current.clear();
                 queuedSetRef.current.clear();
                 queuedOrderRef.current = [];
@@ -1245,8 +1307,10 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
                 setThumbCache({});
                 setThumbMetaCache({});
                 setHiResCache({});
+                setEditedPreviewCache({});
                 setPreviewPageId(null);
                 setEditingPageId(null);
+                void clearImagePreviewCache();
               }}
               className="rounded-[4px] border border-[#CED4DA] bg-white px-3.5 py-2 text-sm font-semibold text-[#DC3545] hover:bg-[#F8D7DA]"
             >
@@ -1270,6 +1334,14 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
           {errorMsg}
         </div>
       )}
+
+      <ExportFilenameControl
+        value={exportFilename}
+        onChange={setExportFilename}
+        placeholder="output.pdf"
+        defaultExportDir={defaultExportDir}
+        existsAtDefaultDir={existsAtDefaultDir}
+      />
 
       {scanWarnings.length > 0 && (
         <div className="rounded-[4px] border border-[#FFE08A] bg-[#FFF8DB] px-3.5 py-2.5 text-xs text-[#664D03]">
@@ -1807,6 +1879,12 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
           }}
         />
       )}
+      <ExportConflictModal
+        conflictPaths={pendingConflict?.conflicts ?? []}
+        onResolve={(c) => void handleConflictResolution(c)}
+      />
+
+      <ImportFeedbackToast toast={importToast} />
     </div>
   );
 };

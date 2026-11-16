@@ -13,6 +13,11 @@ use crate::csv_builder::{build_csv_bytes, posix_join};
 use crate::models::{MangaPackOptions, MangaPackSummary, Story};
 
 fn story_entries(story: &Story, reporter: &dyn JobReporter) -> Vec<ArchiveEntrySpec> {
+    reporter.normal(format!(
+        "Chuẩn bị truyện: {} ({} chapter)",
+        story.effective_title(),
+        story.chapters.len()
+    ));
     let mut out = Vec::new();
     let mut add = |src: PathBuf, arc: String, compression_override: Option<CompressionLevel>| {
         match fs::metadata(&src) {

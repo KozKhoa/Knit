@@ -2,6 +2,7 @@ import type {
   AppFontFamily,
   DocFont,
   DocTheme,
+  LogVerbosity,
   PageNumberFormat,
   PageNumberPosition,
   PageOrientation,
@@ -33,6 +34,16 @@ export interface Translations {
     exportSuccessSubtitle: string;
     outputFilesLabel: string;
     loadingFolder: string;
+    importSuccessToast: (label: string) => string;
+    exportFilenameLabel: string;
+    exportFilenamePlaceholder: string;
+    exportExistsWarning: string;
+    exportUsingDefaultDir: (dir: string) => string;
+    exportConflictTitle: string;
+    exportConflictDesc: (paths: string[]) => string;
+    exportOverwriteBtn: string;
+    exportAutoRenameBtn: string;
+    exportRenameBtn: string;
   };
   shell: {
     logsButton: string;
@@ -185,6 +196,16 @@ export interface Translations {
     clearSelectionBtn: string;
     resizeWidthTitle: string;
     resizeHeightTitle: string;
+    mergeDragHint: string;
+    gridColumnsLabel: string;
+    toggleBookmarksShow: string;
+    toggleBookmarksHide: string;
+    removeFileBtnTitle: string;
+    removeFileConfirmTitle: string;
+    removeFileConfirmDesc: (fileName: string, pageCount: number) => string;
+    removeFileConfirmBtn: string;
+    zoomModalTitle: (pageNum: number) => string;
+    zoomLoading: string;
     emptySectionHint: string;
     clearSectionTitle: string;
     deleteSectionTitle: string;
@@ -400,5 +421,17 @@ export interface Translations {
     previewTitle: string;
     previewBody: string;
     previewCode: string;
+    logVerbosityHeading: string;
+    logVerbosityDesc: string;
+    logVerbosityOptions: Record<LogVerbosity, { label: string; desc: string }>;
+    exportDirHeading: string;
+    exportDirDesc: string;
+    exportDirPlaceholder: string;
+    exportDirBrowseBtn: string;
+    exportDirSaveBtn: string;
+    exportDirClearBtn: string;
+    exportDirValidBadge: string;
+    exportDirEmptyNote: string;
+    exportDirInvalidError: string;
   };
 }

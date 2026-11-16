@@ -41,7 +41,7 @@ pub fn build_pdf_from_drafts(
         return Err(KnitError::Cancelled);
     }
 
-    reporter.info("Dang xu ly anh va chuan bi trang PDF");
+    reporter.info(format!("Bắt đầu xử lý {} ảnh -> PDF", drafts.len()));
     let total = drafts.len();
     let completed = AtomicUsize::new(0);
     let report_lock = Mutex::new(());
@@ -57,7 +57,13 @@ pub fn build_pdf_from_drafts(
                 config.jpeg_quality,
                 config.lossless_passthrough,
             )?;
+            let is_passthrough = matches!(image, PreparedImage::JpegStream { passthrough: true, .. });
             let done = completed.fetch_add(1, Ordering::SeqCst) + 1;
+            reporter.detailed(format!(
+                "Đang xử lý ảnh {done}/{total}: {} ({})",
+                draft.label,
+                if is_passthrough { "passthrough gốc" } else { "encode" }
+            ));
             let guard = if done == total {
                 report_lock.lock().ok()
             } else {
@@ -120,9 +126,10 @@ pub fn build_pdf_from_drafts(
     let mut total_bytes = 0u64;
 
     if max_bytes.is_some() || max_pages_per_file.is_some() {
-        reporter.info("Dang dong goi va tach PDF theo gioi han da chon");
+        reporter.normal("Đang đóng gói và tách PDF theo giới hạn đã chọn");
         let chunks = partition_pages(&prepared, max_bytes, max_pages_per_file);
-        let multi = chunks.len() > 1;
+        let total_parts = chunks.len();
+        let multi = total_parts > 1;
         for (part_idx, (start, end)) in chunks.into_iter().enumerate() {
             if cancel.is_cancelled() {
                 return Err(KnitError::Cancelled);
@@ -132,6 +139,13 @@ pub fn build_pdf_from_drafts(
             } else {
                 config.output_path.clone()
             };
+            reporter.normal(format!(
+                "Đang ghi PDF phần {}/{} ({} trang): {}",
+                part_idx + 1,
+                total_parts,
+                end - start,
+                out_path.file_name().and_then(|n| n.to_str()).unwrap_or("output.pdf")
+            ));
             let part_bookmarks = remap_tree(bookmarks, start, end);
             let pdf_bytes = assemble_pdf_bytes(&prepared[start..end], &part_bookmarks, config.layout)?;
             total_bytes += pdf_bytes.len() as u64;
@@ -139,7 +153,15 @@ pub fn build_pdf_from_drafts(
             output_files.push(out_path);
         }
     } else {
-        reporter.info("Dang dong goi file PDF");
+        reporter.normal(format!(
+            "Đang đóng gói PDF ({} trang): {}",
+            prepared.len(),
+            config
+                .output_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("output.pdf")
+        ));
         let pdf_bytes = assemble_pdf_bytes(&prepared, bookmarks, config.layout)?;
         total_bytes = pdf_bytes.len() as u64;
         atomic_write_file(&config.output_path, |f| Ok(f.write_all(&pdf_bytes)?))?;

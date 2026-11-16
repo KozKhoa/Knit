@@ -195,6 +195,8 @@ pub struct PdfMergeConfig {
     pub output_path: PathBuf,
     #[serde(default = "default_true")]
     pub preserve_bookmarks: bool,
+    #[serde(default)]
+    pub custom_bookmarks: Option<Vec<BookmarkNode>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

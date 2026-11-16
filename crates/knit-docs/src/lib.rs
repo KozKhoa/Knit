@@ -79,7 +79,17 @@ pub fn convert_text_to_pdf(
     }
 
     reporter.info(format!("Dang chuyen doi {:?} -> PDF (Typst)", kind));
+    reporter.normal(format!(
+        "Biên dịch tài liệu ({:?}, khổ {:?}, hướng {:?})",
+        kind, opts.page_size, opts.orientation
+    ));
     let (pdf_bytes, pages) = compile_text_to_pdf_bytes(content, kind, base_dir, opts)?;
+    reporter.detailed(format!(
+        "Đã biên dịch Typst xong: {} trang ({} bytes) -> {}",
+        pages,
+        pdf_bytes.len(),
+        output_path.display()
+    ));
     atomic_write_file(output_path, |f| Ok(f.write_all(&pdf_bytes)?))?;
 
     reporter.on_progress(JobProgress {

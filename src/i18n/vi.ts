@@ -24,6 +24,19 @@ export const vi: Translations = {
     exportSuccessSubtitle: "Tác vụ đã thực thi thành công. Bạn có thể mở thư mục chứa tệp đầu ra bên dưới.",
     outputFilesLabel: "Tệp / thư mục đầu ra",
     loadingFolder: "Đang quét và nạp thư mục vào ứng dụng...",
+    importSuccessToast: (label) => `Đã nạp xong: ${label}`,
+    exportFilenameLabel: "Tên tệp xuất:",
+    exportFilenamePlaceholder: "Tên tệp đầu ra...",
+    exportExistsWarning: "Tên tệp này đã tồn tại ở thư mục đích!",
+    exportUsingDefaultDir: (dir) => `Thư mục xuất mặc định: ${dir}`,
+    exportConflictTitle: "Tệp đầu ra đã tồn tại",
+    exportConflictDesc: (paths) =>
+      paths.length === 1
+        ? `Tệp sau đã tồn tại tại thư mục đích:\n${paths[0]}`
+        : `Phát hiện ${paths.length} tệp đã tồn tại tại thư mục đích:`,
+    exportOverwriteBtn: "Ghi đè tệp cũ",
+    exportAutoRenameBtn: "Tự thêm hậu tố (_1, _2)",
+    exportRenameBtn: "Quay lại đổi tên",
   },
   shell: {
     logsButton: "Nhật ký xử lý",
@@ -184,6 +197,17 @@ export const vi: Translations = {
     clearSelectionBtn: "Bỏ chọn",
     resizeWidthTitle: "Kéo để chỉnh chiều rộng 2 khung",
     resizeHeightTitle: "Kéo để chỉnh chiều cao khung",
+    mergeDragHint: "Kéo thả thẻ trang để sắp xếp · Nháy đúp xem trang lớn",
+    gridColumnsLabel: "Số trang / hàng:",
+    toggleBookmarksShow: "Mở cây mục lục",
+    toggleBookmarksHide: "Ẩn cây mục lục",
+    removeFileBtnTitle: "Xóa tệp PDF này",
+    removeFileConfirmTitle: "Xác nhận xóa tệp PDF nguồn",
+    removeFileConfirmDesc: (fileName, pageCount) =>
+      `Xóa tệp "${fileName}" sẽ đồng thời xóa ${pageCount} trang thuộc tệp này khỏi danh sách gộp. Bạn có chắc muốn xóa không?`,
+    removeFileConfirmBtn: "Xóa tệp & các trang",
+    zoomModalTitle: (pageNum) => `Xem trang ${pageNum}`,
+    zoomLoading: "Đang dựng ảnh trang độ phân giải cao...",
     emptySectionHint: "Kéo thả các trang vào section này",
     clearSectionTitle: "Làm trống section",
     deleteSectionTitle: "Xóa section",
@@ -463,5 +487,31 @@ export const vi: Translations = {
     previewBody:
       "Tiếng Việt có dấu đầy đủ: ă â đ ê ô ơ ư — hỗ trợ kéo thả, xem trước PDF và tùy chỉnh font mượt mà.",
     previewCode: "/home/khoa/Documents/report.md -> 12 pages · 420 KB",
+    logVerbosityHeading: "Mức độ chi tiết Nhật ký xử lý (Activity Logs)",
+    logVerbosityDesc: "Chọn mức chi tiết thông tin được ghi lại khi các công cụ đang xử lý tệp.",
+    logVerbosityOptions: {
+      minimal: {
+        label: "Tối giản",
+        desc: "Chỉ ghi các mốc bắt đầu, cảnh báo và kết quả hoàn tất (như mặc định trước đây).",
+      },
+      normal: {
+        label: "Bình thường",
+        desc: "Ghi tiến trình theo từng tệp/chương (VD: tên chapter đang nén, phần PDF đang tách).",
+      },
+      detailed: {
+        label: "Chi tiết",
+        desc: "Ghi đầy đủ từng ảnh, từng trang và từng tệp đang xử lý theo thời gian thực.",
+      },
+    },
+    exportDirHeading: "Thư mục xuất mặc định (Default Export Directory)",
+    exportDirDesc:
+      "Nếu cấu hình thư mục hợp lệ có quyền ghi, mọi công cụ sẽ xuất thẳng vào đây mà không hỏi hộp thoại. Để trống để mở hộp thoại chọn nơi lưu như mặc định.",
+    exportDirPlaceholder: "Để trống = luôn mở hộp thoại chọn nơi lưu...",
+    exportDirBrowseBtn: "Chọn thư mục",
+    exportDirSaveBtn: "Kiểm tra & Lưu",
+    exportDirClearBtn: "Xóa mặc định",
+    exportDirValidBadge: "Có quyền ghi hợp lệ",
+    exportDirEmptyNote: "Đang để trống — sẽ mở hộp thoại hệ thống mỗi khi xuất tệp.",
+    exportDirInvalidError: "Thư mục không hợp lệ hoặc không có quyền ghi vào vị trí này.",
   },
 };

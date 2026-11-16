@@ -233,7 +233,7 @@ fn pdf_merge_and_split_preserve_outlines_and_page_selection() {
     let merged = tmp.path().join("merged.pdf");
     let merge_res = merge_pdfs(
         &PdfMergeConfig {
-            inputs: vec![pdf_a, pdf_b],
+            inputs: vec![pdf_a.clone(), pdf_b.clone()],
             selected_pages: Some(vec![
                 PageSelection { file_index: 0, page_index: 1, rotation_deg: 90 },
                 PageSelection { file_index: 1, page_index: 0, rotation_deg: 0 },
@@ -241,6 +241,7 @@ fn pdf_merge_and_split_preserve_outlines_and_page_selection() {
             ]),
             output_path: merged.clone(),
             preserve_bookmarks: true,
+            custom_bookmarks: None,
         },
         &CancellationToken::new(),
         &NoopReporter,
@@ -254,6 +255,28 @@ fn pdf_merge_and_split_preserve_outlines_and_page_selection() {
     assert_eq!(merged_info.bookmarks[0].target_page_index, 2); // page 0 of pdf_a moved to index 2!
     assert_eq!(merged_info.bookmarks[1].title, "Chương Hai");
     assert_eq!(merged_info.bookmarks[1].target_page_index, 1);
+
+    let custom_merged = tmp.path().join("merged_custom_bm.pdf");
+    merge_pdfs(
+        &PdfMergeConfig {
+            inputs: vec![pdf_a.clone(), pdf_b.clone()],
+            selected_pages: None,
+            output_path: custom_merged.clone(),
+            preserve_bookmarks: true,
+            custom_bookmarks: Some(vec![BookmarkNode {
+                title: "Mục lục Tùy chỉnh".into(),
+                target_page_index: 1,
+                children: vec![],
+            }]),
+        },
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+    let custom_info = inspect_pdf(&custom_merged).unwrap();
+    assert_eq!(custom_info.bookmarks.len(), 1);
+    assert_eq!(custom_info.bookmarks[0].title, "Mục lục Tùy chỉnh");
+    assert_eq!(custom_info.bookmarks[0].target_page_index, 1);
 
     let split_dir = tmp.path().join("split_out");
     let split_res = split_pdf(

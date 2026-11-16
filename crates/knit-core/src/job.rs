@@ -40,6 +40,25 @@ pub enum JobLogLevel {
     Error,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LogVerbosity {
+    #[default]
+    Minimal = 0,
+    Normal = 1,
+    Detailed = 2,
+}
+
+impl LogVerbosity {
+    pub fn from_u8(val: u8) -> Self {
+        match val {
+            1 => Self::Normal,
+            2..=u8::MAX => Self::Detailed,
+            _ => Self::Minimal,
+        }
+    }
+}
+
 /// Dữ liệu tiến trình phát về UI (giới hạn tần suất ở lớp Reporter).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobProgress {
@@ -67,20 +86,31 @@ impl JobProgress {
 pub trait JobReporter: Send + Sync {
     fn on_progress(&self, progress: JobProgress);
     fn on_log(&self, level: JobLogLevel, message: &str);
+    fn on_log_detail(&self, _verbosity: LogVerbosity, level: JobLogLevel, message: &str) {
+        self.on_log(level, message);
+    }
 }
 
 /// Tiện ích ghi log nhanh cho mọi `JobReporter` (kể cả `&dyn JobReporter`).
 pub trait JobReporterExt: JobReporter {
     fn info(&self, message: impl AsRef<str>) {
-        self.on_log(JobLogLevel::Info, message.as_ref());
+        self.on_log_detail(LogVerbosity::Minimal, JobLogLevel::Info, message.as_ref());
+    }
+
+    fn normal(&self, message: impl AsRef<str>) {
+        self.on_log_detail(LogVerbosity::Normal, JobLogLevel::Info, message.as_ref());
+    }
+
+    fn detailed(&self, message: impl AsRef<str>) {
+        self.on_log_detail(LogVerbosity::Detailed, JobLogLevel::Info, message.as_ref());
     }
 
     fn warn(&self, message: impl AsRef<str>) {
-        self.on_log(JobLogLevel::Warn, message.as_ref());
+        self.on_log_detail(LogVerbosity::Minimal, JobLogLevel::Warn, message.as_ref());
     }
 
     fn error(&self, message: impl AsRef<str>) {
-        self.on_log(JobLogLevel::Error, message.as_ref());
+        self.on_log_detail(LogVerbosity::Minimal, JobLogLevel::Error, message.as_ref());
     }
 }
 
@@ -141,5 +171,9 @@ impl<R: JobReporter> JobReporter for ThrottledReporter<R> {
 
     fn on_log(&self, level: JobLogLevel, message: &str) {
         self.inner.on_log(level, message);
+    }
+
+    fn on_log_detail(&self, verbosity: LogVerbosity, level: JobLogLevel, message: &str) {
+        self.inner.on_log_detail(verbosity, level, message);
     }
 }

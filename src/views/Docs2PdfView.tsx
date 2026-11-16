@@ -37,7 +37,19 @@ import {
   previewDocPdfBytes,
   readDocTextFile,
   writeDocTextFile,
+  checkExportConflicts,
+  resolveUniqueExportPath,
 } from "../lib/ipc";
+import {
+  ExportConflictModal,
+  type ConflictResolution,
+} from "../components/ExportConflictModal";
+import { ExportFilenameControl } from "../components/ExportFilenameControl";
+import {
+  ImportFeedbackToast,
+  useImportFeedback,
+} from "../components/ImportFeedbackToast";
+import { useExportFilenameCheck } from "../lib/exportPath";
 import { usePersistentState } from "../lib/storage";
 import type {
   DocConvertOptions,
@@ -67,6 +79,7 @@ interface Docs2PdfViewProps {
   ) => void;
   busy: boolean;
   droppedBatch?: DroppedBatch | null;
+  defaultExportDir?: string;
 }
 
 const SUPPORTED_DOC_RE = /\.(md|markdown|txt|html|htm|epub|docx|pptx)$/i;
@@ -114,10 +127,20 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
   onFinishJob,
   busy,
   droppedBatch,
+  defaultExportDir = "",
 }) => {
   const { t } = useI18n();
+  const { toast: importToast, highlighted: importHighlighted, notifyImported } =
+    useImportFeedback();
 
   const [inputPath, setInputPath] = React.useState<string | null>(null);
+  const [exportFilename, setExportFilename] = React.useState<string>("document.pdf");
+  const { effectiveFilename, defaultTargetPath, existsAtDefaultDir } =
+    useExportFilenameCheck(defaultExportDir, exportFilename, "document.pdf", ["pdf"]);
+  const [pendingConflict, setPendingConflict] = React.useState<{
+    outPath: string;
+    conflicts: string[];
+  } | null>(null);
   const [editorText, setEditorText] = React.useState<string>("");
   const [savedText, setSavedText] = React.useState<string>("");
   const [saveFeedback, setSaveFeedback] = React.useState<string | null>(null);
@@ -275,28 +298,34 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
     void checkEngine();
   }, [checkEngine]);
 
-  const loadDocumentPath = React.useCallback(async (path: string) => {
-    setErrorMsg(null);
-    setSaveFeedback(null);
-    setInputPath(path);
-    const kind = detectDocKind(path);
-    if (kind === "markdown" || kind === "plain_text" || kind === "html") {
-      if (isTauriRuntime()) {
-        try {
-          const text = await readDocTextFile(path);
-          setEditorText(text);
-          setSavedText(text);
-        } catch (e) {
-          setErrorMsg(String(e));
+  const loadDocumentPath = React.useCallback(
+    async (path: string) => {
+      setErrorMsg(null);
+      setSaveFeedback(null);
+      setInputPath(path);
+      const base = path.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "") || "document";
+      setExportFilename(`${base}.pdf`);
+      const kind = detectDocKind(path);
+      if (kind === "markdown" || kind === "plain_text" || kind === "html") {
+        if (isTauriRuntime()) {
+          try {
+            const text = await readDocTextFile(path);
+            setEditorText(text);
+            setSavedText(text);
+          } catch (e) {
+            setErrorMsg(String(e));
+          }
         }
+      } else {
+        setEditorText("");
+        setSavedText("");
+        setPreviewPdfBytes(null);
+        setPreviewTotalPages(0);
       }
-    } else {
-      setEditorText("");
-      setSavedText("");
-      setPreviewPdfBytes(null);
-      setPreviewTotalPages(0);
-    }
-  }, []);
+      notifyImported(t.common.importSuccessToast(path.split(/[\\/]/).pop() ?? path));
+    },
+    [notifyImported, t.common],
+  );
 
   React.useEffect(() => {
     if (!droppedBatch || droppedBatch.seq === lastHandledDropSeq.current) return;
@@ -536,20 +565,8 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
     ? editorText.trim().length > 0 || Boolean(inputPath)
     : Boolean(inputPath);
 
-  const handleConvert = async () => {
-    if (!canConvert || busy) return;
-    setErrorMsg(null);
+  const executeConvert = async (outPath: string) => {
     try {
-      const defaultOut = inputPath
-        ? inputPath.replace(/\.[^.]+$/, "") + ".pdf"
-        : "document.pdf";
-      const outPath = await pickSaveFile({
-        title: t.docs2pdf.savePdfDialog,
-        defaultPath: defaultOut,
-        filters: [{ name: "PDF Document", extensions: ["pdf"] }],
-      });
-      if (!outPath) return;
-
       const jobId = crypto.randomUUID();
       onStartJob(jobId, t.shell.nav.docs2pdf.label);
 
@@ -591,6 +608,49 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
       setErrorMsg(msg);
       onFinishJob(t.shell.nav.docs2pdf.label, [], msg, "error");
     }
+  };
+
+  const handleConvert = async () => {
+    if (!canConvert || busy) return;
+    setErrorMsg(null);
+    try {
+      let outPath: string | null = defaultTargetPath;
+      if (!outPath) {
+        const fallbackParent = parentDirOf(inputPath);
+        const suggestedPath = fallbackParent
+          ? `${fallbackParent}/${effectiveFilename}`
+          : effectiveFilename;
+        outPath = await pickSaveFile({
+          title: t.docs2pdf.savePdfDialog,
+          defaultPath: suggestedPath,
+          filters: [{ name: "PDF Document", extensions: ["pdf"] }],
+        });
+      }
+      if (!outPath) return;
+
+      if (defaultTargetPath) {
+        const conflicts = await checkExportConflicts([outPath]);
+        if (conflicts.length > 0) {
+          setPendingConflict({ outPath, conflicts });
+          return;
+        }
+      }
+      await executeConvert(outPath);
+    } catch (e) {
+      setErrorMsg(String(e));
+    }
+  };
+
+  const handleConflictResolution = async (choice: ConflictResolution) => {
+    const pending = pendingConflict;
+    setPendingConflict(null);
+    if (!pending || choice === "cancel") return;
+    if (choice === "overwrite") {
+      await executeConvert(pending.outPath);
+      return;
+    }
+    const uniquePath = await resolveUniqueExportPath(pending.outPath);
+    await executeConvert(uniquePath);
   };
 
   return (
@@ -658,9 +718,19 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
       />
 
       {inputPath && (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-[4px] border border-[#DEE2E6] bg-white px-3.5 py-2 text-sm">
+        <div
+          className={`flex flex-wrap items-center justify-between gap-2 rounded-[4px] border px-3.5 py-2 text-sm transition-colors duration-300 ${
+            importHighlighted
+              ? "border-[#28A745] bg-[#D4EDDA]/50"
+              : "border-[#DEE2E6] bg-white"
+          }`}
+        >
           <div className="flex min-w-0 items-center gap-2">
-            <FileCode2 className="h-4 w-4 shrink-0 text-[#007BFF]" />
+            <FileCode2
+              className={`h-4 w-4 shrink-0 ${
+                importHighlighted ? "text-[#28A745]" : "text-[#007BFF]"
+              }`}
+            />
             <span className="font-semibold">{t.docs2pdf.selectedFileLabel}</span>
             <span className="font-mono-code truncate text-xs text-[#343A40]">{inputPath}</span>
           </div>
@@ -671,6 +741,14 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
           )}
         </div>
       )}
+
+      <ExportFilenameControl
+        value={exportFilename}
+        onChange={setExportFilename}
+        placeholder="document.pdf"
+        defaultExportDir={defaultExportDir}
+        existsAtDefaultDir={existsAtDefaultDir}
+      />
 
       {/* Formatting, Theme & Font Options Bar */}
       <div className="space-y-3.5 rounded-[4px] border border-[#DEE2E6] bg-white p-4">
@@ -1210,6 +1288,13 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
           {t.docs2pdf.editorReadonlyNotice}
         </div>
       )}
+
+      <ExportConflictModal
+        conflictPaths={pendingConflict?.conflicts ?? []}
+        onResolve={(c) => void handleConflictResolution(c)}
+      />
+
+      <ImportFeedbackToast toast={importToast} />
     </div>
   );
 };

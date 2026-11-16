@@ -2,21 +2,37 @@ import React from "react";
 import { NumberInput } from "../components/NumberInput";
 import { Select } from "../components/Select";
 import {
-  ArrowDown,
-  ArrowUp,
+  AlertTriangle,
+  Check,
   Eraser,
   FilePlus,
+  GripHorizontal,
   GripVertical,
   Layers,
+  PanelRightClose,
+  PanelRightOpen,
   Plus,
   RotateCw,
   Scissors,
   Trash2,
   Wand2,
+  X,
 } from "lucide-react";
+import { BookmarkTreeEditor } from "../components/BookmarkTreeEditor";
 import { Dropzone } from "../components/Dropzone";
+import {
+  ExportConflictModal,
+  type ConflictResolution,
+} from "../components/ExportConflictModal";
+import { ExportFilenameControl } from "../components/ExportFilenameControl";
+import {
+  ImportFeedbackToast,
+  useImportFeedback,
+} from "../components/ImportFeedbackToast";
+import { PdfPageZoomModal } from "../components/PdfPageZoomModal";
 import { useI18n } from "../i18n";
 import {
+  checkExportConflicts,
   formatBytes,
   inspectPdfFile,
   mergePdfFiles,
@@ -24,13 +40,29 @@ import {
   pickFiles,
   pickSaveFile,
   renderPdfThumbBase64,
+  resolveUniqueExportPath,
   splitPdfFile,
 } from "../lib/ipc";
+import { joinDirAndFile, useExportFilenameCheck } from "../lib/exportPath";
 import { usePersistentState } from "../lib/storage";
 import { useVerticalResize } from "../hooks/useVerticalResize";
-import { Check, GripHorizontal } from "lucide-react";
-import type { JobEvent, PageSelection, PdfInfo, PdfSplitRule } from "../types/ipc";
+import type {
+  BookmarkNode,
+  JobEvent,
+  PageSelection,
+  PdfInfo,
+  PdfSplitRule,
+} from "../types/ipc";
 import type { DroppedBatch } from "./Image2PdfView";
+
+const MERGE_GRID_OPTIONS = [2, 3, 4, 5, 6] as const;
+const MERGE_GRID_CLASS: Record<number, string> = {
+  2: "grid-cols-2",
+  3: "grid-cols-2 sm:grid-cols-3",
+  4: "grid-cols-2 sm:grid-cols-3 md:grid-cols-4",
+  5: "grid-cols-2 sm:grid-cols-3 md:grid-cols-5",
+  6: "grid-cols-2 sm:grid-cols-4 md:grid-cols-6",
+};
 
 interface PdfOpsViewProps {
   onStartJob: (jobId: string, label: string) => void;
@@ -43,6 +75,7 @@ interface PdfOpsViewProps {
   ) => void;
   busy: boolean;
   droppedBatch?: DroppedBatch | null;
+  defaultExportDir?: string;
 }
 
 interface SplitSectionItem {
@@ -70,18 +103,53 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
   onFinishJob,
   busy,
   droppedBatch,
+  defaultExportDir = "",
 }) => {
   const { t } = useI18n();
+  const { toast: importToast, highlighted: importHighlighted, notifyImported } =
+    useImportFeedback();
 
   const [tab, setTab] = usePersistentState<"merge" | "split">("knit.pdfops.tab", "merge");
   const [files, setFiles] = React.useState<PdfInfo[]>([]);
   const [selections, setSelections] = React.useState<PageSelection[]>([]);
+  const [mergeBookmarks, setMergeBookmarks] = React.useState<BookmarkNode[]>([]);
+  const [showMergeBookmarks, setShowMergeBookmarks] = usePersistentState<boolean>(
+    "knit.pdfops.showMergeBookmarks",
+    true,
+  );
+  const [mergeGridCols, setMergeGridCols] = usePersistentState<number>(
+    "knit.pdfops.mergeGridCols",
+    5,
+  );
+  const [mergeDragIdx, setMergeDragIdx] = React.useState<number | null>(null);
+  const [mergeHoverIdx, setMergeHoverIdx] = React.useState<number | null>(null);
   const [thumbs, setThumbs] = React.useState<Record<string, string>>({});
   const [thumbLimit, setThumbLimit] = React.useState<number>(INITIAL_THUMB_LIMIT);
   const [preserveBookmarks, setPreserveBookmarks] = usePersistentState<boolean>(
     "knit.pdfops.preserveBookmarks",
     true,
   );
+  const [mergeExportFilename, setMergeExportFilename] = usePersistentState<string>(
+    "knit.pdfops.mergeExportFilename",
+    "merged.pdf",
+  );
+  const {
+    effectiveFilename: effectiveMergeFilename,
+    defaultTargetPath: defaultMergeTargetPath,
+    existsAtDefaultDir: mergeExistsAtDefaultDir,
+  } = useExportFilenameCheck(defaultExportDir, mergeExportFilename, "merged.pdf", ["pdf"]);
+  const [zoomTarget, setZoomTarget] = React.useState<{
+    path: string;
+    pageIndex: number;
+    rotationDeg: number;
+    fallbackThumbSrc?: string;
+  } | null>(null);
+  const [pendingRemoveFileIdx, setPendingRemoveFileIdx] = React.useState<number | null>(null);
+  const [pendingConflict, setPendingConflict] = React.useState<
+    | { kind: "merge"; outPath: string; conflicts: string[] }
+    | { kind: "split"; outDir: string; stem: string; rule: PdfSplitRule; conflicts: string[] }
+    | null
+  >(null);
   const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
 
   const [splitRuleKind, setSplitRuleKind] = usePersistentState<
@@ -234,6 +302,16 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
     ];
   }, []);
 
+  const offsetBookmarks = React.useCallback(
+    (nodes: BookmarkNode[], offset: number): BookmarkNode[] =>
+      nodes.map((n) => ({
+        ...n,
+        target_page_index: n.target_page_index + offset,
+        children: offsetBookmarks(n.children, offset),
+      })),
+    [],
+  );
+
   const addPdfPaths = React.useCallback(
     async (picked: string[]) => {
       const pdfPaths = picked.filter((p) => p.toLowerCase().endsWith(".pdf"));
@@ -241,9 +319,12 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
       setErrorMsg(null);
       try {
         const baseFileIdx = tab === "split" ? 0 : files.length;
+        const basePageOffset = tab === "split" ? 0 : selections.length;
         const newInfos: PdfInfo[] = [];
         const newSelections: PageSelection[] = [];
+        const addedBookmarks: BookmarkNode[] = [];
 
+        let runningPageOffset = basePageOffset;
         for (let i = 0; i < pdfPaths.length; i++) {
           const info = await inspectPdfFile(pdfPaths[i]);
           const fIdx = baseFileIdx + i;
@@ -251,6 +332,16 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
           for (let p = 0; p < info.page_count; p++) {
             newSelections.push({ file_index: fIdx, page_index: p, rotation_deg: 0 });
           }
+          if (info.bookmarks.length > 0) {
+            addedBookmarks.push(...offsetBookmarks(info.bookmarks, runningPageOffset));
+          } else if (info.page_count > 0) {
+            addedBookmarks.push({
+              title: getSplitStem(info),
+              target_page_index: runningPageOffset,
+              children: [],
+            });
+          }
+          runningPageOffset += info.page_count;
           void loadPdfThumbsRange(fIdx, info, 0, INITIAL_THUMB_LIMIT);
         }
 
@@ -260,15 +351,32 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
           setFiles([first]);
           setSelections(newSelections.filter((s) => s.file_index === 0));
           setSplitSections(makeDefaultSectionsForPdf(first));
+          setMergeBookmarks(addedBookmarks.filter((_, idx) => idx === 0 || newInfos.length === 1));
         } else {
           setFiles((prev) => [...prev, ...newInfos]);
           setSelections((prev) => [...prev, ...newSelections]);
+          setMergeBookmarks((prev) => [...prev, ...addedBookmarks]);
         }
+
+        const label =
+          newInfos.length === 1
+            ? newInfos[0].path.split(/[\\/]/).pop() ?? "PDF"
+            : `${newInfos.length} PDF`;
+        notifyImported(t.common.importSuccessToast(label));
       } catch (e) {
         setErrorMsg(String(e));
       }
     },
-    [files.length, loadPdfThumbsRange, makeDefaultSectionsForPdf, tab],
+    [
+      files.length,
+      selections.length,
+      loadPdfThumbsRange,
+      makeDefaultSectionsForPdf,
+      notifyImported,
+      offsetBookmarks,
+      t.common,
+      tab,
+    ],
   );
 
   React.useEffect(() => {
@@ -298,16 +406,65 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
     }
   };
 
-  const moveSelection = (idx: number, delta: number) => {
-    const target = idx + delta;
-    if (target < 0 || target >= selections.length) return;
+  const reorderMergeSelection = React.useCallback((fromIdx: number, toIdx: number) => {
+    if (fromIdx === toIdx) return;
     setSelections((prev) => {
+      if (fromIdx < 0 || toIdx < 0 || fromIdx >= prev.length || toIdx >= prev.length) {
+        return prev;
+      }
       const copy = [...prev];
-      const [item] = copy.splice(idx, 1);
-      copy.splice(target, 0, item);
+      const [item] = copy.splice(fromIdx, 1);
+      copy.splice(toIdx, 0, item);
       return copy;
     });
-  };
+  }, []);
+
+  const confirmRemoveImportedFile = React.useCallback(() => {
+    const removeIdx = pendingRemoveFileIdx;
+    setPendingRemoveFileIdx(null);
+    if (removeIdx === null || removeIdx < 0 || removeIdx >= files.length) return;
+
+    const oldIndexToNewIndex = new Map<number, number>();
+    let nextMergedIdx = 0;
+    const nextSelections: PageSelection[] = [];
+    selections.forEach((sel, oldIdx) => {
+      if (sel.file_index === removeIdx) return;
+      oldIndexToNewIndex.set(oldIdx, nextMergedIdx);
+      nextMergedIdx += 1;
+      nextSelections.push({
+        ...sel,
+        file_index: sel.file_index > removeIdx ? sel.file_index - 1 : sel.file_index,
+      });
+    });
+
+    const filterAndRemapBookmarks = (nodes: BookmarkNode[]): BookmarkNode[] =>
+      nodes.flatMap((n) => {
+        const mapped = oldIndexToNewIndex.get(n.target_page_index);
+        const children = filterAndRemapBookmarks(n.children);
+        if (mapped === undefined) {
+          return children;
+        }
+        return [{ ...n, target_page_index: mapped, children }];
+      });
+
+    setFiles((prev) => prev.filter((_, idx) => idx !== removeIdx));
+    setSelections(nextSelections);
+    setMergeBookmarks((prev) => filterAndRemapBookmarks(prev));
+    setThumbs((prev) => {
+      const next: Record<string, string> = {};
+      for (const [k, v] of Object.entries(prev)) {
+        const [fStr, pStr] = k.split(":");
+        const fNum = Number(fStr);
+        if (fNum === removeIdx) continue;
+        const remappedFile = fNum > removeIdx ? fNum - 1 : fNum;
+        next[`${remappedFile}:${pStr}`] = v;
+      }
+      return next;
+    });
+    if (tab === "split" && removeIdx === 0) {
+      setSplitSections([]);
+    }
+  }, [pendingRemoveFileIdx, files.length, selections, tab]);
 
   const handleLoadMoreSplitThumbs = () => {
     if (files.length === 0) return;
@@ -460,17 +617,8 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
     });
   };
 
-  const handleMerge = async () => {
-    if (files.length === 0 || selections.length === 0 || busy) return;
-    setErrorMsg(null);
+  const executeMerge = async (outPath: string) => {
     try {
-      const outPath = await pickSaveFile({
-        title: t.pdfOps.saveMergedDialog,
-        defaultPath: "merged.pdf",
-        filters: [{ name: "PDF Document", extensions: ["pdf"] }],
-      });
-      if (!outPath) return;
-
       const jobId = crypto.randomUUID();
       onStartJob(jobId, t.pdfOps.mergeJobTitle);
       const res = await mergePdfFiles(
@@ -480,6 +628,7 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
           selected_pages: selections,
           output_path: outPath,
           preserve_bookmarks: preserveBookmarks,
+          custom_bookmarks: preserveBookmarks ? mergeBookmarks : null,
         },
         onJobEvent,
       );
@@ -496,6 +645,33 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
     }
   };
 
+  const handleMerge = async () => {
+    if (files.length === 0 || selections.length === 0 || busy) return;
+    setErrorMsg(null);
+    try {
+      let outPath: string | null = defaultMergeTargetPath;
+      if (!outPath) {
+        outPath = await pickSaveFile({
+          title: t.pdfOps.saveMergedDialog,
+          defaultPath: effectiveMergeFilename,
+          filters: [{ name: "PDF Document", extensions: ["pdf"] }],
+        });
+      }
+      if (!outPath) return;
+
+      if (defaultMergeTargetPath) {
+        const conflicts = await checkExportConflicts([outPath]);
+        if (conflicts.length > 0) {
+          setPendingConflict({ kind: "merge", outPath, conflicts });
+          return;
+        }
+      }
+      await executeMerge(outPath);
+    } catch (e) {
+      setErrorMsg(String(e));
+    }
+  };
+
   const nonEmptySections = React.useMemo(
     () => splitSections.filter((s) => s.pages.length > 0),
     [splitSections],
@@ -505,11 +681,69 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
     [nonEmptySections],
   );
 
+  const executeSplit = async (outDir: string, stem: string, rule: PdfSplitRule) => {
+    const src = files[0];
+    if (!src) return;
+    try {
+      const jobId = crypto.randomUUID();
+      onStartJob(jobId, t.pdfOps.splitJobTitle);
+      const res = await splitPdfFile(jobId, src.path, outDir, stem, rule, onJobEvent);
+      onFinishJob(
+        t.pdfOps.splitJobTitle,
+        res.output_files,
+        t.pdfOps.splitDoneSummary(res.output_files.length, res.total_pages),
+        "success",
+      );
+    } catch (e) {
+      const msg = String(e);
+      setErrorMsg(msg);
+      onFinishJob(t.pdfOps.splitJobTitle, [], msg, "error");
+    }
+  };
+
+  const computeExpectedSplitPaths = (
+    outDir: string,
+    stem: string,
+    rule: PdfSplitRule,
+    totalPages: number,
+  ): string[] => {
+    if (rule.rule === "page_ranges") {
+      return [joinDirAndFile(outDir, `${stem}_extracted.pdf`)];
+    }
+    if (rule.rule === "extract_selected") {
+      return [joinDirAndFile(outDir, `${stem}_selected.pdf`)];
+    }
+    if (rule.rule === "every_n_pages") {
+      const step = Math.max(1, rule.n);
+      const out: string[] = [];
+      let part = 1;
+      for (let s = 0; s < totalPages; s += step) {
+        out.push(joinDirAndFile(outDir, `${stem}_part${String(part).padStart(2, "0")}.pdf`));
+        part += 1;
+      }
+      return out;
+    }
+    if (rule.rule === "custom_groups") {
+      return rule.groups.map((g, idx) => {
+        const clean =
+          g.name
+            .trim()
+            .replace(/\.pdf$/i, "")
+            .replace(/[\\/:*?"<>|]/g, "_") || `section_${String(idx + 1).padStart(2, "0")}`;
+        return joinDirAndFile(outDir, `${clean}.pdf`);
+      });
+    }
+    return [];
+  };
+
   const handleSplit = async () => {
     if (files.length === 0 || busy) return;
     setErrorMsg(null);
     try {
-      const outDir = await pickDirectory(t.pdfOps.pickSplitDirDialog);
+      const trimmedDefaultDir = defaultExportDir.trim();
+      const outDir = trimmedDefaultDir
+        ? trimmedDefaultDir
+        : await pickDirectory(t.pdfOps.pickSplitDirDialog);
       if (!outDir) return;
 
       const src = files[0];
@@ -536,19 +770,62 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
             ? { rule: "every_n_pages", n: everyN }
             : { rule: "max_bytes", max_mb: splitMaxMb };
 
-      const jobId = crypto.randomUUID();
-      onStartJob(jobId, t.pdfOps.splitJobTitle);
-      const res = await splitPdfFile(jobId, src.path, outDir, stem, rule, onJobEvent);
-      onFinishJob(
-        t.pdfOps.splitJobTitle,
-        res.output_files,
-        t.pdfOps.splitDoneSummary(res.output_files.length, res.total_pages),
-        "success",
-      );
+      const candidates = computeExpectedSplitPaths(outDir, stem, rule, src.page_count);
+      if (candidates.length > 0) {
+        const conflicts = await checkExportConflicts(candidates);
+        if (conflicts.length > 0) {
+          setPendingConflict({ kind: "split", outDir, stem, rule, conflicts });
+          return;
+        }
+      }
+
+      await executeSplit(outDir, stem, rule);
     } catch (e) {
-      const msg = String(e);
-      setErrorMsg(msg);
-      onFinishJob(t.pdfOps.splitJobTitle, [], msg, "error");
+      setErrorMsg(String(e));
+    }
+  };
+
+  const handleConflictResolution = async (choice: ConflictResolution) => {
+    const pending = pendingConflict;
+    setPendingConflict(null);
+    if (!pending || choice === "cancel") return;
+    if (pending.kind === "merge") {
+      if (choice === "overwrite") {
+        await executeMerge(pending.outPath);
+      } else {
+        const uniquePath = await resolveUniqueExportPath(pending.outPath);
+        await executeMerge(uniquePath);
+      }
+      return;
+    }
+
+    if (choice === "overwrite") {
+      await executeSplit(pending.outDir, pending.stem, pending.rule);
+      return;
+    }
+
+    // Auto-rename stem or custom group names so they don't overwrite
+    if (pending.rule.rule === "custom_groups") {
+      const renamedGroups = await Promise.all(
+        pending.rule.groups.map(async (g, idx) => {
+          const base =
+            g.name.trim().replace(/\.pdf$/i, "") ||
+            `section_${String(idx + 1).padStart(2, "0")}`;
+          const uniquePath = await resolveUniqueExportPath(
+            joinDirAndFile(pending.outDir, `${base}.pdf`),
+          );
+          const uniqueName =
+            uniquePath.split(/[\\/]/).pop()?.replace(/\.pdf$/i, "") || base;
+          return { ...g, name: uniqueName };
+        }),
+      );
+      await executeSplit(pending.outDir, pending.stem, {
+        rule: "custom_groups",
+        groups: renamedGroups,
+      });
+    } else {
+      const uniqueStem = `${pending.stem}_${Date.now().toString().slice(-4)}`;
+      await executeSplit(pending.outDir, uniqueStem, pending.rule);
     }
   };
 
@@ -600,7 +877,13 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
       />
 
       {files.length > 0 && (
-        <div className="space-y-2 rounded-[4px] border border-[#DEE2E6] bg-white p-3.5">
+        <div
+          className={`space-y-2 rounded-[4px] border p-3.5 transition-colors duration-300 ${
+            importHighlighted
+              ? "border-[#28A745] bg-[#D4EDDA]/45"
+              : "border-[#DEE2E6] bg-white"
+          }`}
+        >
           <div className="flex items-center justify-between">
             <span className="text-sm font-bold text-[#343A40]">
               {t.pdfOps.loadedDocs(files.length)}
@@ -610,6 +893,7 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
               onClick={() => {
                 setFiles([]);
                 setSelections([]);
+                setMergeBookmarks([]);
                 setThumbs({});
                 setSplitSections([]);
               }}
@@ -621,12 +905,24 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
           {files.map((f, idx) => (
             <div
               key={`${f.path}-${idx}`}
-              className="flex items-center justify-between rounded-[4px] border border-[#E9ECEF] bg-[#F8F9FA] px-3 py-2 text-xs"
+              className={`flex items-center justify-between gap-2 rounded-[4px] border px-3 py-2 text-xs transition-colors duration-300 ${
+                importHighlighted
+                  ? "border-[#A3CFBB] bg-[#E9F7EF]"
+                  : "border-[#E9ECEF] bg-[#F8F9FA]"
+              }`}
             >
-              <span className="font-mono-code truncate">{f.path}</span>
-              <span className="ml-3 shrink-0 font-mono-code text-[#6C757D]">
+              <span className="font-mono-code min-w-0 flex-1 truncate">{f.path}</span>
+              <span className="ml-2 shrink-0 font-mono-code text-[#6C757D]">
                 {t.pdfOps.docMeta(f.page_count, formatBytes(f.file_size_bytes), f.bookmarks.length)}
               </span>
+              <button
+                type="button"
+                onClick={() => setPendingRemoveFileIdx(idx)}
+                title={t.pdfOps.removeFileBtnTitle}
+                className="shrink-0 rounded-[4px] p-1 text-[#DC3545] hover:bg-[#F8D7DA]"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
             </div>
           ))}
         </div>
@@ -634,99 +930,212 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
 
       {tab === "merge" && selections.length > 0 && (
         <div className="space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-[4px] border border-[#DEE2E6] bg-white px-4 py-3">
-            <label className="flex items-center gap-2 text-sm font-semibold text-[#212529]">
-              <input
-                type="checkbox"
-                checked={preserveBookmarks}
-                onChange={(e) => setPreserveBookmarks(e.target.checked)}
-              />
-              {t.pdfOps.preserveBookmarks}
-            </label>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void handleMerge()}
-              className="knit-control inline-flex items-center gap-1.5 rounded-[4px] bg-[#007BFF] px-4 text-sm font-semibold text-white hover:bg-[#0069D9] disabled:opacity-50"
-            >
-              <FilePlus className="h-4 w-4" />
-              {t.pdfOps.mergeBtn(selections.length)}
-            </button>
+          <div className="space-y-2.5 rounded-[4px] border border-[#DEE2E6] bg-white px-4 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <label className="flex items-center gap-2 text-sm font-semibold text-[#212529]">
+                <input
+                  type="checkbox"
+                  checked={preserveBookmarks}
+                  onChange={(e) => setPreserveBookmarks(e.target.checked)}
+                />
+                {t.pdfOps.preserveBookmarks}
+              </label>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-semibold text-[#495057]">
+                  {t.pdfOps.gridColumnsLabel}
+                </span>
+                {MERGE_GRID_OPTIONS.map((cols) => (
+                  <button
+                    key={cols}
+                    type="button"
+                    onClick={() => setMergeGridCols(cols)}
+                    className={`knit-control-sm rounded-[4px] px-2.5 font-mono-code text-xs font-semibold ${
+                      mergeGridCols === cols
+                        ? "bg-[#007BFF] text-white"
+                        : "border border-[#CED4DA] bg-[#F8F9FA] text-[#343A40] hover:bg-[#E9ECEF]"
+                    }`}
+                  >
+                    {cols}
+                  </button>
+                ))}
+
+                {preserveBookmarks && (
+                  <button
+                    type="button"
+                    onClick={() => setShowMergeBookmarks((v) => !v)}
+                    className="knit-control-sm inline-flex items-center gap-1.5 rounded-[4px] border border-[#CED4DA] bg-[#F8F9FA] px-2.5 text-xs font-semibold text-[#343A40] hover:bg-[#E9ECEF]"
+                  >
+                    {showMergeBookmarks ? (
+                      <PanelRightClose className="h-3.5 w-3.5 text-[#007BFF]" />
+                    ) : (
+                      <PanelRightOpen className="h-3.5 w-3.5 text-[#007BFF]" />
+                    )}
+                    {showMergeBookmarks
+                      ? t.pdfOps.toggleBookmarksHide
+                      : t.pdfOps.toggleBookmarksShow}
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void handleMerge()}
+                  className="knit-control inline-flex items-center gap-1.5 rounded-[4px] bg-[#007BFF] px-4 text-sm font-semibold text-white hover:bg-[#0069D9] disabled:opacity-50"
+                >
+                  <FilePlus className="h-4 w-4" />
+                  {t.pdfOps.mergeBtn(selections.length)}
+                </button>
+              </div>
+            </div>
+
+            <ExportFilenameControl
+              value={mergeExportFilename}
+              onChange={setMergeExportFilename}
+              placeholder="merged.pdf"
+              defaultExportDir={defaultExportDir}
+              existsAtDefaultDir={mergeExistsAtDefaultDir}
+            />
           </div>
 
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 md:grid-cols-6">
-            {selections.map((sel, idx) => {
-              const key = `${sel.file_index}:${sel.page_index}`;
-              return (
-                <div
-                  key={`${key}-${idx}`}
-                  className="flex flex-col overflow-hidden rounded-[4px] border border-[#DEE2E6] bg-white"
-                >
-                  <div className="relative flex h-32 items-center justify-center bg-[#F1F3F5] p-1">
-                    {thumbs[key] ? (
-                      <img
-                        src={thumbs[key]}
-                        alt={`File ${sel.file_index + 1} P${sel.page_index + 1}`}
-                        className="max-h-full max-w-full object-contain"
-                        style={{ transform: `rotate(${sel.rotation_deg}deg)` }}
-                      />
-                    ) : (
-                      <span className="font-mono-code text-xs text-[#6C757D]">
-                        F{sel.file_index + 1}·P{sel.page_index + 1}
-                      </span>
-                    )}
-                    <span className="absolute left-1 top-1 rounded-[4px] bg-[#343A40] px-1.5 py-0.5 font-mono-code text-[11px] text-white">
-                      #{idx + 1}
-                    </span>
-                  </div>
-                  <div className="border-t border-[#DEE2E6] p-2">
-                    <div className="font-mono-code text-xs text-[#6C757D]">
-                      {t.pdfOps.pageMeta(sel.file_index + 1, sel.page_index + 1, sel.rotation_deg)}
-                    </div>
-                    <div className="mt-1.5 flex items-center justify-between">
-                      <div className="flex gap-0.5">
-                        <button
-                          type="button"
-                          onClick={() => moveSelection(idx, -1)}
-                          disabled={idx === 0}
-                          className="rounded-[4px] border border-[#DEE2E6] p-1 hover:bg-[#F8F9FA] disabled:opacity-30"
-                        >
-                          <ArrowUp className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => moveSelection(idx, 1)}
-                          disabled={idx === selections.length - 1}
-                          className="rounded-[4px] border border-[#DEE2E6] p-1 hover:bg-[#F8F9FA] disabled:opacity-30"
-                        >
-                          <ArrowDown className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setSelections((prev) =>
-                              prev.map((s, i) =>
-                                i === idx ? { ...s, rotation_deg: (s.rotation_deg + 90) % 360 } : s,
-                              ),
-                            )
-                          }
-                          className="rounded-[4px] border border-[#DEE2E6] p-1 hover:bg-[#F8F9FA]"
-                        >
-                          <RotateCw className="h-3.5 w-3.5" />
-                        </button>
+          <div
+            className={`grid grid-cols-1 gap-4 ${
+              preserveBookmarks && showMergeBookmarks ? "lg:grid-cols-3" : ""
+            }`}
+          >
+            <div
+              className={`space-y-2 ${
+                preserveBookmarks && showMergeBookmarks ? "lg:col-span-2" : ""
+              }`}
+            >
+              <div className="flex items-center gap-2 rounded-[4px] border border-[#DEE2E6] bg-white px-3.5 py-2 text-xs text-[#6C757D]">
+                <GripVertical className="h-4 w-4 text-[#007BFF]" />
+                <span>{t.pdfOps.mergeDragHint}</span>
+              </div>
+
+              <div className={`grid gap-3 ${MERGE_GRID_CLASS[mergeGridCols] ?? "grid-cols-2 md:grid-cols-5"}`}>
+                {selections.map((sel, idx) => {
+                  const key = `${sel.file_index}:${sel.page_index}`;
+                  const isDragging = mergeDragIdx === idx;
+                  const isHoverTarget =
+                    mergeDragIdx !== null && mergeHoverIdx === idx && mergeDragIdx !== idx;
+                  const srcPath = files[sel.file_index]?.path ?? "";
+                  return (
+                    <div
+                      key={`${key}-${idx}`}
+                      draggable
+                      onDragStart={(e) => {
+                        setMergeDragIdx(idx);
+                        e.dataTransfer.effectAllowed = "move";
+                        e.dataTransfer.setData("text/plain", String(idx));
+                      }}
+                      onDragOver={(e) => {
+                        if (mergeDragIdx === null) return;
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = "move";
+                        if (mergeHoverIdx !== idx) setMergeHoverIdx(idx);
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        if (mergeDragIdx !== null) {
+                          reorderMergeSelection(mergeDragIdx, idx);
+                        }
+                        setMergeDragIdx(null);
+                        setMergeHoverIdx(null);
+                      }}
+                      onDragEnd={() => {
+                        setMergeDragIdx(null);
+                        setMergeHoverIdx(null);
+                      }}
+                      onDoubleClick={() => {
+                        if (!srcPath) return;
+                        setZoomTarget({
+                          path: srcPath,
+                          pageIndex: sel.page_index,
+                          rotationDeg: sel.rotation_deg,
+                          fallbackThumbSrc: thumbs[key],
+                        });
+                      }}
+                      className={`flex cursor-grab select-none flex-col overflow-hidden rounded-[4px] border bg-white active:cursor-grabbing ${
+                        isDragging
+                          ? "border-[#007BFF] opacity-45 ring-2 ring-[#007BFF]"
+                          : isHoverTarget
+                            ? "border-[#007BFF] ring-2 ring-[#007BFF]/45"
+                            : "border-[#DEE2E6] hover:border-[#007BFF]"
+                      }`}
+                    >
+                      <div className="relative flex h-32 items-center justify-center bg-[#F1F3F5] p-1">
+                        {thumbs[key] ? (
+                          <img
+                            src={thumbs[key]}
+                            alt={`File ${sel.file_index + 1} P${sel.page_index + 1}`}
+                            draggable={false}
+                            className="pointer-events-none max-h-full max-w-full object-contain"
+                            style={{ transform: `rotate(${sel.rotation_deg}deg)` }}
+                          />
+                        ) : (
+                          <span className="font-mono-code text-xs text-[#6C757D]">
+                            F{sel.file_index + 1}·P{sel.page_index + 1}
+                          </span>
+                        )}
+                        <span className="absolute left-1 top-1 flex items-center gap-0.5 rounded-[4px] bg-[#343A40] px-1.5 py-0.5 font-mono-code text-[11px] text-white">
+                          <GripVertical className="h-3 w-3 text-[#ADB5BD]" />#{idx + 1}
+                        </span>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => setSelections((prev) => prev.filter((_, i) => i !== idx))}
-                        className="rounded-[4px] p-1 text-[#DC3545] hover:bg-[#F8D7DA]"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
+                      <div className="border-t border-[#DEE2E6] p-2">
+                        <div className="font-mono-code text-xs text-[#6C757D]">
+                          {t.pdfOps.pageMeta(
+                            sel.file_index + 1,
+                            sel.page_index + 1,
+                            sel.rotation_deg,
+                          )}
+                        </div>
+                        <div className="mt-1.5 flex items-center justify-between">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelections((prev) =>
+                                prev.map((s, i) =>
+                                  i === idx
+                                    ? { ...s, rotation_deg: (s.rotation_deg + 90) % 360 }
+                                    : s,
+                                ),
+                              );
+                            }}
+                            title={t.image2pdf.rotateTitle}
+                            className="rounded-[4px] border border-[#DEE2E6] p-1 text-[#495057] hover:bg-[#F8F9FA]"
+                          >
+                            <RotateCw className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelections((prev) => prev.filter((_, i) => i !== idx));
+                            }}
+                            title={t.image2pdf.deletePageTitle}
+                            className="rounded-[4px] p-1 text-[#DC3545] hover:bg-[#F8D7DA]"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                </div>
-              );
-            })}
+                  );
+                })}
+              </div>
+            </div>
+
+            {preserveBookmarks && showMergeBookmarks && (
+              <div className="lg:col-span-1">
+                <BookmarkTreeEditor
+                  nodes={mergeBookmarks}
+                  totalPages={selections.length}
+                  onChange={setMergeBookmarks}
+                />
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -837,16 +1246,16 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
               <div className="space-y-2 border-b border-[#E9ECEF] p-3.5 pb-2.5">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
-                    <div className="text-sm font-bold text-[#343A40]">
+                    <div className="text-base font-bold text-[#343A40]">
                       {t.pdfOps.sourcePagesTitle(sourcePdf.page_count)}
                     </div>
-                    <div className="text-xs text-[#6C757D]">{t.pdfOps.sourcePagesHint}</div>
+                    <div className="text-sm text-[#6C757D]">{t.pdfOps.sourcePagesHint}</div>
                   </div>
                   {sourcePdf.page_count > thumbLimit && (
                     <button
                       type="button"
                       onClick={handleLoadMoreSplitThumbs}
-                      className="knit-control-sm rounded-[4px] border border-[#CED4DA] bg-[#F8F9FA] px-2.5 text-xs font-semibold text-[#343A40] hover:bg-[#E9ECEF]"
+                      className="knit-control-sm rounded-[4px] border border-[#CED4DA] bg-[#F8F9FA] px-2.5 text-sm font-semibold text-[#343A40] hover:bg-[#E9ECEF]"
                     >
                       {t.pdfOps.loadMoreThumbsBtn(thumbLimit, sourcePdf.page_count)}
                     </button>
@@ -854,7 +1263,7 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
                 </div>
 
                 {sortedSelectedSourcePages.length > 0 && (
-                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-[4px] border border-[#B8DAFF] bg-[#E7F1FF] px-2.5 py-1.5 text-xs">
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-[4px] border border-[#B8DAFF] bg-[#E7F1FF] px-2.5 py-1.5 text-sm">
                     <span className="font-semibold text-[#0056B3]">
                       {t.pdfOps.selectedCount(sortedSelectedSourcePages.length)}
                     </span>
@@ -864,7 +1273,7 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
                         onClick={() =>
                           appendSourcePagesToSection(sortedSelectedSourcePages)
                         }
-                        className="rounded-[4px] bg-[#007BFF] px-2 py-0.5 font-semibold text-white hover:bg-[#0069D9]"
+                        className="rounded-[4px] bg-[#007BFF] px-2.5 py-0.5 text-xs font-semibold text-white hover:bg-[#0069D9]"
                       >
                         {t.pdfOps.addSelectedBtn(sortedSelectedSourcePages.length)}
                       </button>
@@ -874,7 +1283,7 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
                           setSelectedSourcePages(new Set());
                           setLastClickedSourceIdx(null);
                         }}
-                        className="rounded-[4px] border border-[#CED4DA] bg-white px-2 py-0.5 font-medium text-[#495057] hover:bg-[#F8F9FA]"
+                        className="rounded-[4px] border border-[#CED4DA] bg-white px-2.5 py-0.5 text-xs font-medium text-[#495057] hover:bg-[#F8F9FA]"
                       >
                         {t.pdfOps.clearSelectionBtn}
                       </button>
@@ -895,6 +1304,15 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
                       key={pIdx}
                       draggable
                       onClick={(e) => handleSourcePageClick(e, pIdx)}
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
+                        setZoomTarget({
+                          path: sourcePdf.path,
+                          pageIndex: pIdx,
+                          rotationDeg: 0,
+                          fallbackThumbSrc: thumbs[thumbKey],
+                        });
+                      }}
                       onDragStart={(e) => {
                         if (isSelected && sortedSelectedSourcePages.length > 1) {
                           splitDragRef.current = {
@@ -930,19 +1348,19 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
                             className="pointer-events-none max-h-full max-w-full object-contain"
                           />
                         ) : (
-                          <span className="font-mono-code text-xs text-[#6C757D]">
+                          <span className="font-mono-code text-sm text-[#6C757D]">
                             P{pIdx + 1}
                           </span>
                         )}
                         <span
-                          className={`absolute left-1 top-1 flex items-center gap-0.5 rounded-[4px] px-1 py-0.5 font-mono-code text-[10px] text-white ${
+                          className={`absolute left-1 top-1 flex items-center gap-0.5 rounded-[4px] px-1.5 py-0.5 font-mono-code text-xs text-white ${
                             isSelected ? "bg-[#007BFF]" : "bg-[#343A40]"
                           }`}
                         >
                           {isSelected ? (
-                            <Check className="h-2.5 w-2.5" />
+                            <Check className="h-3 w-3" />
                           ) : (
-                            <GripVertical className="h-2.5 w-2.5 text-[#ADB5BD]" />
+                            <GripVertical className="h-3 w-3 text-[#ADB5BD]" />
                           )}
                           {pIdx + 1}
                         </span>
@@ -1217,6 +1635,74 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
           </div>
         </div>
       )}
+      {/* PDF Page Zoom Modal */}
+      <PdfPageZoomModal
+        pdfPath={zoomTarget?.path ?? null}
+        pageIndex={zoomTarget?.pageIndex ?? 0}
+        rotationDeg={zoomTarget?.rotationDeg ?? 0}
+        fallbackThumbSrc={zoomTarget?.fallbackThumbSrc}
+        onClose={() => setZoomTarget(null)}
+      />
+
+      {/* Confirm Remove Imported PDF Modal */}
+      {pendingRemoveFileIdx !== null && files[pendingRemoveFileIdx] && (
+        <div
+          onClick={() => setPendingRemoveFileIdx(null)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md rounded-[4px] border border-[#DEE2E6] bg-white shadow-xl"
+          >
+            <div className="flex items-center justify-between border-b border-[#DEE2E6] bg-[#FFF3CD] px-4 py-3">
+              <div className="flex items-center gap-2 text-sm font-bold text-[#856404]">
+                <AlertTriangle className="h-4 w-4 shrink-0" />
+                <span>{t.pdfOps.removeFileConfirmTitle}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPendingRemoveFileIdx(null)}
+                aria-label={t.common.close}
+                className="rounded-[4px] p-1 text-[#856404] hover:bg-[#FFEEBA]"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="p-4 text-sm text-[#212529]">
+              {t.pdfOps.removeFileConfirmDesc(
+                files[pendingRemoveFileIdx].path.split(/[\\/]/).pop() ??
+                  files[pendingRemoveFileIdx].path,
+                selections.filter((s) => s.file_index === pendingRemoveFileIdx).length,
+              )}
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-[#DEE2E6] bg-[#F8F9FA] px-4 py-3">
+              <button
+                type="button"
+                onClick={() => setPendingRemoveFileIdx(null)}
+                className="knit-control-sm rounded-[4px] border border-[#CED4DA] bg-white px-3 text-xs font-semibold text-[#343A40] hover:bg-[#E9ECEF]"
+              >
+                {t.common.cancel}
+              </button>
+              <button
+                type="button"
+                onClick={confirmRemoveImportedFile}
+                className="knit-control-sm rounded-[4px] bg-[#DC3545] px-3 text-xs font-semibold text-white hover:bg-[#C82333]"
+              >
+                {t.pdfOps.removeFileConfirmBtn}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <ExportConflictModal
+        conflictPaths={pendingConflict?.conflicts ?? []}
+        onResolve={(c) => void handleConflictResolution(c)}
+      />
+
+      <ImportFeedbackToast toast={importToast} />
     </div>
   );
 };

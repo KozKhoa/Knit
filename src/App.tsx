@@ -9,6 +9,7 @@ import { I18nProvider, useI18n } from "./i18n";
 import {
   cancelActiveJob,
   isTauriRuntime,
+  setLogVerbosity,
   subscribeNativeDialogState,
 } from "./lib/ipc";
 import { usePersistentState } from "./lib/storage";
@@ -18,6 +19,7 @@ import type {
   JobHistoryItem,
   JobLogEntry,
   JobProgress,
+  LogVerbosity,
   ToolId,
 } from "./types/ipc";
 import { ArchiveView } from "./views/ArchiveView";
@@ -50,7 +52,19 @@ const AppInner: React.FC = () => {
     "knit.ui.fontSizePx",
     16,
   );
+  const [logVerbosity, setLogVerbosityState] = usePersistentState<LogVerbosity>(
+    "knit.logs.verbosity",
+    "normal",
+  );
+  const [defaultExportDir, setDefaultExportDir] = usePersistentState<string>(
+    "knit.export.defaultDir",
+    "",
+  );
   const [activeJobId, setActiveJobId] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    void setLogVerbosity(logVerbosity);
+  }, [logVerbosity]);
 
   React.useEffect(() => {
     const root = document.documentElement;
@@ -124,7 +138,7 @@ const AppInner: React.FC = () => {
   const appendLog = React.useCallback(
     (level: JobLogEntry["level"], message: string) => {
       setLogs((prev) => [
-        ...prev.slice(-250),
+        ...prev.slice(-800),
         {
           id: crypto.randomUUID(),
           timestamp: nowTime(),
@@ -207,6 +221,7 @@ const AppInner: React.FC = () => {
     onJobEvent: handleJobEvent,
     onFinishJob: handleFinishJob,
     busy: activeJobId !== null,
+    defaultExportDir,
   };
 
   const dropFor = (tool: ToolId): DroppedBatch | null =>
@@ -250,6 +265,10 @@ const AppInner: React.FC = () => {
             onChangeFontFamily={setAppFontFamily}
             fontSizePx={appFontSizePx}
             onChangeFontSizePx={setAppFontSizePx}
+            logVerbosity={logVerbosity}
+            onChangeLogVerbosity={setLogVerbosityState}
+            defaultExportDir={defaultExportDir}
+            onChangeDefaultExportDir={setDefaultExportDir}
           />
         </div>
       </WorkbenchShell>

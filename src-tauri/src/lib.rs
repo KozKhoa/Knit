@@ -3,8 +3,8 @@ use base64::Engine;
 use knit_archive::{collect_entries, pack_entries, ArchiveOptions, ArchiveSummary};
 use knit_core::job::ThrottledReporter;
 use knit_core::{
-    app_cache_dir, app_config_dir, CancellationToken, JobLogLevel, JobProgress, JobReporter,
-    NoopReporter,
+    app_cache_dir, app_config_dir, sanitize_filename, CancellationToken, JobLogLevel,
+    JobProgress, JobReporter, LogVerbosity, NoopReporter,
 };
 use knit_docs::{
     compile_epub_to_pdf_bytes, compile_text_to_pdf_bytes, convert_document_to_pdf,
@@ -29,6 +29,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::ipc::Channel;
@@ -44,6 +45,7 @@ pub enum JobEvent {
 
 struct ChannelReporter {
     channel: Channel<JobEvent>,
+    verbosity: Arc<AtomicU8>,
 }
 
 impl JobReporter for ChannelReporter {
@@ -56,6 +58,13 @@ impl JobReporter for ChannelReporter {
             level,
             message: message.to_string(),
         });
+    }
+
+    fn on_log_detail(&self, verbosity: LogVerbosity, level: JobLogLevel, message: &str) {
+        let active = LogVerbosity::from_u8(self.verbosity.load(AtomicOrdering::Relaxed));
+        if verbosity <= active {
+            self.on_log(level, message);
+        }
     }
 }
 
@@ -83,6 +92,7 @@ pub struct AppState {
     undo_manifest_path: PathBuf,
     renamer_scan_cache: Mutex<Option<CachedRenamerScan>>,
     last_cpu_sample: Mutex<Option<CpuSample>>,
+    log_verbosity: Arc<AtomicU8>,
 }
 
 impl Default for AppState {
@@ -93,6 +103,7 @@ impl Default for AppState {
             undo_manifest_path: app_config_dir().join("last_rename_undo.json"),
             renamer_scan_cache: Mutex::new(None),
             last_cpu_sample: Mutex::new(None),
+            log_verbosity: Arc::new(AtomicU8::new(LogVerbosity::Normal as u8)),
         }
     }
 }
@@ -119,8 +130,167 @@ impl AppState {
     }
 }
 
-fn make_reporter(on_event: Channel<JobEvent>) -> ThrottledReporter<ChannelReporter> {
-    ThrottledReporter::new(ChannelReporter { channel: on_event }, Duration::from_millis(100))
+fn make_reporter(
+    state: &AppState,
+    on_event: Channel<JobEvent>,
+) -> ThrottledReporter<ChannelReporter> {
+    ThrottledReporter::new(
+        ChannelReporter {
+            channel: on_event,
+            verbosity: Arc::clone(&state.log_verbosity),
+        },
+        Duration::from_millis(100),
+    )
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn trim_process_heap() {
+    extern "C" {
+        fn malloc_trim(pad: usize) -> std::ffi::c_int;
+    }
+    // SAFETY: `malloc_trim(0)` asks glibc ptmalloc2 to return free top-of-heap arenas to OS RSS.
+    unsafe {
+        let _ = malloc_trim(0);
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn trim_process_heap() {}
+
+#[tauri::command]
+fn set_log_verbosity(verbosity: LogVerbosity, state: State<'_, Arc<AppState>>) {
+    state
+        .log_verbosity
+        .store(verbosity as u8, AtomicOrdering::Relaxed);
+}
+
+#[tauri::command]
+async fn clear_image_preview_cache() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let dir = thumb_cache_dir();
+        if dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.is_file() {
+                        let _ = std::fs::remove_file(p);
+                    }
+                }
+            }
+        }
+        trim_process_heap();
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Clone, Serialize)]
+pub struct ExportDirStatus {
+    pub exists: bool,
+    pub is_dir: bool,
+    pub writable: bool,
+    pub error: Option<String>,
+}
+
+#[tauri::command]
+async fn validate_export_directory(dir: PathBuf) -> Result<ExportDirStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if dir.as_os_str().is_empty() {
+            return Ok(ExportDirStatus {
+                exists: false,
+                is_dir: false,
+                writable: false,
+                error: Some("Đường dẫn thư mục trống".into()),
+            });
+        }
+        if !dir.exists() {
+            return Ok(ExportDirStatus {
+                exists: false,
+                is_dir: false,
+                writable: false,
+                error: Some(format!("Thư mục không tồn tại: {}", dir.display())),
+            });
+        }
+        if !dir.is_dir() {
+            return Ok(ExportDirStatus {
+                exists: true,
+                is_dir: false,
+                writable: false,
+                error: Some(format!("Đường dẫn không phải thư mục: {}", dir.display())),
+            });
+        }
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let probe = dir.join(format!(".knit_write_probe_{}_{}", std::process::id(), nanos));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&probe)
+        {
+            Ok(f) => {
+                drop(f);
+                let _ = std::fs::remove_file(&probe);
+                Ok(ExportDirStatus {
+                    exists: true,
+                    is_dir: true,
+                    writable: true,
+                    error: None,
+                })
+            }
+            Err(e) => Ok(ExportDirStatus {
+                exists: true,
+                is_dir: true,
+                writable: false,
+                error: Some(format!("Không có quyền ghi vào thư mục: {e}")),
+            }),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn check_export_conflicts(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(paths.into_iter().filter(|p| p.exists()).collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn resolve_unique_export_path(path: PathBuf) -> Result<PathBuf, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if !path.exists() {
+            return Ok(path);
+        }
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("output");
+        let ext = path.extension().and_then(|s| s.to_str());
+        for idx in 1..=9999 {
+            let file_name = match ext {
+                Some(e) if !e.is_empty() => format!("{stem}_{idx}.{e}"),
+                _ => format!("{stem}_{idx}"),
+            };
+            let candidate = parent.join(file_name);
+            if !candidate.exists() {
+                return Ok(candidate);
+            }
+        }
+        Ok(path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -259,12 +429,14 @@ async fn pdf_scan_images(
     is_folder: bool,
     animated_policy: AnimatedImagePolicy,
     on_event: Channel<JobEvent>,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<ImageScanResult, String> {
+    let state_arc = Arc::clone(&state);
     tauri::async_runtime::spawn_blocking(move || {
         if paths.is_empty() {
             return Err("Chua chon anh hoac thu muc anh".to_string());
         }
-        let reporter = make_reporter(on_event);
+        let reporter = make_reporter(&state_arc, on_event);
         let mut all_pages = Vec::new();
         let mut all_bookmarks = Vec::new();
         let mut all_warnings = Vec::new();
@@ -532,6 +704,68 @@ async fn render_pdf_thumb(
 }
 
 #[tauri::command]
+async fn render_pdf_page_preview_file(
+    path: PathBuf,
+    page_index: usize,
+    max_width: u32,
+) -> Result<PathBuf, String> {
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    if let Ok(meta) = std::fs::metadata(&path) {
+        meta.len().hash(&mut hasher);
+        if let Ok(mtime) = meta.modified() {
+            if let Ok(dur) = mtime.duration_since(UNIX_EPOCH) {
+                dur.as_secs().hash(&mut hasher);
+            }
+        }
+    }
+    page_index.hash(&mut hasher);
+    max_width.hash(&mut hasher);
+    let cache_path = thumb_cache_dir().join(format!(
+        "pdf_page_{:016x}_{}_{}.png",
+        hasher.finish(),
+        page_index,
+        max_width
+    ));
+    if cache_path.is_file() {
+        return Ok(cache_path);
+    }
+
+    let _permit = thumb_semaphore()
+        .acquire()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if cache_path.is_file() {
+        return Ok(cache_path);
+    }
+
+    tauri::async_runtime::spawn_blocking(move || {
+        if cache_path.is_file() {
+            return Ok(cache_path);
+        }
+        let png = render_pdf_thumbnail(&path, page_index, max_width).map_err(|e| e.to_string())?;
+        let tmp_name = format!(
+            ".{}.{}.tmp",
+            cache_path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("pdf_page"),
+            std::process::id()
+        );
+        let tmp_path = cache_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join(tmp_name);
+        std::fs::write(&tmp_path, &png).map_err(|e| e.to_string())?;
+        let _ = std::fs::rename(&tmp_path, &cache_path);
+        Ok(cache_path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 async fn pdf_build_from_images(
     job_id: String,
     drafts: Vec<PageDraft>,
@@ -543,10 +777,11 @@ async fn pdf_build_from_images(
     let token = state.register_job(&job_id);
     let state_arc = Arc::clone(&state);
     tauri::async_runtime::spawn_blocking(move || {
-        let reporter = make_reporter(on_event);
+        let reporter = make_reporter(&state_arc, on_event);
         let res = build_pdf_from_drafts(&drafts, &bookmarks, &config, &token, &reporter)
             .map_err(|e| e.to_string());
         state_arc.finish_job(&job_id);
+        trim_process_heap();
         res
     })
     .await
@@ -570,9 +805,10 @@ async fn pdf_merge(
     let token = state.register_job(&job_id);
     let state_arc = Arc::clone(&state);
     tauri::async_runtime::spawn_blocking(move || {
-        let reporter = make_reporter(on_event);
+        let reporter = make_reporter(&state_arc, on_event);
         let res = merge_pdfs(&config, &token, &reporter).map_err(|e| e.to_string());
         state_arc.finish_job(&job_id);
+        trim_process_heap();
         res
     })
     .await
@@ -592,10 +828,11 @@ async fn pdf_split(
     let token = state.register_job(&job_id);
     let state_arc = Arc::clone(&state);
     tauri::async_runtime::spawn_blocking(move || {
-        let reporter = make_reporter(on_event);
+        let reporter = make_reporter(&state_arc, on_event);
         let res = split_pdf(&input_path, &output_dir, &stem, &rule, &token, &reporter)
             .map_err(|e| e.to_string());
         state_arc.finish_job(&job_id);
+        trim_process_heap();
         res
     })
     .await
@@ -622,7 +859,7 @@ async fn docs_convert_to_pdf(
     let token = state.register_job(&job_id);
     let state_arc = Arc::clone(&state);
     tauri::async_runtime::spawn_blocking(move || {
-        let reporter = make_reporter(on_event);
+        let reporter = make_reporter(&state_arc, on_event);
         let res = convert_document_to_pdf(&input_path, &output_path, &options, &token, &reporter)
             .map_err(|e| e.to_string());
         state_arc.finish_job(&job_id);
@@ -730,7 +967,7 @@ async fn docs_convert_content_to_pdf(
     let token = state.register_job(&job_id);
     let state_arc = Arc::clone(&state);
     tauri::async_runtime::spawn_blocking(move || {
-        let reporter = make_reporter(on_event);
+        let reporter = make_reporter(&state_arc, on_event);
         let res = convert_text_to_pdf(
             &content,
             input_kind,
@@ -764,13 +1001,14 @@ async fn archive_pack(
     let token = state.register_job(&job_id);
     let state_arc = Arc::clone(&state);
     tauri::async_runtime::spawn_blocking(move || {
-        let reporter = make_reporter(on_event);
+        let reporter = make_reporter(&state_arc, on_event);
         let res = (|| {
             let entries = collect_entries(&inputs, include_root_dir, ignore_hidden)?;
             pack_entries(&entries, &output_path, &options, &token, &reporter)
         })()
         .map_err(|e| e.to_string());
         state_arc.finish_job(&job_id);
+        trim_process_heap();
         res
     })
     .await
@@ -792,6 +1030,7 @@ async fn manga_pack(
     job_id: String,
     stories: Vec<Story>,
     output_dir: PathBuf,
+    output_name: Option<String>,
     options: MangaPackOptions,
     on_event: Channel<JobEvent>,
     state: State<'_, Arc<AppState>>,
@@ -799,11 +1038,26 @@ async fn manga_pack(
     let token = state.register_job(&job_id);
     let state_arc = Arc::clone(&state);
     tauri::async_runtime::spawn_blocking(move || {
-        let reporter = make_reporter(on_event);
-        let out_file = output_dir.join(default_output_name(&stories));
+        let reporter = make_reporter(&state_arc, on_event);
+        let chosen_name = output_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                let clean = sanitize_filename(s, 140);
+                let lower = clean.to_ascii_lowercase();
+                if lower.ends_with(".zip") || lower.ends_with(".cbz") {
+                    clean
+                } else {
+                    format!("{clean}.zip")
+                }
+            })
+            .unwrap_or_else(|| default_output_name(&stories));
+        let out_file = output_dir.join(chosen_name);
         let res = pack_stories(&stories, &out_file, &options, &token, &reporter)
             .map_err(|e| e.to_string());
         state_arc.finish_job(&job_id);
+        trim_process_heap();
         res
     })
     .await
@@ -876,7 +1130,7 @@ async fn renamer_apply(
     let state_arc = Arc::clone(&state);
     let undo_path = state.undo_manifest_path.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let reporter = make_reporter(on_event);
+        let reporter = make_reporter(&state_arc, on_event);
         let res = apply_rename_plan(&mut plan, Some(&undo_path), &reporter).map_err(|e| e.to_string());
         state_arc.invalidate_renamer_cache();
         state_arc.finish_job(&job_id);
@@ -1189,6 +1443,11 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             cancel_job,
+            set_log_verbosity,
+            clear_image_preview_cache,
+            validate_export_directory,
+            check_export_conflicts,
+            resolve_unique_export_path,
             dialog_pick_paths,
             dialog_save_path,
             pdf_scan_images,
@@ -1196,6 +1455,7 @@ pub fn run() {
             render_image_thumb_file,
             render_page_draft_preview_file,
             render_pdf_thumb,
+            render_pdf_page_preview_file,
             get_app_metrics,
             pdf_build_from_images,
             pdf_inspect,

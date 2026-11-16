@@ -12,17 +12,29 @@ import {
   PackageCheck,
 } from "lucide-react";
 import { Dropzone } from "../components/Dropzone";
+import {
+  ExportConflictModal,
+  type ConflictResolution,
+} from "../components/ExportConflictModal";
+import { ExportFilenameControl } from "../components/ExportFilenameControl";
+import {
+  ImportFeedbackToast,
+  useImportFeedback,
+} from "../components/ImportFeedbackToast";
 import { MangaInfoModal } from "../components/MangaInfoModal";
 import { NumberInput } from "../components/NumberInput";
 import { Select } from "../components/Select";
 import { useVerticalResize } from "../hooks/useVerticalResize";
 import { useI18n } from "../i18n";
+import { useExportFilenameCheck } from "../lib/exportPath";
 import {
+  checkExportConflicts,
   formatBytes,
   isTauriRuntime,
   packMangaStories,
   pickDirectory,
   readDocTextFile,
+  resolveUniqueExportPath,
   scanMangaFolder,
   writeDocTextFile,
 } from "../lib/ipc";
@@ -53,6 +65,7 @@ interface MangaPackViewProps {
   ) => void;
   busy: boolean;
   droppedBatch?: DroppedBatch | null;
+  defaultExportDir?: string;
 }
 
 export const MangaPackView: React.FC<MangaPackViewProps> = ({
@@ -61,12 +74,21 @@ export const MangaPackView: React.FC<MangaPackViewProps> = ({
   onFinishJob,
   busy,
   droppedBatch,
+  defaultExportDir = "",
 }) => {
   const { t } = useI18n();
+  const { toast: importToast, highlighted: importHighlighted, notifyImported } =
+    useImportFeedback();
 
   const [rootDir, setRootDir] = React.useState<string | null>(null);
   const [scanMode, setScanMode] = usePersistentState<MangaScanMode>("knit.manga.scanMode", "auto");
   const [stories, setStories] = React.useState<Story[]>([]);
+  const [exportFilename, setExportFilename] = React.useState<string>("");
+  const [pendingConflict, setPendingConflict] = React.useState<{
+    outDir: string;
+    fileName: string;
+    conflicts: string[];
+  } | null>(null);
   const [mangamentMode, setMangamentMode] = usePersistentState<boolean>(
     "knit.manga.mangamentMode",
     false,
@@ -80,18 +102,49 @@ export const MangaPackView: React.FC<MangaPackViewProps> = ({
   const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
   const lastHandledDropSeq = React.useRef<number>(0);
 
-  const runScan = React.useCallback(async (dir: string, mode: MangaScanMode) => {
-    setErrorMsg(null);
-    setScanningFolder(true);
-    try {
-      const found = await scanMangaFolder(dir, mode);
-      setStories(found);
-    } catch (e) {
-      setErrorMsg(String(e));
-    } finally {
-      setScanningFolder(false);
+  const fallbackOutputName = React.useMemo(() => {
+    if (stories.length === 1) {
+      const clean = stories[0].dir_name.replace(/[<>:"/\\|?*]/g, "_").trim() || "manga";
+      return `${clean}.zip`;
     }
-  }, []);
+    return "manga_batch.zip";
+  }, [stories]);
+
+  const { effectiveFilename, existsAtDefaultDir } = useExportFilenameCheck(
+    defaultExportDir,
+    exportFilename,
+    fallbackOutputName,
+    ["zip", "cbz"],
+  );
+
+  const runScan = React.useCallback(
+    async (dir: string, mode: MangaScanMode) => {
+      setErrorMsg(null);
+      setScanningFolder(true);
+      try {
+        const found = await scanMangaFolder(dir, mode);
+        setStories(found);
+        if (found.length === 1) {
+          const clean = found[0].dir_name.replace(/[<>:"/\\|?*]/g, "_").trim() || "manga";
+          setExportFilename(`${clean}.zip`);
+        } else if (found.length > 1) {
+          setExportFilename("manga_batch.zip");
+        }
+        if (found.length > 0) {
+          notifyImported(
+            t.common.importSuccessToast(
+              dir.split(/[\\/]/).pop() ?? `${found.length} stories`,
+            ),
+          );
+        }
+      } catch (e) {
+        setErrorMsg(String(e));
+      } finally {
+        setScanningFolder(false);
+      }
+    },
+    [notifyImported, t.common],
+  );
 
   React.useEffect(() => {
     if (!droppedBatch || droppedBatch.seq === lastHandledDropSeq.current) return;
@@ -110,13 +163,8 @@ export const MangaPackView: React.FC<MangaPackViewProps> = ({
     await runScan(dir, scanMode);
   };
 
-  const handlePack = async () => {
-    if (stories.length === 0 || busy) return;
-    setErrorMsg(null);
+  const executePack = async (outDir: string, fileName: string) => {
     try {
-      const outDir = await pickDirectory(t.mangaPack.pickOutDialog);
-      if (!outDir) return;
-
       const options: MangaPackOptions = {
         mangament_package_mode: mangamentMode,
         image_compression: imageCompression,
@@ -124,7 +172,14 @@ export const MangaPackView: React.FC<MangaPackViewProps> = ({
       };
       const jobId = crypto.randomUUID();
       onStartJob(jobId, t.shell.nav.mangaPack.label);
-      const summary = await packMangaStories(jobId, stories, outDir, options, onJobEvent);
+      const summary = await packMangaStories(
+        jobId,
+        stories,
+        outDir,
+        options,
+        onJobEvent,
+        fileName,
+      );
       onFinishJob(
         t.shell.nav.mangaPack.label,
         summary.created_files,
@@ -141,6 +196,45 @@ export const MangaPackView: React.FC<MangaPackViewProps> = ({
       setErrorMsg(msg);
       onFinishJob(t.shell.nav.mangaPack.label, [], msg, "error");
     }
+  };
+
+  const handlePack = async () => {
+    if (stories.length === 0 || busy) return;
+    setErrorMsg(null);
+    try {
+      const trimmedDefault = defaultExportDir.trim();
+      const outDir = trimmedDefault
+        ? trimmedDefault
+        : await pickDirectory(t.mangaPack.pickOutDialog);
+      if (!outDir) return;
+
+      const sep = outDir.includes("\\") && !outDir.includes("/") ? "\\" : "/";
+      const targetPath = `${outDir.replace(/[\\/]+$/, "")}${sep}${effectiveFilename}`;
+      const conflicts = await checkExportConflicts([targetPath]);
+      if (conflicts.length > 0) {
+        setPendingConflict({ outDir, fileName: effectiveFilename, conflicts });
+        return;
+      }
+
+      await executePack(outDir, effectiveFilename);
+    } catch (e) {
+      setErrorMsg(String(e));
+    }
+  };
+
+  const handleConflictResolution = async (choice: ConflictResolution) => {
+    const pending = pendingConflict;
+    setPendingConflict(null);
+    if (!pending || choice === "cancel") return;
+    if (choice === "overwrite") {
+      await executePack(pending.outDir, pending.fileName);
+      return;
+    }
+    const sep = pending.outDir.includes("\\") && !pending.outDir.includes("/") ? "\\" : "/";
+    const candidate = `${pending.outDir.replace(/[\\/]+$/, "")}${sep}${pending.fileName}`;
+    const uniquePath = await resolveUniqueExportPath(candidate);
+    const uniqueName = uniquePath.split(/[\\/]/).pop() ?? pending.fileName;
+    await executePack(pending.outDir, uniqueName);
   };
 
   const [treeHeightsByPath, setTreeHeightsByPath] = usePersistentState<Record<string, number>>(
@@ -342,7 +436,21 @@ export const MangaPackView: React.FC<MangaPackViewProps> = ({
       />
 
       {stories.length > 0 && (
-        <div className="space-y-3">
+        <ExportFilenameControl
+          value={exportFilename}
+          onChange={setExportFilename}
+          placeholder={fallbackOutputName}
+          defaultExportDir={defaultExportDir}
+          existsAtDefaultDir={existsAtDefaultDir}
+        />
+      )}
+
+      {stories.length > 0 && (
+        <div
+          className={`space-y-3 rounded-[4px] transition-colors duration-300 ${
+            importHighlighted ? "bg-[#D4EDDA]/35 p-2 ring-1 ring-[#28A745]" : ""
+          }`}
+        >
           {stories.map((st) => (
             <StoryCard
               key={st.path}
@@ -374,6 +482,13 @@ export const MangaPackView: React.FC<MangaPackViewProps> = ({
           }}
         />
       )}
+
+      <ExportConflictModal
+        conflictPaths={pendingConflict?.conflicts ?? []}
+        onResolve={(c) => void handleConflictResolution(c)}
+      />
+
+      <ImportFeedbackToast toast={importToast} />
     </div>
   );
 };

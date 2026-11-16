@@ -4,12 +4,24 @@ import { Dropzone } from "../components/Dropzone";
 import { Select } from "../components/Select";
 import { useI18n } from "../i18n";
 import {
+  checkExportConflicts,
   createArchive,
   formatBytes,
   pickDirectory,
   pickFiles,
   pickSaveFile,
+  resolveUniqueExportPath,
 } from "../lib/ipc";
+import {
+  ExportConflictModal,
+  type ConflictResolution,
+} from "../components/ExportConflictModal";
+import { ExportFilenameControl } from "../components/ExportFilenameControl";
+import {
+  ImportFeedbackToast,
+  useImportFeedback,
+} from "../components/ImportFeedbackToast";
+import { useExportFilenameCheck } from "../lib/exportPath";
 import { usePersistentState } from "../lib/storage";
 import type {
   ArchiveFormat,
@@ -31,6 +43,7 @@ interface ArchiveViewProps {
   ) => void;
   busy: boolean;
   droppedBatch?: DroppedBatch | null;
+  defaultExportDir?: string;
 }
 
 export const ArchiveView: React.FC<ArchiveViewProps> = ({
@@ -39,8 +52,11 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
   onFinishJob,
   busy,
   droppedBatch,
+  defaultExportDir = "",
 }) => {
   const { t } = useI18n();
+  const { toast: importToast, highlighted: importHighlighted, notifyImported } =
+    useImportFeedback();
 
   const [inputs, setInputs] = React.useState<string[]>([]);
   const [format, setFormat] = usePersistentState<ArchiveFormat>("knit.archive.format", "zip");
@@ -61,8 +77,48 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
     true,
   );
   const [loadingFolder, setLoadingFolder] = React.useState(false);
+  const [exportFilename, setExportFilename] = usePersistentState<string>(
+    "knit.archive.exportFilename",
+    "archive.zip",
+  );
+  const [pendingConflict, setPendingConflict] = React.useState<{
+    outPath: string;
+    conflicts: string[];
+  } | null>(null);
   const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
   const lastHandledDropSeq = React.useRef<number>(0);
+
+  const extForFormat = React.useCallback((fmt: ArchiveFormat) => {
+    switch (fmt) {
+      case "zip":
+        return "zip";
+      case "tar":
+        return "tar";
+      case "tar_gz":
+        return "tar.gz";
+      case "tar_zst":
+        return "tar.zst";
+    }
+  }, []);
+
+  const currentExt = extForFormat(format);
+  const { effectiveFilename, defaultTargetPath, existsAtDefaultDir } =
+    useExportFilenameCheck(
+      defaultExportDir,
+      exportFilename,
+      `archive.${currentExt}`,
+      [currentExt],
+    );
+
+  // Sync filename extension smoothly when changing archive format
+  React.useEffect(() => {
+    setExportFilename((prev) => {
+      const clean = prev.trim();
+      if (!clean) return `archive.${currentExt}`;
+      const stripped = clean.replace(/\.(zip|tar\.gz|tar\.zst|tar)$/i, "");
+      return `${stripped}.${currentExt}`;
+    });
+  }, [currentExt, setExportFilename]);
 
   React.useEffect(() => {
     if (!droppedBatch || droppedBatch.seq === lastHandledDropSeq.current) return;
@@ -70,8 +126,9 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
     if (droppedBatch.paths.length > 0) {
       setErrorMsg(null);
       setInputs((prev) => Array.from(new Set([...prev, ...droppedBatch.paths])));
+      notifyImported(t.common.importSuccessToast(`${droppedBatch.paths.length}`));
     }
-  }, [droppedBatch]);
+  }, [droppedBatch, notifyImported, t.common]);
 
   const addFiles = async () => {
     setErrorMsg(null);
@@ -79,6 +136,7 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
       const files = await pickFiles({ title: t.archive.pickFilesDialog, multiple: true });
       if (files.length > 0) {
         setInputs((prev) => Array.from(new Set([...prev, ...files])));
+        notifyImported(t.common.importSuccessToast(`${files.length}`));
       }
     } catch (e) {
       setErrorMsg(String(e));
@@ -92,6 +150,9 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
       const dir = await pickDirectory(t.archive.pickFolderDialog);
       if (dir) {
         setInputs((prev) => Array.from(new Set([...prev, dir])));
+        notifyImported(
+          t.common.importSuccessToast(dir.split(/[\\/]/).pop() ?? dir),
+        );
       }
     } catch (e) {
       setErrorMsg(String(e));
@@ -100,35 +161,8 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
     }
   };
 
-  const extForFormat = (fmt: ArchiveFormat) => {
-    switch (fmt) {
-      case "zip":
-        return "zip";
-      case "tar":
-        return "tar";
-      case "tar_gz":
-        return "tar.gz";
-      case "tar_zst":
-        return "tar.zst";
-    }
-  };
-
-  const handlePack = async () => {
-    if (inputs.length === 0 || busy) return;
-    setErrorMsg(null);
-    if (format === "zip" && encryptionKind !== "none" && password.trim() === "") {
-      setErrorMsg(t.archive.passwordRequiredError);
-      return;
-    }
-
+  const executePack = async (outPath: string) => {
     try {
-      const ext = extForFormat(format);
-      const outPath = await pickSaveFile({
-        title: t.archive.saveArchiveDialog,
-        defaultPath: `archive.${ext}`,
-      });
-      if (!outPath) return;
-
       const encryption: ZipEncryption =
         format !== "zip" || encryptionKind === "none"
           ? { kind: "none" }
@@ -165,6 +199,49 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
     }
   };
 
+  const handlePack = async () => {
+    if (inputs.length === 0 || busy) return;
+    setErrorMsg(null);
+    if (format === "zip" && encryptionKind !== "none" && password.trim() === "") {
+      setErrorMsg(t.archive.passwordRequiredError);
+      return;
+    }
+
+    try {
+      let outPath: string | null = defaultTargetPath;
+      if (!outPath) {
+        outPath = await pickSaveFile({
+          title: t.archive.saveArchiveDialog,
+          defaultPath: effectiveFilename,
+        });
+      }
+      if (!outPath) return;
+
+      if (defaultTargetPath) {
+        const conflicts = await checkExportConflicts([outPath]);
+        if (conflicts.length > 0) {
+          setPendingConflict({ outPath, conflicts });
+          return;
+        }
+      }
+      await executePack(outPath);
+    } catch (e) {
+      setErrorMsg(String(e));
+    }
+  };
+
+  const handleConflictResolution = async (choice: ConflictResolution) => {
+    const pending = pendingConflict;
+    setPendingConflict(null);
+    if (!pending || choice === "cancel") return;
+    if (choice === "overwrite") {
+      await executePack(pending.outPath);
+      return;
+    }
+    const uniquePath = await resolveUniqueExportPath(pending.outPath);
+    await executePack(uniquePath);
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -188,6 +265,14 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
           {errorMsg}
         </div>
       )}
+
+      <ExportFilenameControl
+        value={exportFilename}
+        onChange={setExportFilename}
+        placeholder={`archive.${currentExt}`}
+        defaultExportDir={defaultExportDir}
+        existsAtDefaultDir={existsAtDefaultDir}
+      />
 
       <div className="grid grid-cols-1 gap-3.5 rounded-[4px] border border-[#DEE2E6] bg-white p-4 md:grid-cols-4">
         <div>
@@ -285,7 +370,13 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
       />
 
       {inputs.length > 0 && (
-        <div className="space-y-2 rounded-[4px] border border-[#DEE2E6] bg-white p-3.5">
+        <div
+          className={`space-y-2 rounded-[4px] border p-3.5 transition-colors duration-300 ${
+            importHighlighted
+              ? "border-[#28A745] bg-[#D4EDDA]/45"
+              : "border-[#DEE2E6] bg-white"
+          }`}
+        >
           <div className="flex items-center justify-between text-sm font-bold text-[#343A40]">
             <span>{t.archive.inputListLabel(inputs.length)}</span>
             <button
@@ -299,7 +390,11 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
           {inputs.map((item) => (
             <div
               key={item}
-              className="flex items-center justify-between rounded-[4px] border border-[#E9ECEF] bg-[#F8F9FA] px-3 py-2 text-xs"
+              className={`flex items-center justify-between rounded-[4px] border px-3 py-2 text-xs transition-colors duration-300 ${
+                importHighlighted
+                  ? "border-[#A3CFBB] bg-[#E9F7EF]"
+                  : "border-[#E9ECEF] bg-[#F8F9FA]"
+              }`}
             >
               <span className="font-mono-code truncate">{item}</span>
               <button
@@ -313,6 +408,13 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
           ))}
         </div>
       )}
+
+      <ExportConflictModal
+        conflictPaths={pendingConflict?.conflicts ?? []}
+        onResolve={(c) => void handleConflictResolution(c)}
+      />
+
+      <ImportFeedbackToast toast={importToast} />
     </div>
   );
 };

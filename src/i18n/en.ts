@@ -24,6 +24,19 @@ export const en: Translations = {
     exportSuccessSubtitle: "The task finished successfully. You can open the output location below.",
     outputFilesLabel: "Output files / folders",
     loadingFolder: "Scanning and loading folder...",
+    importSuccessToast: (label) => `Imported: ${label}`,
+    exportFilenameLabel: "Output filename:",
+    exportFilenamePlaceholder: "Output filename...",
+    exportExistsWarning: "A file with this name already exists at the export folder!",
+    exportUsingDefaultDir: (dir) => `Default export folder: ${dir}`,
+    exportConflictTitle: "Output file already exists",
+    exportConflictDesc: (paths) =>
+      paths.length === 1
+        ? `The following file already exists at the destination:\n${paths[0]}`
+        : `${paths.length} output files already exist at the destination:`,
+    exportOverwriteBtn: "Overwrite existing",
+    exportAutoRenameBtn: "Auto-append suffix (_1, _2)",
+    exportRenameBtn: "Go back & rename",
   },
   shell: {
     logsButton: "Activity Logs",
@@ -184,6 +197,17 @@ export const en: Translations = {
     clearSelectionBtn: "Clear selection",
     resizeWidthTitle: "Drag to resize pane widths",
     resizeHeightTitle: "Drag to resize pane height",
+    mergeDragHint: "Drag page cards to reorder · Double-click to zoom",
+    gridColumnsLabel: "Pages / row:",
+    toggleBookmarksShow: "Show bookmarks",
+    toggleBookmarksHide: "Hide bookmarks",
+    removeFileBtnTitle: "Remove this PDF file",
+    removeFileConfirmTitle: "Confirm PDF File Removal",
+    removeFileConfirmDesc: (fileName, pageCount) =>
+      `Removing "${fileName}" will also remove all ${pageCount} page(s) belonging to it from the merge list. Continue?`,
+    removeFileConfirmBtn: "Remove file & pages",
+    zoomModalTitle: (pageNum) => `Page ${pageNum}`,
+    zoomLoading: "Rendering high-resolution page preview...",
     emptySectionHint: "Drag & drop pages into this section",
     clearSectionTitle: "Clear section",
     deleteSectionTitle: "Delete section",
@@ -462,5 +486,31 @@ export const en: Translations = {
     previewBody:
       "Smooth typographic hierarchy for Vietnamese & English controls, drag-and-drop cards, and PDF previews.",
     previewCode: "/home/khoa/Documents/report.md -> 12 pages · 420 KB",
+    logVerbosityHeading: "Activity Logs Verbosity",
+    logVerbosityDesc: "Control how much detail is recorded in Activity Logs while tools process files.",
+    logVerbosityOptions: {
+      minimal: {
+        label: "Minimal",
+        desc: "Logs only job start, warnings, and final completion summary.",
+      },
+      normal: {
+        label: "Normal",
+        desc: "Logs per-file / per-chapter progress (e.g. chapter being packed or PDF part written).",
+      },
+      detailed: {
+        label: "Detailed",
+        desc: "Logs every single image, page, and file processed in real time.",
+      },
+    },
+    exportDirHeading: "Default Export Directory",
+    exportDirDesc:
+      "When set to a writable folder, tools export directly here without prompting a Save dialog. Leave blank to open the system file dialog each time.",
+    exportDirPlaceholder: "Blank = always open system Save dialog...",
+    exportDirBrowseBtn: "Browse folder",
+    exportDirSaveBtn: "Verify & Save",
+    exportDirClearBtn: "Clear default",
+    exportDirValidBadge: "Verified writable",
+    exportDirEmptyNote: "Blank — system Save dialog will open on every export.",
+    exportDirInvalidError: "Directory does not exist or is not writable.",
   },
 };

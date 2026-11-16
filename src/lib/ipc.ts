@@ -176,6 +176,43 @@ export async function getAppMetrics(): Promise<AppMetrics> {
   return await invoke("get_app_metrics");
 }
 
+export async function setLogVerbosity(verbosity: "minimal" | "normal" | "detailed"): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("set_log_verbosity", { verbosity });
+}
+
+export async function clearImagePreviewCache(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("clear_image_preview_cache");
+}
+
+export async function validateExportDirectory(dir: string): Promise<{
+  exists: boolean;
+  is_dir: boolean;
+  writable: boolean;
+  error?: string | null;
+}> {
+  return await invoke("validate_export_directory", { dir });
+}
+
+export async function checkExportConflicts(paths: string[]): Promise<string[]> {
+  if (!isTauriRuntime()) return [];
+  return await invoke("check_export_conflicts", { paths });
+}
+
+export async function resolveUniqueExportPath(path: string): Promise<string> {
+  if (!isTauriRuntime()) return path;
+  return await invoke("resolve_unique_export_path", { path });
+}
+
+export async function renderPdfPagePreviewFile(
+  path: string,
+  pageIndex: number,
+  maxWidth = 1400,
+): Promise<string> {
+  return await invoke("render_pdf_page_preview_file", { path, pageIndex, maxWidth });
+}
+
 export async function renderPdfThumbBase64(
   path: string,
   pageIndex: number,
@@ -356,11 +393,13 @@ export async function packMangaStories(
   outputDir: string,
   options: MangaPackOptions,
   onEvent?: (ev: JobEvent) => void,
+  outputName?: string | null,
 ): Promise<MangaPackSummary> {
   return await invoke("manga_pack", {
     jobId,
     stories,
     outputDir,
+    outputName: outputName && outputName.trim() !== "" ? outputName.trim() : null,
     options,
     onEvent: makeChannel(onEvent),
   });
