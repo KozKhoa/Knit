@@ -44,3 +44,19 @@
 - **Activity Logs & Verbosity**: Added `LogVerbosity` (`minimal` | `normal` | `detailed`) in Settings and `JobReporter::on_log_detail` across `knit-core`, `knit-pdf`, `knit-archive`, `knit-manga`, and `knit-docs`.
 - **Export Filename & Default Export Directory**: Added writable directory validation (`validate_export_directory`) in Settings, per-tool `ExportFilenameControl` with realtime duplicate detection, and `ExportConflictModal` (`Overwrite` / `Auto-append _1, _2` / `Cancel`).
 - **Verification**: `cargo test` (42/42), `cargo check -p knit-desktop` (exit 0), `pnpm build` (exit 0), `pnpm test` (25/25 across 9 files).
+
+## Review v1.10 Implementation (2026-11-16)
+- **Live Destination Conflict Detection**: `useExportFilenameCheck` re-checks `defaultTargetPath` asynchronously every 1500ms (skipped when document hidden) and immediately on window `focus` using O(1) `check_export_conflicts` stat calls.
+- **PDF Merge & Split UX & Layout**:
+  - Moved primary Merge/Split CTA to the top-right header bar (consistent with all other tools) and placed the Merge/Split mode tabs below the header.
+  - Replaced HTML5 drag in Merge/Reorder with pointer-based `hitTestGridInsertIndex` + floating insert bar matching `Image2PdfView`.
+  - Fixed 2px column-button width shift (`Image2PdfView` & `PdfOpsView`) by keeping `border` on active option buttons.
+  - Added Clear All confirmation modal warning when clearing all loaded PDFs.
+- **Terminal-style Activity Logs**: `WorkbenchShell` auto-scrolls Activity Logs to bottom whenever new logs arrive or when opening the Logs drawer (pauses automatically if scrolled up).
+- **Batch Renamer Enhancements**:
+  - Fixed sticky header top subpixel gap (`border-separate border-spacing-0` + `sticky top-0 shadow-[inset_0_-1px_0_#DEE2E6]`).
+  - Fixed horizontal column jitter on scroll (`table-fixed` + `<colgroup>`).
+  - Increased table font size to `text-sm` and added clickable header column sorting (`buildRenamerTree` sibling sort + `sortFlatRenameItems`).
+  - Added Scanned Folders card with per-folder removal and dedicated empty filter-match state (also added empty scan state to Manga Packager).
+- **Manga Packager Active Folder Banner**: Moved green import/rescan highlight onto a dedicated active source folder banner below Dropzone.
+- **Verification**: `cargo test` (42/42), `cargo check -p knit-desktop` (exit 0), `pnpm build` (exit 0), `pnpm test` (26/26 across 9 files).

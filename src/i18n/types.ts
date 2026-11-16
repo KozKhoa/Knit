@@ -204,6 +204,9 @@ export interface Translations {
     removeFileConfirmTitle: string;
     removeFileConfirmDesc: (fileName: string, pageCount: number) => string;
     removeFileConfirmBtn: string;
+    clearAllConfirmTitle: string;
+    clearAllConfirmDesc: (fileCount: number, pageCount: number) => string;
+    clearAllConfirmBtn: string;
     zoomModalTitle: (pageNum: number) => string;
     zoomLoading: string;
     emptySectionHint: string;
@@ -329,6 +332,7 @@ export interface Translations {
     pickFolderBtn: string;
     pickRootDialog: string;
     pickOutDialog: string;
+    activeFolderLabel: string;
     noInfoJson: string;
     chaptersAndPages: (chapters: number, pages: number) => string;
     editInfoJsonBtn: string;
@@ -390,6 +394,10 @@ export interface Translations {
     selectAllBtn: string;
     deselectAllBtn: string;
     clearFoldersBtn: string;
+    scannedFoldersHeading: (count: number) => string;
+    removeFolderBtnTitle: string;
+    emptyMatchTitle: string;
+    emptyMatchDesc: string;
     viewTreeBtn: string;
     viewFlatBtn: string;
     expandAllBtn: string;

@@ -83,6 +83,24 @@ export const WorkbenchShell: React.FC<WorkbenchShellProps> = ({
   const [drawerTab, setDrawerTab] = React.useState<"logs" | "history">("logs");
   const [metrics, setMetrics] = React.useState<AppMetrics | null>(null);
   const shellRef = React.useRef<HTMLDivElement | null>(null);
+  const logsContainerRef = React.useRef<HTMLDivElement | null>(null);
+  const logsPinnedToBottomRef = React.useRef(true);
+
+  React.useEffect(() => {
+    if (drawerOpen && drawerTab === "logs") {
+      logsPinnedToBottomRef.current = true;
+    }
+  }, [drawerOpen, drawerTab]);
+
+  React.useEffect(() => {
+    if (!drawerOpen || drawerTab !== "logs" || !logsPinnedToBottomRef.current) return;
+    const el = logsContainerRef.current;
+    if (!el) return;
+    const raf = window.requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, [logs, drawerOpen, drawerTab]);
 
   React.useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -395,7 +413,16 @@ export const WorkbenchShell: React.FC<WorkbenchShellProps> = ({
                 </div>
               </div>
 
-              <div className="flex-1 overflow-y-auto p-3">
+              <div
+                ref={logsContainerRef}
+                onScroll={(e) => {
+                  if (drawerTab !== "logs") return;
+                  const el = e.currentTarget;
+                  logsPinnedToBottomRef.current =
+                    el.scrollHeight - el.scrollTop - el.clientHeight < 36;
+                }}
+                className="flex-1 overflow-y-auto p-3"
+              >
                 {drawerTab === "logs" ? (
                   logs.length === 0 ? (
                     <div className="py-6 text-center text-sm text-[#6C757D]">

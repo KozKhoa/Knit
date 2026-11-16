@@ -435,6 +435,39 @@ export const MangaPackView: React.FC<MangaPackViewProps> = ({
         loading={scanningFolder}
       />
 
+      {rootDir && (
+        <div
+          className={`flex flex-wrap items-center justify-between gap-2 rounded-[4px] border px-3.5 py-2.5 text-sm transition-colors duration-300 ${
+            importHighlighted
+              ? "border-[#28A745] bg-[#D4EDDA]/50"
+              : "border-[#DEE2E6] bg-white"
+          }`}
+        >
+          <div className="flex min-w-0 items-center gap-2">
+            <Folder
+              className={`h-4 w-4 shrink-0 ${
+                importHighlighted ? "text-[#28A745]" : "text-[#007BFF]"
+              }`}
+            />
+            <span className="shrink-0 font-semibold text-[#343A40]">
+              {t.mangaPack.activeFolderLabel}
+            </span>
+            <span className="font-mono-code truncate text-xs text-[#212529]" title={rootDir}>
+              {rootDir}
+            </span>
+          </div>
+          <span className="shrink-0 font-mono-code text-xs text-[#6C757D]">
+            {stories.length} stories
+          </span>
+        </div>
+      )}
+
+      {rootDir && !scanningFolder && stories.length === 0 && (
+        <div className="rounded-[4px] border border-[#DEE2E6] bg-white px-4 py-6 text-center text-sm text-[#6C757D]">
+          {t.renamer.emptyMatchTitle}
+        </div>
+      )}
+
       {stories.length > 0 && (
         <ExportFilenameControl
           value={exportFilename}
@@ -446,11 +479,7 @@ export const MangaPackView: React.FC<MangaPackViewProps> = ({
       )}
 
       {stories.length > 0 && (
-        <div
-          className={`space-y-3 rounded-[4px] transition-colors duration-300 ${
-            importHighlighted ? "bg-[#D4EDDA]/35 p-2 ring-1 ring-[#28A745]" : ""
-          }`}
-        >
+        <div className="space-y-3">
           {stories.map((st) => (
             <StoryCard
               key={st.path}

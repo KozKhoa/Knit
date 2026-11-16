@@ -24,7 +24,87 @@ export interface FlattenedTreeRow {
   someSelected: boolean;
 }
 
+export type RenamerSortField = "none" | "type" | "original" | "new" | "status";
+export type RenamerSortDir = "asc" | "desc";
+
 const naturalCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
+function compareTreeNodes(
+  a: RenamerTreeNode,
+  b: RenamerTreeNode,
+  sortField: RenamerSortField,
+  sortDir: RenamerSortDir,
+): number {
+  const dirMul = sortDir === "asc" ? 1 : -1;
+  switch (sortField) {
+    case "type": {
+      if (a.isDir !== b.isDir) return (a.isDir ? -1 : 1) * dirMul;
+      return naturalCollator.compare(a.name, b.name);
+    }
+    case "original": {
+      const cmp = naturalCollator.compare(a.name, b.name);
+      if (cmp !== 0) return cmp * dirMul;
+      return a.isDir === b.isDir ? 0 : a.isDir ? -1 : 1;
+    }
+    case "new": {
+      const aNew = a.item ? a.item.new_name : a.name;
+      const bNew = b.item ? b.item.new_name : b.name;
+      const cmp = naturalCollator.compare(aNew, bNew);
+      if (cmp !== 0) return cmp * dirMul;
+      return naturalCollator.compare(a.name, b.name);
+    }
+    case "status": {
+      const aSt = a.item?.status ?? "";
+      const bSt = b.item?.status ?? "";
+      const cmp = aSt.localeCompare(bSt);
+      if (cmp !== 0) return cmp * dirMul;
+      return naturalCollator.compare(a.name, b.name);
+    }
+    case "none":
+    default: {
+      if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+      return naturalCollator.compare(a.name, b.name);
+    }
+  }
+}
+
+export function sortFlatRenameItems(
+  items: RenameItem[],
+  sortField: RenamerSortField,
+  sortDir: RenamerSortDir,
+): { item: RenameItem; planIndex: number }[] {
+  const indexed = items.map((item, planIndex) => ({ item, planIndex }));
+  if (sortField === "none") return indexed;
+  const dirMul = sortDir === "asc" ? 1 : -1;
+  indexed.sort((a, b) => {
+    let cmp = 0;
+    switch (sortField) {
+      case "type":
+        if (a.item.is_dir !== b.item.is_dir) {
+          cmp = a.item.is_dir ? -1 : 1;
+        } else {
+          cmp = naturalCollator.compare(a.item.original_name, b.item.original_name);
+          return cmp;
+        }
+        break;
+      case "original":
+        cmp = naturalCollator.compare(a.item.original_name, b.item.original_name);
+        break;
+      case "new":
+        cmp = naturalCollator.compare(a.item.new_name, b.item.new_name);
+        break;
+      case "status":
+        cmp = a.item.status.localeCompare(b.item.status);
+        if (cmp === 0) {
+          return naturalCollator.compare(a.item.original_name, b.item.original_name);
+        }
+        break;
+    }
+    if (cmp !== 0) return cmp * dirMul;
+    return a.planIndex - b.planIndex;
+  });
+  return indexed;
+}
 
 function pathParent(p: string): string {
   const norm = p.replace(/[\\/]+$/, "");
@@ -47,7 +127,12 @@ function normalizePathKey(p: string): string {
  * bottom-up for safe renaming). Virtual folder group nodes are synthesized when
  * intermediate directories are excluded by `ScanFilter` (e.g. `target_type = "files"`).
  */
-export function buildRenamerTree(items: RenameItem[], roots: string[]): RenamerTreeNode[] {
+export function buildRenamerTree(
+  items: RenameItem[],
+  roots: string[],
+  sortField: RenamerSortField = "none",
+  sortDir: RenamerSortDir = "asc",
+): RenamerTreeNode[] {
   if (items.length === 0) return [];
 
   const rootSet = new Set(roots.map(normalizePathKey).filter(Boolean));
@@ -150,12 +235,9 @@ export function buildRenamerTree(items: RenameItem[], roots: string[]): RenamerT
     attachToParent(node);
   }
 
-  // 3. Sort children naturally (folders first, then natural name order) and aggregate subtree indices
+  // 3. Sort children (naturally or by column) and aggregate subtree indices
   const finalize = (node: RenamerTreeNode): number[] => {
-    node.children.sort((a, b) => {
-      if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-      return naturalCollator.compare(a.name, b.name);
-    });
+    node.children.sort((a, b) => compareTreeNodes(a, b, sortField, sortDir));
     const indices: number[] = node.planIndex !== null ? [node.planIndex] : [];
     for (const child of node.children) {
       indices.push(...finalize(child));
@@ -164,10 +246,7 @@ export function buildRenamerTree(items: RenameItem[], roots: string[]): RenamerT
     return indices;
   };
 
-  topLevelNodes.sort((a, b) => {
-    if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-    return naturalCollator.compare(a.name, b.name);
-  });
+  topLevelNodes.sort((a, b) => compareTreeNodes(a, b, sortField, sortDir));
   for (const top of topLevelNodes) {
     finalize(top);
   }

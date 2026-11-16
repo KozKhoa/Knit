@@ -206,6 +206,10 @@ export const en: Translations = {
     removeFileConfirmDesc: (fileName, pageCount) =>
       `Removing "${fileName}" will also remove all ${pageCount} page(s) belonging to it from the merge list. Continue?`,
     removeFileConfirmBtn: "Remove file & pages",
+    clearAllConfirmTitle: "Confirm Clear All PDFs",
+    clearAllConfirmDesc: (fileCount, pageCount) =>
+      `This will remove all ${fileCount} loaded PDF file(s) (${pageCount} pages) from the current list. Are you sure?`,
+    clearAllConfirmBtn: "Clear all files",
     zoomModalTitle: (pageNum) => `Page ${pageNum}`,
     zoomLoading: "Rendering high-resolution page preview...",
     emptySectionHint: "Drag & drop pages into this section",
@@ -373,6 +377,7 @@ export const en: Translations = {
     pickFolderBtn: "Choose Manga folder",
     pickRootDialog: "Select Manga folder (single story or multi-story library)",
     pickOutDialog: "Select output folder for ZIP files",
+    activeFolderLabel: "Active source folder:",
     noInfoJson: "No info.json",
     chaptersAndPages: (chapters, pages) => `${chapters} chapters · ${pages} pages`,
     editInfoJsonBtn: "Edit info.json",
@@ -437,6 +442,11 @@ export const en: Translations = {
     selectAllBtn: "Select all",
     deselectAllBtn: "Deselect all",
     clearFoldersBtn: "Clear folders",
+    scannedFoldersHeading: (count) => `Scanned folders (${count})`,
+    removeFolderBtnTitle: "Remove this folder from scan list",
+    emptyMatchTitle: "No files or folders match current filter",
+    emptyMatchDesc:
+      "Scanning finished, but no items matched your Layer 1 Scan Filter criteria (Target Type, Extensions, Include/Exclude).",
     viewTreeBtn: "Tree view",
     viewFlatBtn: "Flat table",
     expandAllBtn: "Expand all",

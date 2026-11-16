@@ -55,19 +55,36 @@ export function useExportFilenameCheck(
       return;
     }
     let cancelled = false;
-    const timer = window.setTimeout(() => {
+    let inFlight = false;
+
+    const runCheck = () => {
+      if (cancelled || inFlight) return;
+      inFlight = true;
       void checkExportConflicts([defaultTargetPath])
         .then((hits) => {
           if (!cancelled) setExistsAtDefaultDir(hits.length > 0);
         })
         .catch(() => {
           if (!cancelled) setExistsAtDefaultDir(false);
+        })
+        .finally(() => {
+          inFlight = false;
         });
-    }, 180);
+    };
+
+    const initialTimer = window.setTimeout(runCheck, 180);
+    const pollTimer = window.setInterval(() => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      runCheck();
+    }, 1500);
+    const onFocus = () => runCheck();
+    window.addEventListener("focus", onFocus);
 
     return () => {
       cancelled = true;
-      window.clearTimeout(timer);
+      window.clearTimeout(initialTimer);
+      window.clearInterval(pollTimer);
+      window.removeEventListener("focus", onFocus);
     };
   }, [defaultTargetPath]);
 

@@ -206,6 +206,10 @@ export const vi: Translations = {
     removeFileConfirmDesc: (fileName, pageCount) =>
       `Xóa tệp "${fileName}" sẽ đồng thời xóa ${pageCount} trang thuộc tệp này khỏi danh sách gộp. Bạn có chắc muốn xóa không?`,
     removeFileConfirmBtn: "Xóa tệp & các trang",
+    clearAllConfirmTitle: "Xác nhận xóa tất cả tệp PDF",
+    clearAllConfirmDesc: (fileCount, pageCount) =>
+      `Thao tác này sẽ xóa toàn bộ ${fileCount} tệp PDF đã nạp (${pageCount} trang) khỏi danh sách hiện tại. Bạn có chắc muốn xóa tất cả không?`,
+    clearAllConfirmBtn: "Xóa tất cả tệp",
     zoomModalTitle: (pageNum) => `Xem trang ${pageNum}`,
     zoomLoading: "Đang dựng ảnh trang độ phân giải cao...",
     emptySectionHint: "Kéo thả các trang vào section này",
@@ -374,6 +378,7 @@ export const vi: Translations = {
     pickFolderBtn: "Chọn thư mục Manga",
     pickRootDialog: "Chọn thư mục Manga (1 truyện hoặc thư viện nhiều truyện)",
     pickOutDialog: "Chọn thư mục lưu tệp ZIP đầu ra",
+    activeFolderLabel: "Thư mục nguồn đang thao tác:",
     noInfoJson: "Không có info.json",
     chaptersAndPages: (chapters, pages) => `${chapters} chương · ${pages} trang ảnh`,
     editInfoJsonBtn: "Sửa info.json",
@@ -438,6 +443,11 @@ export const vi: Translations = {
     selectAllBtn: "Chọn tất cả",
     deselectAllBtn: "Bỏ chọn tất cả",
     clearFoldersBtn: "Xóa thư mục",
+    scannedFoldersHeading: (count) => `Thư mục đang quét (${count})`,
+    removeFolderBtnTitle: "Bỏ thư mục này khỏi danh sách quét",
+    emptyMatchTitle: "Không có tệp hoặc thư mục nào khớp bộ lọc",
+    emptyMatchDesc:
+      "Thư mục đã quét hoàn tất nhưng không tìm thấy mục nào đáp ứng điều kiện lọc (Loại đối tượng, Đuôi tệp, Include/Exclude) ở Lớp 1.",
     viewTreeBtn: "Cây thư mục",
     viewFlatBtn: "Bảng phẳng",
     expandAllBtn: "Mở hết",

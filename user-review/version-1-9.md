@@ -1,5 +1,4 @@
 - Hiện tại trong tool image2pdf, khi tôi xóa danh sách cách ảnh ra thì RAM chưa được giải phóng. Tôi kỳ vọng RAM sẽ được giải phóng khi xóa ảnh ra khỏi danh sách
-- Trong setting, bổ sung thêm option giới hạn phần trăm cpu mà app có thể dùng, tối đa là 100%, tối thiểu là 5%, bước nhảy là 5%. Mặc định là 100%
 - Hiện tại thì khi tôi tiến hành import một file nào đó vào (vd ở tool pdf merge & split, document to pdf,), thì tuy là vẫn import dược như thường, không có vấn đề gì cả, nhưng mà phần UX cần phải làm nổi bật hơn là file đã được import vào thành công rồi, như là hiện cái toast nhỏ cỡ 1s báo là đã import xong rôi hoặc là tô màu nền nhẹ cho cái đường dẫn của file đã import vào.
 - Trong tool pdf merge and split, phần split pdf, tôi muốn khi tôi double click vào page pdf trong section source pdf page thì sẽ mở modal và phóng to cái page pdf đó ra.
 - Trong tool pdf merge and split, phần split pdf, cỡ chữ của section source pdf page hiện tại quá nhỏ, tôi muốn nó to hơn một tý (có thể chỉ nhỏ hơn cỡ chữ hiện tại của app một bậc)

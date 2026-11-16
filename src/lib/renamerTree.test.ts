@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RenameItem } from "../types/ipc";
-import { buildRenamerTree, flattenVisibleTree } from "./renamerTree";
+import { buildRenamerTree, flattenVisibleTree, sortFlatRenameItems } from "./renamerTree";
 
 function makeItem(overrides: Partial<RenameItem> & Pick<RenameItem, "id" | "original_path" | "original_name" | "parent_dir" | "is_dir" | "depth">): RenameItem {
   return {
@@ -88,5 +88,36 @@ describe("renamerTree", () => {
     expect(tree[0].planIndex).toBeNull();
     expect(tree[0].subtreePlanIndices).toEqual([0]);
     expect(tree[0].children[0].name).toBe("01.jpg");
+  });
+
+  it("sorts siblings within tree folders and flat list when sorting by header", () => {
+    const items: RenameItem[] = [
+      makeItem({
+        id: "1",
+        original_path: "/root/b.png",
+        original_name: "b.png",
+        new_name: "z.png",
+        parent_dir: "/root",
+        is_dir: false,
+        depth: 1,
+        status: "pending",
+      }),
+      makeItem({
+        id: "2",
+        original_path: "/root/a.png",
+        original_name: "a.png",
+        new_name: "a.png",
+        parent_dir: "/root",
+        is_dir: false,
+        depth: 1,
+        status: "unchanged",
+      }),
+    ];
+
+    const descOrigTree = buildRenamerTree(items, ["/root"], "original", "desc");
+    expect(descOrigTree.map((n) => n.name)).toEqual(["b.png", "a.png"]);
+
+    const ascNewFlat = sortFlatRenameItems(items, "new", "asc");
+    expect(ascNewFlat.map((e) => e.item.new_name)).toEqual(["a.png", "z.png"]);
   });
 });

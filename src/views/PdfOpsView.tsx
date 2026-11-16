@@ -44,6 +44,7 @@ import {
   splitPdfFile,
 } from "../lib/ipc";
 import { joinDirAndFile, useExportFilenameCheck } from "../lib/exportPath";
+import { hitTestGridInsertIndex } from "../lib/imageGrid";
 import { usePersistentState } from "../lib/storage";
 import { useVerticalResize } from "../hooks/useVerticalResize";
 import type {
@@ -122,7 +123,11 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
     5,
   );
   const [mergeDragIdx, setMergeDragIdx] = React.useState<number | null>(null);
-  const [mergeHoverIdx, setMergeHoverIdx] = React.useState<number | null>(null);
+  const [mergeInsertAt, setMergeInsertAt] = React.useState<number | null>(null);
+  const mergeGridRef = React.useRef<HTMLDivElement | null>(null);
+  const selectionsLengthRef = React.useRef<number>(selections.length);
+  selectionsLengthRef.current = selections.length;
+  const [pendingClearAll, setPendingClearAll] = React.useState(false);
   const [thumbs, setThumbs] = React.useState<Record<string, string>>({});
   const [thumbLimit, setThumbLimit] = React.useState<number>(INITIAL_THUMB_LIMIT);
   const [preserveBookmarks, setPreserveBookmarks] = usePersistentState<boolean>(
@@ -418,6 +423,89 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
       return copy;
     });
   }, []);
+
+  const handleMergeCardPointerDown = React.useCallback(
+    (e: React.PointerEvent<HTMLDivElement>, idx: number) => {
+      if (e.button !== 0) return;
+      if ((e.target as HTMLElement).closest("button")) return;
+
+      const startX = e.clientX;
+      const startY = e.clientY;
+      let dragging = false;
+      let latestX = startX;
+      let latestY = startY;
+      let rafId: number | null = null;
+
+      const computeInsert = (clientX: number, clientY: number): number | null => {
+        const gridEl = mergeGridRef.current;
+        if (!gridEl) return null;
+        const rect = gridEl.getBoundingClientRect();
+        const colsRaw = window.getComputedStyle(gridEl).gridTemplateColumns.trim();
+        const colCount = colsRaw ? colsRaw.split(/\s+/).length : mergeGridCols;
+        const firstCard = gridEl.firstElementChild as HTMLElement | null;
+        const cardHeight = firstCard ? firstCard.getBoundingClientRect().height : 200;
+        const gapPx = 12;
+        return hitTestGridInsertIndex({
+          gridLeft: rect.left,
+          gridTop: rect.top,
+          gridWidth: rect.width,
+          gridCols: Math.max(1, colCount),
+          gapPx,
+          rowStride: cardHeight + gapPx,
+          totalItems: selectionsLengthRef.current,
+          clientX,
+          clientY,
+        });
+      };
+
+      const onMove = (ev: PointerEvent) => {
+        latestX = ev.clientX;
+        latestY = ev.clientY;
+        if (!dragging && Math.hypot(latestX - startX, latestY - startY) < 6) {
+          return;
+        }
+        if (!dragging) {
+          dragging = true;
+          setMergeDragIdx(idx);
+          document.body.style.userSelect = "none";
+          document.body.style.cursor = "grabbing";
+        }
+        if (rafId !== null) return;
+        rafId = window.requestAnimationFrame(() => {
+          rafId = null;
+          setMergeInsertAt(computeInsert(latestX, latestY));
+        });
+      };
+
+      const finish = (ev: PointerEvent) => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", finish);
+        window.removeEventListener("pointercancel", finish);
+        if (rafId !== null) {
+          window.cancelAnimationFrame(rafId);
+          rafId = null;
+        }
+        document.body.style.userSelect = "";
+        document.body.style.cursor = "";
+        if (dragging) {
+          const finalInsert = computeInsert(ev.clientX, ev.clientY);
+          if (finalInsert !== null) {
+            const targetIdx = finalInsert > idx ? finalInsert - 1 : finalInsert;
+            if (targetIdx !== idx) {
+              reorderMergeSelection(idx, targetIdx);
+            }
+          }
+        }
+        setMergeDragIdx(null);
+        setMergeInsertAt(null);
+      };
+
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", finish);
+      window.addEventListener("pointercancel", finish);
+    },
+    [mergeGridCols, reorderMergeSelection],
+  );
 
   const confirmRemoveImportedFile = React.useCallback(() => {
     const removeIdx = pendingRemoveFileIdx;
@@ -839,28 +927,57 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
           <p className="text-sm text-[#6C757D]">{t.pdfOps.subtitle}</p>
         </div>
 
-        <div className="flex items-center gap-1 rounded-[4px] border border-[#CED4DA] bg-white p-1">
+        {tab === "merge" ? (
           <button
             type="button"
-            onClick={() => setTab("merge")}
-            className={`knit-control-sm flex items-center gap-1.5 rounded-[4px] px-3 text-sm font-semibold ${
-              tab === "merge" ? "bg-[#007BFF] text-white" : "text-[#495057]"
-            }`}
+            disabled={busy || files.length === 0 || selections.length === 0}
+            onClick={() => void handleMerge()}
+            className="knit-control inline-flex items-center gap-1.5 rounded-[4px] bg-[#007BFF] px-4 text-sm font-semibold text-white hover:bg-[#0069D9] disabled:opacity-50"
           >
-            <Layers className="h-4 w-4" />
-            {t.pdfOps.mergeTab}
+            <FilePlus className="h-4 w-4" />
+            {t.pdfOps.mergeBtn(selections.length)}
           </button>
+        ) : (
           <button
             type="button"
-            onClick={() => setTab("split")}
-            className={`knit-control-sm flex items-center gap-1.5 rounded-[4px] px-3 text-sm font-semibold ${
-              tab === "split" ? "bg-[#007BFF] text-white" : "text-[#495057]"
-            }`}
+            disabled={busy || !sourcePdf}
+            onClick={() => void handleSplit()}
+            className="knit-control inline-flex items-center gap-1.5 rounded-[4px] bg-[#007BFF] px-4 text-sm font-semibold text-white hover:bg-[#0069D9] disabled:opacity-50"
           >
             <Scissors className="h-4 w-4" />
-            {t.pdfOps.splitTab}
+            {splitRuleKind !== "max_bytes" && nonEmptySections.length > 0
+              ? t.pdfOps.splitCustomBtn(nonEmptySections.length, totalCustomPages)
+              : t.pdfOps.splitBtn}
           </button>
-        </div>
+        )}
+      </div>
+
+      {/* Mode Switcher Tabs */}
+      <div className="inline-flex items-center gap-1 rounded-[4px] border border-[#CED4DA] bg-white p-1">
+        <button
+          type="button"
+          onClick={() => setTab("merge")}
+          className={`knit-control-sm flex items-center gap-1.5 rounded-[4px] border px-3 text-sm font-semibold ${
+            tab === "merge"
+              ? "border-[#007BFF] bg-[#007BFF] text-white"
+              : "border-transparent text-[#495057] hover:bg-[#F8F9FA]"
+          }`}
+        >
+          <Layers className="h-4 w-4" />
+          {t.pdfOps.mergeTab}
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab("split")}
+          className={`knit-control-sm flex items-center gap-1.5 rounded-[4px] border px-3 text-sm font-semibold ${
+            tab === "split"
+              ? "border-[#007BFF] bg-[#007BFF] text-white"
+              : "border-transparent text-[#495057] hover:bg-[#F8F9FA]"
+          }`}
+        >
+          <Scissors className="h-4 w-4" />
+          {t.pdfOps.splitTab}
+        </button>
       </div>
 
       {errorMsg && (
@@ -890,13 +1007,7 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
             </span>
             <button
               type="button"
-              onClick={() => {
-                setFiles([]);
-                setSelections([]);
-                setMergeBookmarks([]);
-                setThumbs({});
-                setSplitSections([]);
-              }}
+              onClick={() => setPendingClearAll(true)}
               className="text-xs font-semibold text-[#DC3545] hover:underline"
             >
               {t.common.clearAll}
@@ -950,10 +1061,10 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
                     key={cols}
                     type="button"
                     onClick={() => setMergeGridCols(cols)}
-                    className={`knit-control-sm rounded-[4px] px-2.5 font-mono-code text-xs font-semibold ${
+                    className={`knit-control-sm rounded-[4px] border px-2.5 font-mono-code text-xs font-semibold ${
                       mergeGridCols === cols
-                        ? "bg-[#007BFF] text-white"
-                        : "border border-[#CED4DA] bg-[#F8F9FA] text-[#343A40] hover:bg-[#E9ECEF]"
+                        ? "border-[#007BFF] bg-[#007BFF] text-white"
+                        : "border-[#CED4DA] bg-[#F8F9FA] text-[#343A40] hover:bg-[#E9ECEF]"
                     }`}
                   >
                     {cols}
@@ -976,16 +1087,6 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
                       : t.pdfOps.toggleBookmarksShow}
                   </button>
                 )}
-
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void handleMerge()}
-                  className="knit-control inline-flex items-center gap-1.5 rounded-[4px] bg-[#007BFF] px-4 text-sm font-semibold text-white hover:bg-[#0069D9] disabled:opacity-50"
-                >
-                  <FilePlus className="h-4 w-4" />
-                  {t.pdfOps.mergeBtn(selections.length)}
-                </button>
               </div>
             </div>
 
@@ -1013,40 +1114,27 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
                 <span>{t.pdfOps.mergeDragHint}</span>
               </div>
 
-              <div className={`grid gap-3 ${MERGE_GRID_CLASS[mergeGridCols] ?? "grid-cols-2 md:grid-cols-5"}`}>
+              <div
+                ref={mergeGridRef}
+                className={`grid gap-3 ${MERGE_GRID_CLASS[mergeGridCols] ?? "grid-cols-2 md:grid-cols-5"}`}
+              >
                 {selections.map((sel, idx) => {
                   const key = `${sel.file_index}:${sel.page_index}`;
                   const isDragging = mergeDragIdx === idx;
-                  const isHoverTarget =
-                    mergeDragIdx !== null && mergeHoverIdx === idx && mergeDragIdx !== idx;
+                  const isNoOpInsert =
+                    mergeDragIdx !== null &&
+                    mergeInsertAt !== null &&
+                    (mergeInsertAt === mergeDragIdx || mergeInsertAt === mergeDragIdx + 1);
+                  const showBarLeft = !isNoOpInsert && mergeInsertAt === idx;
+                  const showBarEnd =
+                    !isNoOpInsert &&
+                    idx === selections.length - 1 &&
+                    mergeInsertAt === selections.length;
                   const srcPath = files[sel.file_index]?.path ?? "";
                   return (
                     <div
                       key={`${key}-${idx}`}
-                      draggable
-                      onDragStart={(e) => {
-                        setMergeDragIdx(idx);
-                        e.dataTransfer.effectAllowed = "move";
-                        e.dataTransfer.setData("text/plain", String(idx));
-                      }}
-                      onDragOver={(e) => {
-                        if (mergeDragIdx === null) return;
-                        e.preventDefault();
-                        e.dataTransfer.dropEffect = "move";
-                        if (mergeHoverIdx !== idx) setMergeHoverIdx(idx);
-                      }}
-                      onDrop={(e) => {
-                        e.preventDefault();
-                        if (mergeDragIdx !== null) {
-                          reorderMergeSelection(mergeDragIdx, idx);
-                        }
-                        setMergeDragIdx(null);
-                        setMergeHoverIdx(null);
-                      }}
-                      onDragEnd={() => {
-                        setMergeDragIdx(null);
-                        setMergeHoverIdx(null);
-                      }}
+                      onPointerDown={(e) => handleMergeCardPointerDown(e, idx)}
                       onDoubleClick={() => {
                         if (!srcPath) return;
                         setZoomTarget({
@@ -1056,69 +1144,85 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
                           fallbackThumbSrc: thumbs[key],
                         });
                       }}
-                      className={`flex cursor-grab select-none flex-col overflow-hidden rounded-[4px] border bg-white active:cursor-grabbing ${
-                        isDragging
-                          ? "border-[#007BFF] opacity-45 ring-2 ring-[#007BFF]"
-                          : isHoverTarget
-                            ? "border-[#007BFF] ring-2 ring-[#007BFF]/45"
-                            : "border-[#DEE2E6] hover:border-[#007BFF]"
-                      }`}
+                      className="relative"
                     >
-                      <div className="relative flex h-32 items-center justify-center bg-[#F1F3F5] p-1">
-                        {thumbs[key] ? (
-                          <img
-                            src={thumbs[key]}
-                            alt={`File ${sel.file_index + 1} P${sel.page_index + 1}`}
-                            draggable={false}
-                            className="pointer-events-none max-h-full max-w-full object-contain"
-                            style={{ transform: `rotate(${sel.rotation_deg}deg)` }}
-                          />
-                        ) : (
-                          <span className="font-mono-code text-xs text-[#6C757D]">
-                            F{sel.file_index + 1}·P{sel.page_index + 1}
-                          </span>
-                        )}
-                        <span className="absolute left-1 top-1 flex items-center gap-0.5 rounded-[4px] bg-[#343A40] px-1.5 py-0.5 font-mono-code text-[11px] text-white">
-                          <GripVertical className="h-3 w-3 text-[#ADB5BD]" />#{idx + 1}
-                        </span>
-                      </div>
-                      <div className="border-t border-[#DEE2E6] p-2">
-                        <div className="font-mono-code text-xs text-[#6C757D]">
-                          {t.pdfOps.pageMeta(
-                            sel.file_index + 1,
-                            sel.page_index + 1,
-                            sel.rotation_deg,
+                      {showBarLeft && (
+                        <div
+                          aria-hidden="true"
+                          className="pointer-events-none absolute -left-[9px] bottom-0 top-0 z-30 w-1.5 rounded-full bg-[#007BFF] shadow-[0_0_8px_rgba(0,123,255,0.75)]"
+                        />
+                      )}
+                      {showBarEnd && (
+                        <div
+                          aria-hidden="true"
+                          className="pointer-events-none absolute -right-[9px] bottom-0 top-0 z-30 w-1.5 rounded-full bg-[#007BFF] shadow-[0_0_8px_rgba(0,123,255,0.75)]"
+                        />
+                      )}
+                      <div
+                        className={`flex select-none flex-col overflow-hidden rounded-[4px] border bg-white ${
+                          mergeDragIdx !== null ? "cursor-grabbing" : "cursor-grab"
+                        } ${
+                          isDragging
+                            ? "border-[#007BFF] opacity-40 ring-2 ring-[#007BFF]"
+                            : "border-[#DEE2E6] hover:border-[#007BFF]"
+                        }`}
+                      >
+                        <div className="relative flex h-32 items-center justify-center bg-[#F1F3F5] p-1">
+                          {thumbs[key] ? (
+                            <img
+                              src={thumbs[key]}
+                              alt={`File ${sel.file_index + 1} P${sel.page_index + 1}`}
+                              draggable={false}
+                              className="pointer-events-none max-h-full max-w-full object-contain"
+                              style={{ transform: `rotate(${sel.rotation_deg}deg)` }}
+                            />
+                          ) : (
+                            <span className="font-mono-code text-xs text-[#6C757D]">
+                              F{sel.file_index + 1}·P{sel.page_index + 1}
+                            </span>
                           )}
+                          <span className="absolute left-1 top-1 flex items-center gap-0.5 rounded-[4px] bg-[#343A40] px-1.5 py-0.5 font-mono-code text-[11px] text-white">
+                            <GripVertical className="h-3 w-3 text-[#ADB5BD]" />#{idx + 1}
+                          </span>
                         </div>
-                        <div className="mt-1.5 flex items-center justify-between">
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelections((prev) =>
-                                prev.map((s, i) =>
-                                  i === idx
-                                    ? { ...s, rotation_deg: (s.rotation_deg + 90) % 360 }
-                                    : s,
-                                ),
-                              );
-                            }}
-                            title={t.image2pdf.rotateTitle}
-                            className="rounded-[4px] border border-[#DEE2E6] p-1 text-[#495057] hover:bg-[#F8F9FA]"
-                          >
-                            <RotateCw className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelections((prev) => prev.filter((_, i) => i !== idx));
-                            }}
-                            title={t.image2pdf.deletePageTitle}
-                            className="rounded-[4px] p-1 text-[#DC3545] hover:bg-[#F8D7DA]"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
+                        <div className="border-t border-[#DEE2E6] p-2">
+                          <div className="font-mono-code text-xs text-[#6C757D]">
+                            {t.pdfOps.pageMeta(
+                              sel.file_index + 1,
+                              sel.page_index + 1,
+                              sel.rotation_deg,
+                            )}
+                          </div>
+                          <div className="mt-1.5 flex items-center justify-between">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelections((prev) =>
+                                  prev.map((s, i) =>
+                                    i === idx
+                                      ? { ...s, rotation_deg: (s.rotation_deg + 90) % 360 }
+                                      : s,
+                                  ),
+                                );
+                              }}
+                              title={t.image2pdf.rotateTitle}
+                              className="rounded-[4px] border border-[#DEE2E6] p-1 text-[#495057] hover:bg-[#F8F9FA]"
+                            >
+                              <RotateCw className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelections((prev) => prev.filter((_, i) => i !== idx));
+                              }}
+                              title={t.image2pdf.deletePageTitle}
+                              className="rounded-[4px] p-1 text-[#DC3545] hover:bg-[#F8D7DA]"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -1217,18 +1321,6 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
                 {t.pdfOps.generateSectionsBtn}
               </button>
             )}
-
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void handleSplit()}
-              className="knit-control inline-flex items-center gap-1.5 rounded-[4px] bg-[#007BFF] px-4 text-sm font-semibold text-white hover:bg-[#0069D9] disabled:opacity-50"
-            >
-              <Scissors className="h-4 w-4" />
-              {splitRuleKind !== "max_bytes" && nonEmptySections.length > 0
-                ? t.pdfOps.splitCustomBtn(nonEmptySections.length, totalCustomPages)
-                : t.pdfOps.splitBtn}
-            </button>
           </div>
 
           {/* Visual Drag-and-Drop Source Pages + Output Sections */}
@@ -1691,6 +1783,65 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
                 className="knit-control-sm rounded-[4px] bg-[#DC3545] px-3 text-xs font-semibold text-white hover:bg-[#C82333]"
               >
                 {t.pdfOps.removeFileConfirmBtn}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirm Clear All PDFs Modal */}
+      {pendingClearAll && files.length > 0 && (
+        <div
+          onClick={() => setPendingClearAll(false)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md rounded-[4px] border border-[#DEE2E6] bg-white shadow-xl"
+          >
+            <div className="flex items-center justify-between border-b border-[#DEE2E6] bg-[#FFF3CD] px-4 py-3">
+              <div className="flex items-center gap-2 text-sm font-bold text-[#856404]">
+                <AlertTriangle className="h-4 w-4 shrink-0" />
+                <span>{t.pdfOps.clearAllConfirmTitle}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPendingClearAll(false)}
+                aria-label={t.common.close}
+                className="rounded-[4px] p-1 text-[#856404] hover:bg-[#FFEEBA]"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="p-4 text-sm text-[#212529]">
+              {t.pdfOps.clearAllConfirmDesc(
+                files.length,
+                files.reduce((acc, f) => acc + f.page_count, 0),
+              )}
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-[#DEE2E6] bg-[#F8F9FA] px-4 py-3">
+              <button
+                type="button"
+                onClick={() => setPendingClearAll(false)}
+                className="knit-control-sm rounded-[4px] border border-[#CED4DA] bg-white px-3 text-xs font-semibold text-[#343A40] hover:bg-[#E9ECEF]"
+              >
+                {t.common.cancel}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setPendingClearAll(false);
+                  setFiles([]);
+                  setSelections([]);
+                  setMergeBookmarks([]);
+                  setThumbs({});
+                  setSplitSections([]);
+                }}
+                className="knit-control-sm rounded-[4px] bg-[#DC3545] px-3 text-xs font-semibold text-white hover:bg-[#C82333]"
+              >
+                {t.pdfOps.clearAllConfirmBtn}
               </button>
             </div>
           </div>

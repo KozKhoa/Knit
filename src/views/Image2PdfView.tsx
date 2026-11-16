@@ -1649,10 +1649,10 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
                     key={cols}
                     type="button"
                     onClick={() => setGridCols(cols)}
-                    className={`knit-control-sm rounded-[4px] px-2.5 font-mono-code text-xs font-semibold ${
+                    className={`knit-control-sm rounded-[4px] border px-2.5 font-mono-code text-xs font-semibold ${
                       gridCols === cols
-                        ? "bg-[#007BFF] text-white"
-                        : "border border-[#CED4DA] bg-[#F8F9FA] text-[#343A40] hover:bg-[#E9ECEF]"
+                        ? "border-[#007BFF] bg-[#007BFF] text-white"
+                        : "border-[#CED4DA] bg-[#F8F9FA] text-[#343A40] hover:bg-[#E9ECEF]"
                     }`}
                   >
                     {cols}

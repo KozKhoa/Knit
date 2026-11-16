@@ -2,6 +2,9 @@ import React from "react";
 import { Select } from "../components/Select";
 import {
   AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
   Bookmark,
   CheckSquare,
   ChevronDown,
@@ -14,9 +17,14 @@ import {
   ListTree,
   Play,
   RotateCcw,
+  SearchX,
   Trash2,
 } from "lucide-react";
 import { Dropzone } from "../components/Dropzone";
+import {
+  ImportFeedbackToast,
+  useImportFeedback,
+} from "../components/ImportFeedbackToast";
 import { useVerticalResize } from "../hooks/useVerticalResize";
 import { useI18n } from "../i18n";
 import {
@@ -30,7 +38,13 @@ import {
   saveRenamePreset,
   undoLastRename,
 } from "../lib/ipc";
-import { buildRenamerTree, flattenVisibleTree } from "../lib/renamerTree";
+import {
+  buildRenamerTree,
+  flattenVisibleTree,
+  sortFlatRenameItems,
+  type RenamerSortDir,
+  type RenamerSortField,
+} from "../lib/renamerTree";
 import { usePersistentState } from "../lib/storage";
 import type {
   FilterPattern,
@@ -79,6 +93,8 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
   droppedBatch,
 }) => {
   const { t } = useI18n();
+  const { toast: importToast, highlighted: importHighlighted, notifyImported } =
+    useImportFeedback();
 
   const [roots, setRoots] = React.useState<string[]>([]);
   const [targetType, setTargetType] = usePersistentState<TargetType>(
@@ -158,8 +174,9 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
     lastHandledDropSeq.current = droppedBatch.seq;
     if (droppedBatch.paths.length > 0) {
       setRoots((prev) => Array.from(new Set([...prev, ...droppedBatch.paths])));
+      notifyImported(t.common.importSuccessToast(`${droppedBatch.paths.length}`));
     }
-  }, [droppedBatch]);
+  }, [droppedBatch, notifyImported, t.common]);
 
   const buildFilter = (): ScanFilter => {
     const parsePatterns = (raw: string): FilterPattern[] =>
@@ -275,10 +292,26 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
     return () => window.clearTimeout(timer);
   }, [roots, refreshPreview]);
 
+  const [sortField, setSortField] = React.useState<RenamerSortField>("none");
+  const [sortDir, setSortDir] = React.useState<RenamerSortDir>("asc");
+
+  const handleToggleSort = (field: Exclude<RenamerSortField, "none">) => {
+    if (sortField !== field) {
+      setSortField(field);
+      setSortDir("asc");
+    } else if (sortDir === "asc") {
+      setSortDir("desc");
+    } else {
+      setSortField("none");
+      setSortDir("asc");
+    }
+  };
+
   const handleAddRoot = async () => {
     const dir = await pickDirectory(t.renamer.pickDirDialog);
     if (!dir) return;
     setRoots((prev) => Array.from(new Set([...prev, dir])));
+    notifyImported(t.common.importSuccessToast(dir.split(/[\\/]/).pop() ?? dir));
   };
 
   const applySelectionIndices = async (indices: number[], selected: boolean) => {
@@ -314,8 +347,16 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
   };
 
   const treeRoots = React.useMemo(
-    () => buildRenamerTree(plan.items, roots),
-    [plan.items, roots],
+    () => buildRenamerTree(plan.items, roots, sortField, sortDir),
+    [plan.items, roots, sortField, sortDir],
+  );
+
+  const sortedFlatItems = React.useMemo(
+    () =>
+      viewMode === "flat"
+        ? sortFlatRenameItems(plan.items, sortField, sortDir)
+        : [],
+    [viewMode, plan.items, sortField, sortDir],
   );
 
   // Auto-expand small trees on initial scan so small folders are immediately visible
@@ -700,20 +741,91 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
         loading={scanningFolder}
       />
 
+      {roots.length > 0 && (
+        <div
+          className={`space-y-2 rounded-[4px] border p-3.5 transition-colors duration-300 ${
+            importHighlighted
+              ? "border-[#28A745] bg-[#D4EDDA]/45"
+              : "border-[#DEE2E6] bg-white"
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-bold text-[#343A40]">
+              {t.renamer.scannedFoldersHeading(roots.length)}
+            </span>
+            <button
+              type="button"
+              onClick={() => setRoots([])}
+              className="text-xs font-semibold text-[#DC3545] hover:underline"
+            >
+              {t.renamer.clearFoldersBtn}
+            </button>
+          </div>
+          {roots.map((r) => (
+            <div
+              key={r}
+              className={`flex items-center justify-between gap-2 rounded-[4px] border px-3 py-2 text-xs transition-colors duration-300 ${
+                importHighlighted
+                  ? "border-[#A3CFBB] bg-[#E9F7EF]"
+                  : "border-[#E9ECEF] bg-[#F8F9FA]"
+              }`}
+            >
+              <div className="flex min-w-0 flex-1 items-center gap-2">
+                <Folder className="h-3.5 w-3.5 shrink-0 text-[#F59E0B]" />
+                <span className="font-mono-code truncate text-[#212529]" title={r}>
+                  {r}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRoots((prev) => prev.filter((item) => item !== r))}
+                title={t.renamer.removeFolderBtnTitle}
+                className="shrink-0 rounded-[4px] p-1 text-[#DC3545] hover:bg-[#F8D7DA]"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {roots.length > 0 && !scanningFolder && plan.items.length === 0 && (
+        <div className="flex flex-col items-center justify-center rounded-[4px] border border-[#DEE2E6] bg-white px-6 py-10 text-center">
+          <SearchX className="h-8 w-8 text-[#6C757D]" />
+          <div className="mt-2.5 text-base font-bold text-[#343A40]">
+            {t.renamer.emptyMatchTitle}
+          </div>
+          <p className="mt-1 max-w-xl text-sm text-[#6C757D]">
+            {t.renamer.emptyMatchDesc}
+          </p>
+        </div>
+      )}
+
       {/* Layer 2: Dry-Run Preview Table */}
       {plan.items.length > 0 && (() => {
         const selectedCount = plan.items.filter((i) => i.selected).length;
         const allSelected = selectedCount === plan.items.length;
         const someSelected = selectedCount > 0 && selectedCount < plan.items.length;
 
-        const ROW_HEIGHT = 34;
-        const totalRows = viewMode === "tree" ? visibleTreeRows.length : plan.items.length;
+        const ROW_HEIGHT = 38;
+        const totalRows = viewMode === "tree" ? visibleTreeRows.length : sortedFlatItems.length;
         const overscan = 8;
         const visibleCount = Math.ceil(livePreviewHeightPx / ROW_HEIGHT) + overscan * 2;
         const startIdx = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - overscan);
         const endIdx = Math.min(totalRows, startIdx + visibleCount);
         const topPadPx = startIdx * ROW_HEIGHT;
         const bottomPadPx = Math.max(0, (totalRows - endIdx) * ROW_HEIGHT);
+
+        const renderSortIcon = (field: Exclude<RenamerSortField, "none">) => {
+          if (sortField !== field) {
+            return <ArrowUpDown className="h-3.5 w-3.5 opacity-45" />;
+          }
+          return sortDir === "asc" ? (
+            <ArrowUp className="h-3.5 w-3.5 text-[#007BFF]" />
+          ) : (
+            <ArrowDown className="h-3.5 w-3.5 text-[#007BFF]" />
+          );
+        };
 
         return (
           <div className="space-y-1.5">
@@ -799,10 +911,17 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
                 style={{ height: `${livePreviewHeightPx}px` }}
                 className="overflow-auto"
               >
-                <table className="w-full border-collapse text-left text-xs">
-                  <thead className="sticky top-0 z-10 border-b border-[#DEE2E6] bg-[#F8F9FA] text-xs uppercase text-[#6C757D]">
+                <table className="w-full table-fixed border-separate border-spacing-0 text-left text-sm">
+                  <colgroup>
+                    <col className="w-24" />
+                    <col className="w-20" />
+                    <col className="w-[34%]" />
+                    <col className="w-[34%]" />
+                    <col className="w-28" />
+                  </colgroup>
+                  <thead className="text-xs uppercase text-[#6C757D]">
                     <tr>
-                      <th className="w-16 px-3 py-2">
+                      <th className="sticky top-0 z-20 bg-[#F8F9FA] px-3 py-2.5 shadow-[inset_0_-1px_0_#DEE2E6]">
                         <label className="inline-flex cursor-pointer items-center gap-1.5">
                           <input
                             type="checkbox"
@@ -816,10 +935,46 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
                           <span>{t.renamer.colSelect}</span>
                         </label>
                       </th>
-                      <th className="w-16 px-2 py-2">{t.renamer.colType}</th>
-                      <th className="px-3 py-2">{t.renamer.colOriginal}</th>
-                      <th className="px-3 py-2">{t.renamer.colNew}</th>
-                      <th className="w-28 px-3 py-2">{t.renamer.colStatus}</th>
+                      <th className="sticky top-0 z-20 bg-[#F8F9FA] px-2 py-2.5 shadow-[inset_0_-1px_0_#DEE2E6]">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleSort("type")}
+                          className="inline-flex items-center gap-1 uppercase hover:text-[#212529]"
+                        >
+                          <span>{t.renamer.colType}</span>
+                          {renderSortIcon("type")}
+                        </button>
+                      </th>
+                      <th className="sticky top-0 z-20 bg-[#F8F9FA] px-3 py-2.5 shadow-[inset_0_-1px_0_#DEE2E6]">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleSort("original")}
+                          className="inline-flex items-center gap-1 uppercase hover:text-[#212529]"
+                        >
+                          <span>{t.renamer.colOriginal}</span>
+                          {renderSortIcon("original")}
+                        </button>
+                      </th>
+                      <th className="sticky top-0 z-20 bg-[#F8F9FA] px-3 py-2.5 shadow-[inset_0_-1px_0_#DEE2E6]">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleSort("new")}
+                          className="inline-flex items-center gap-1 uppercase hover:text-[#212529]"
+                        >
+                          <span>{t.renamer.colNew}</span>
+                          {renderSortIcon("new")}
+                        </button>
+                      </th>
+                      <th className="sticky top-0 z-20 bg-[#F8F9FA] px-3 py-2.5 shadow-[inset_0_-1px_0_#DEE2E6]">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleSort("status")}
+                          className="inline-flex items-center gap-1 uppercase hover:text-[#212529]"
+                        >
+                          <span>{t.renamer.colStatus}</span>
+                          {renderSortIcon("status")}
+                        </button>
+                      </th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#E9ECEF]">
@@ -847,7 +1002,7 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
                                   : "bg-[#F8F9FA] opacity-60"
                               }
                             >
-                              <td className="px-3 py-1.5">
+                              <td className="border-b border-[#E9ECEF] px-3 py-1.5">
                                 <input
                                   type="checkbox"
                                   checked={isChecked}
@@ -866,12 +1021,12 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
                                   }}
                                 />
                               </td>
-                              <td className="px-2 py-1.5 text-xs text-[#6C757D]">
+                              <td className="border-b border-[#E9ECEF] px-2 py-1.5 text-xs font-medium text-[#6C757D]">
                                 {node.isDir ? "DIR" : "FILE"}
                               </td>
-                              <td className="px-3 py-1.5 text-[#495057]">
+                              <td className="overflow-hidden border-b border-[#E9ECEF] px-3 py-1.5 text-[#495057]">
                                 <div
-                                  className="flex items-center gap-1"
+                                  className="flex min-w-0 items-center gap-1"
                                   style={{ paddingLeft: `${treeDepth * 16}px` }}
                                 >
                                   {hasChildren ? (
@@ -891,24 +1046,27 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
                                   )}
                                   {node.isDir &&
                                     (isExpanded ? (
-                                      <FolderOpen className="h-3.5 w-3.5 shrink-0 text-[#007BFF]" />
+                                      <FolderOpen className="h-4 w-4 shrink-0 text-[#007BFF]" />
                                     ) : (
-                                      <Folder className="h-3.5 w-3.5 shrink-0 text-[#F59E0B]" />
+                                      <Folder className="h-4 w-4 shrink-0 text-[#F59E0B]" />
                                     ))}
                                   <span className="truncate" title={item?.original_path ?? row.key}>
                                     {node.name}
                                   </span>
                                 </div>
                               </td>
-                              <td className="px-3 py-1.5 font-semibold text-[#212529]">
-                                <span className="block truncate">
+                              <td className="overflow-hidden border-b border-[#E9ECEF] px-3 py-1.5 font-semibold text-[#212529]">
+                                <span
+                                  className="block truncate"
+                                  title={item ? item.new_name : node.name}
+                                >
                                   {item ? item.new_name : node.name}
                                 </span>
                               </td>
-                              <td className="px-3 py-1.5">
+                              <td className="border-b border-[#E9ECEF] px-3 py-1.5">
                                 {status && (
                                   <span
-                                    className={`inline-block rounded-[4px] px-1.5 py-0.5 text-[11px] font-semibold uppercase ${
+                                    className={`inline-block rounded-[4px] px-1.5 py-0.5 text-xs font-semibold uppercase ${
                                       status === "conflict"
                                         ? "bg-[#F8D7DA] text-[#721C24]"
                                         : status === "pending"
@@ -924,47 +1082,48 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
                             </tr>
                           );
                         })
-                      : plan.items.slice(startIdx, endIdx).map((item, localIdx) => {
-                          const idx = startIdx + localIdx;
-                          return (
-                            <tr
-                              key={item.id}
-                              style={{ height: `${ROW_HEIGHT}px` }}
-                              className={item.selected ? "bg-white" : "bg-[#F8F9FA] opacity-60"}
-                            >
-                              <td className="px-3 py-1.5">
-                                <input
-                                  type="checkbox"
-                                  checked={item.selected}
-                                  onChange={(e) => void toggleItemSelected(idx, e.target.checked)}
-                                />
-                              </td>
-                              <td className="px-2 py-1.5 text-xs text-[#6C757D]">
-                                {item.is_dir ? "DIR" : "FILE"}
-                              </td>
-                              <td className="px-3 py-1.5 break-all text-[#495057]">
+                      : sortedFlatItems.slice(startIdx, endIdx).map(({ item, planIndex }) => (
+                          <tr
+                            key={item.id}
+                            style={{ height: `${ROW_HEIGHT}px` }}
+                            className={item.selected ? "bg-white" : "bg-[#F8F9FA] opacity-60"}
+                          >
+                            <td className="border-b border-[#E9ECEF] px-3 py-1.5">
+                              <input
+                                type="checkbox"
+                                checked={item.selected}
+                                onChange={(e) => void toggleItemSelected(planIndex, e.target.checked)}
+                              />
+                            </td>
+                            <td className="border-b border-[#E9ECEF] px-2 py-1.5 text-xs font-medium text-[#6C757D]">
+                              {item.is_dir ? "DIR" : "FILE"}
+                            </td>
+                            <td className="overflow-hidden border-b border-[#E9ECEF] px-3 py-1.5 text-[#495057]">
+                              <span className="block truncate" title={item.original_path}>
                                 {item.original_name}
-                              </td>
-                              <td className="px-3 py-1.5 break-all font-semibold text-[#212529]">
+                              </span>
+                            </td>
+                            <td className="overflow-hidden border-b border-[#E9ECEF] px-3 py-1.5 font-semibold text-[#212529]">
+                              <span className="block truncate" title={item.new_name}>
                                 {item.new_name}
-                              </td>
-                              <td className="px-3 py-1.5">
-                                <span
-                                  className={`inline-block rounded-[4px] px-1.5 py-0.5 text-[11px] font-semibold uppercase ${
-                                    item.status === "conflict"
-                                      ? "bg-[#F8D7DA] text-[#721C24]"
-                                      : item.status === "pending"
-                                        ? "bg-[#D1ECF1] text-[#0C5460]"
-                                        : "bg-[#E9ECEF] text-[#6C757D]"
-                                  }`}
-                                  title={item.error_message || undefined}
-                                >
-                                  {item.status}
-                                </span>
-                              </td>
-                            </tr>
-                          );
-                        })}
+                              </span>
+                            </td>
+                            <td className="border-b border-[#E9ECEF] px-3 py-1.5">
+                              <span
+                                className={`inline-block rounded-[4px] px-1.5 py-0.5 text-xs font-semibold uppercase ${
+                                  item.status === "conflict"
+                                    ? "bg-[#F8D7DA] text-[#721C24]"
+                                    : item.status === "pending"
+                                      ? "bg-[#D1ECF1] text-[#0C5460]"
+                                      : "bg-[#E9ECEF] text-[#6C757D]"
+                                }`}
+                                title={item.error_message || undefined}
+                              >
+                                {item.status}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
 
                     {bottomPadPx > 0 && (
                       <tr aria-hidden="true">
@@ -990,6 +1149,8 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
           </div>
         );
       })()}
+
+      <ImportFeedbackToast toast={importToast} />
     </div>
   );
 };
