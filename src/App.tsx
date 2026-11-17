@@ -183,6 +183,7 @@ const AppInner: React.FC = () => {
       outputs: string[],
       summary: string,
       status: "success" | "error" | "cancelled",
+      heading?: string,
     ) => {
       setActiveJobId(null);
       setProgress(null);
@@ -200,7 +201,7 @@ const AppInner: React.FC = () => {
         ...prev.slice(0, 49),
       ]);
       if (status === "success") {
-        setCompletedExport({ title, summary, outputs });
+        setCompletedExport({ title, summary, outputs, heading });
       }
     },
     [appendLog, nowTime],

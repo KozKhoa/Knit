@@ -1,9 +1,9 @@
 import React from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { NumberInput } from "../components/NumberInput";
 import { Select } from "../components/Select";
 import {
   AlertTriangle,
-  Check,
   Eraser,
   FilePlus,
   GripHorizontal,
@@ -11,8 +11,6 @@ import {
   Layers,
   PanelRightClose,
   PanelRightOpen,
-  Plus,
-  RotateCw,
   Scissors,
   Trash2,
   Wand2,
@@ -29,22 +27,33 @@ import {
   ImportFeedbackToast,
   useImportFeedback,
 } from "../components/ImportFeedbackToast";
+import {
+  MergePageCard,
+  SplitSectionItemCard,
+  SplitSourceCard,
+} from "../components/PdfPageCards";
 import { PdfPageZoomModal } from "../components/PdfPageZoomModal";
 import { useI18n } from "../i18n";
 import {
   checkExportConflicts,
   formatBytes,
   inspectPdfFile,
+  isTauriRuntime,
   mergePdfFiles,
   pickDirectory,
   pickFiles,
   pickSaveFile,
-  renderPdfThumbBase64,
+  renderPdfThumbFile,
   resolveUniqueExportPath,
+  splitMultiPdfFiles,
   splitPdfFile,
 } from "../lib/ipc";
 import { joinDirAndFile, useExportFilenameCheck } from "../lib/exportPath";
-import { hitTestGridInsertIndex } from "../lib/imageGrid";
+import {
+  computeVisibleRowRange,
+  hitTestGridInsertIndex,
+  mergeThumbCacheLru,
+} from "../lib/imageGrid";
 import { usePersistentState } from "../lib/storage";
 import { useVerticalResize } from "../hooks/useVerticalResize";
 import type {
@@ -56,14 +65,7 @@ import type {
 } from "../types/ipc";
 import type { DroppedBatch } from "./Image2PdfView";
 
-const MERGE_GRID_OPTIONS = [2, 3, 4, 5, 6] as const;
-const MERGE_GRID_CLASS: Record<number, string> = {
-  2: "grid-cols-2",
-  3: "grid-cols-2 sm:grid-cols-3",
-  4: "grid-cols-2 sm:grid-cols-3 md:grid-cols-4",
-  5: "grid-cols-2 sm:grid-cols-3 md:grid-cols-5",
-  6: "grid-cols-2 sm:grid-cols-4 md:grid-cols-6",
-};
+const GRID_COL_OPTIONS = [2, 3, 4, 5, 6, 8] as const;
 
 interface PdfOpsViewProps {
   onStartJob: (jobId: string, label: string) => void;
@@ -81,6 +83,7 @@ interface PdfOpsViewProps {
 
 interface SplitSectionItem {
   uid: string;
+  file_index: number;
   page_index: number;
   rotation_deg: number;
 }
@@ -92,11 +95,32 @@ interface SplitSectionDraft {
 }
 
 type SplitDragPayload =
-  | { kind: "source"; page_index: number }
-  | { kind: "source_many"; page_indices: number[] }
+  | { kind: "source"; file_index: number; page_index: number }
+  | { kind: "source_many"; items: { file_index: number; page_index: number }[] }
   | { kind: "section_item"; sectionId: string; itemIndex: number };
 
-const INITIAL_THUMB_LIMIT = 48;
+interface SplitDragVisual {
+  label: string;
+  count: number;
+  fileIndex: number;
+  pageIndex: number;
+  rotationDeg: number;
+  thumbUrl?: string;
+  sourceSecId?: string;
+  sourceItemIdx?: number;
+}
+
+function sourceKey(fileIndex: number, pageIndex: number): string {
+  return `${fileIndex}:${pageIndex}`;
+}
+
+function parseSourceKey(key: string): { fileIndex: number; pageIndex: number } | null {
+  const [fStr, pStr] = key.split(":");
+  const fileIndex = Number(fStr);
+  const pageIndex = Number(pStr);
+  if (!Number.isInteger(fileIndex) || !Number.isInteger(pageIndex)) return null;
+  return { fileIndex, pageIndex };
+}
 
 export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
   onStartJob,
@@ -122,14 +146,62 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
     "knit.pdfops.mergeGridCols",
     5,
   );
+  const [splitSourceCols, setSplitSourceCols] = usePersistentState<number>(
+    "knit.pdfops.splitSourceCols",
+    3,
+  );
+  const [importingPdfs, setImportingPdfs] = React.useState(false);
+  const [importProgress, setImportProgress] = React.useState<{
+    done: number;
+    total: number;
+  } | null>(null);
+
+  // Merge virtualization & pointer drag state
   const [mergeDragIdx, setMergeDragIdx] = React.useState<number | null>(null);
   const [mergeInsertAt, setMergeInsertAt] = React.useState<number | null>(null);
-  const mergeGridRef = React.useRef<HTMLDivElement | null>(null);
+  const mergeInsertAtRef = React.useRef<number | null>(null);
+  mergeInsertAtRef.current = mergeInsertAt;
+  const mergeGridOuterRef = React.useRef<HTMLDivElement | null>(null);
+  const mergeGridInnerRef = React.useRef<HTMLDivElement | null>(null);
+  const mergeDragGhostRef = React.useRef<HTMLDivElement | null>(null);
+  const initialMergeGhostPosRef = React.useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const mergeColsRef = React.useRef<number>(mergeGridCols);
+  mergeColsRef.current = mergeGridCols;
+  const [mergeRowStride, setMergeRowStride] = React.useState<number>(216);
+  const mergeRowStrideRef = React.useRef<number>(mergeRowStride);
+  mergeRowStrideRef.current = mergeRowStride;
+  const [mergeVisibleRange, setMergeVisibleRange] = React.useState<{
+    startRow: number;
+    endRow: number;
+  }>({ startRow: 0, endRow: 12 });
+
+  // Split source virtualization state
+  const splitSourceGridOuterRef = React.useRef<HTMLDivElement | null>(null);
+  const splitSourceGridInnerRef = React.useRef<HTMLDivElement | null>(null);
+  const splitSourceColsRef = React.useRef<number>(splitSourceCols);
+  splitSourceColsRef.current = splitSourceCols;
+  const [splitSourceRowStride, setSplitSourceRowStride] = React.useState<number>(106);
+  const splitSourceRowStrideRef = React.useRef<number>(splitSourceRowStride);
+  splitSourceRowStrideRef.current = splitSourceRowStride;
+  const [splitSourceVisibleRange, setSplitSourceVisibleRange] = React.useState<{
+    startRow: number;
+    endRow: number;
+  }>({ startRow: 0, endRow: 14 });
+  const [splitSourceFilterIdx, setSplitSourceFilterIdx] = React.useState<number | "all">("all");
+
   const selectionsLengthRef = React.useRef<number>(selections.length);
   selectionsLengthRef.current = selections.length;
+  const filesRef = React.useRef<PdfInfo[]>(files);
+  filesRef.current = files;
+  const selectionsRef = React.useRef<PageSelection[]>(selections);
+  selectionsRef.current = selections;
+  const tabRef = React.useRef<"merge" | "split">(tab);
+  tabRef.current = tab;
+
   const [pendingClearAll, setPendingClearAll] = React.useState(false);
   const [thumbs, setThumbs] = React.useState<Record<string, string>>({});
-  const [thumbLimit, setThumbLimit] = React.useState<number>(INITIAL_THUMB_LIMIT);
+  const thumbsRef = React.useRef<Record<string, string>>(thumbs);
+  thumbsRef.current = thumbs;
   const [preserveBookmarks, setPreserveBookmarks] = usePersistentState<boolean>(
     "knit.pdfops.preserveBookmarks",
     true,
@@ -137,6 +209,10 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
   const [mergeExportFilename, setMergeExportFilename] = usePersistentState<string>(
     "knit.pdfops.mergeExportFilename",
     "merged.pdf",
+  );
+  const [splitPrefixFilename, setSplitPrefixFilename] = usePersistentState<string>(
+    "knit.pdfops.splitPrefixFilename",
+    "",
   );
   const {
     effectiveFilename: effectiveMergeFilename,
@@ -152,7 +228,14 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
   const [pendingRemoveFileIdx, setPendingRemoveFileIdx] = React.useState<number | null>(null);
   const [pendingConflict, setPendingConflict] = React.useState<
     | { kind: "merge"; outPath: string; conflicts: string[] }
-    | { kind: "split"; outDir: string; stem: string; rule: PdfSplitRule; conflicts: string[] }
+    | {
+        kind: "split";
+        inputs: string[];
+        stems: string[];
+        outDir: string;
+        rule: PdfSplitRule;
+        conflicts: string[];
+      }
     | null
   >(null);
   const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
@@ -165,9 +248,35 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
   const [splitMaxMb, setSplitMaxMb] = usePersistentState<number>("knit.pdfops.splitMaxMb", 20);
 
   const [splitSections, setSplitSections] = React.useState<SplitSectionDraft[]>([]);
+  const splitSectionsRef = React.useRef<SplitSectionDraft[]>(splitSections);
+  splitSectionsRef.current = splitSections;
   const [activeSectionId, setActiveSectionId] = React.useState<string | null>(null);
   const [hoverSectionId, setHoverSectionId] = React.useState<string | null>(null);
+  const hoverSectionIdRef = React.useRef<string | null>(null);
+  hoverSectionIdRef.current = hoverSectionId;
+  const [splitInsertTarget, setSplitInsertTarget] = React.useState<{
+    sectionId: string;
+    index: number;
+  } | null>(null);
+  const splitInsertTargetRef = React.useRef<{ sectionId: string; index: number } | null>(null);
+  splitInsertTargetRef.current = splitInsertTarget;
+
   const splitDragRef = React.useRef<SplitDragPayload | null>(null);
+  const [splitDragActive, setSplitDragActive] = React.useState<SplitDragVisual | null>(null);
+  const splitDragGhostRef = React.useRef<HTMLDivElement | null>(null);
+  const initialSplitGhostPosRef = React.useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const splitSourceScrollRef = React.useRef<HTMLDivElement | null>(null);
+  const splitSectionsScrollRef = React.useRef<HTMLDivElement | null>(null);
+
+  // Per-section custom height (auto up to 280px by default, draggable 120..720px)
+  const [sectionHeightsPx, setSectionHeightsPx] = usePersistentState<Record<string, number>>(
+    "knit.pdfops.sectionHeightsPx",
+    {},
+  );
+  const [resizingSecHeight, setResizingSecHeight] = React.useState<{
+    id: string;
+    height: number;
+  } | null>(null);
 
   // Split workbench resize & source page multi-select
   const [splitLeftRatio, setSplitLeftRatio] = usePersistentState<number>(
@@ -232,80 +341,488 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
     [liveSplitRatio, setSplitLeftRatio],
   );
 
-  const [selectedSourcePages, setSelectedSourcePages] = React.useState<Set<number>>(
+  const handleSectionCardHeightResize = React.useCallback(
+    (e: React.PointerEvent<HTMLElement>, sectionId: string) => {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const bodyEl = document.querySelector<HTMLElement>(
+        `[data-split-section-scroll="${sectionId}"]`,
+      );
+      const startH =
+        sectionHeightsPx[sectionId] ??
+        Math.max(140, Math.round(bodyEl?.getBoundingClientRect().height ?? 220));
+      const startY = e.clientY;
+      let latest = startH;
+
+      const clamp = (val: number) => Math.min(720, Math.max(120, Math.round(val)));
+
+      const onMove = (ev: PointerEvent) => {
+        latest = clamp(startH + (ev.clientY - startY));
+        setResizingSecHeight({ id: sectionId, height: latest });
+      };
+      const finish = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", finish);
+        window.removeEventListener("pointercancel", finish);
+        setResizingSecHeight(null);
+        setSectionHeightsPx((prev) => ({ ...prev, [sectionId]: latest }));
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", finish);
+      window.addEventListener("pointercancel", finish);
+    },
+    [sectionHeightsPx, setSectionHeightsPx],
+  );
+
+  // Flattened Split Source pages (all PDFs or filtered to 1 PDF)
+  const displayedSplitSourceItems = React.useMemo(() => {
+    const out: { fileIndex: number; pageIndex: number }[] = [];
+    if (typeof splitSourceFilterIdx === "number" && files[splitSourceFilterIdx]) {
+      const f = files[splitSourceFilterIdx];
+      for (let p = 0; p < f.page_count; p++) {
+        out.push({ fileIndex: splitSourceFilterIdx, pageIndex: p });
+      }
+      return out;
+    }
+    for (let fIdx = 0; fIdx < files.length; fIdx++) {
+      const f = files[fIdx];
+      for (let p = 0; p < f.page_count; p++) {
+        out.push({ fileIndex: fIdx, pageIndex: p });
+      }
+    }
+    return out;
+  }, [files, splitSourceFilterIdx]);
+
+  const displayedSplitSourceRef = React.useRef(displayedSplitSourceItems);
+  displayedSplitSourceRef.current = displayedSplitSourceItems;
+
+  const displayedIndexByKey = React.useMemo(() => {
+    const m = new Map<string, number>();
+    displayedSplitSourceItems.forEach((it, idx) => {
+      m.set(sourceKey(it.fileIndex, it.pageIndex), idx);
+    });
+    return m;
+  }, [displayedSplitSourceItems]);
+
+  const [selectedSourceKeys, setSelectedSourceKeys] = React.useState<Set<string>>(
     () => new Set(),
   );
-  const [lastClickedSourceIdx, setLastClickedSourceIdx] = React.useState<number | null>(null);
+  const [lastClickedSourcePos, setLastClickedSourcePos] = React.useState<number | null>(null);
 
-  const sourcePdfPath = files[0]?.path ?? null;
   React.useEffect(() => {
-    setSelectedSourcePages(new Set());
-    setLastClickedSourceIdx(null);
-  }, [sourcePdfPath]);
+    if (typeof splitSourceFilterIdx === "number" && splitSourceFilterIdx >= files.length) {
+      setSplitSourceFilterIdx("all");
+    }
+  }, [files.length, splitSourceFilterIdx]);
 
-  const handleSourcePageClick = (e: React.MouseEvent, pIdx: number) => {
-    if (e.shiftKey && lastClickedSourceIdx !== null) {
-      const start = Math.min(lastClickedSourceIdx, pIdx);
-      const end = Math.max(lastClickedSourceIdx, pIdx);
-      setSelectedSourcePages((prev) => {
-        const next = e.ctrlKey || e.metaKey ? new Set(prev) : new Set<number>();
-        for (let i = start; i <= end; i++) next.add(i);
+  const handleSourcePageClick = (
+    e: React.MouseEvent,
+    fileIndex: number,
+    pageIndex: number,
+  ) => {
+    const key = sourceKey(fileIndex, pageIndex);
+    const pos = displayedIndexByKey.get(key) ?? null;
+
+    if (e.shiftKey && lastClickedSourcePos !== null && pos !== null) {
+      const start = Math.min(lastClickedSourcePos, pos);
+      const end = Math.max(lastClickedSourcePos, pos);
+      setSelectedSourceKeys((prev) => {
+        const next = e.ctrlKey || e.metaKey ? new Set(prev) : new Set<string>();
+        for (let i = start; i <= end; i++) {
+          const item = displayedSplitSourceItems[i];
+          if (item) next.add(sourceKey(item.fileIndex, item.pageIndex));
+        }
         return next;
       });
       return;
     }
     if (e.ctrlKey || e.metaKey) {
-      setSelectedSourcePages((prev) => {
+      setSelectedSourceKeys((prev) => {
         const next = new Set(prev);
-        if (next.has(pIdx)) {
-          next.delete(pIdx);
+        if (next.has(key)) {
+          next.delete(key);
         } else {
-          next.add(pIdx);
+          next.add(key);
         }
         return next;
       });
-      setLastClickedSourceIdx(pIdx);
+      setLastClickedSourcePos(pos);
       return;
     }
-    setSelectedSourcePages(new Set([pIdx]));
-    setLastClickedSourceIdx(pIdx);
+    setSelectedSourceKeys(new Set([key]));
+    setLastClickedSourcePos(pos);
   };
 
-  const sortedSelectedSourcePages = React.useMemo(
-    () => Array.from(selectedSourcePages).sort((a, b) => a - b),
-    [selectedSourcePages],
-  );
+  const sortedSelectedSourceItems = React.useMemo(() => {
+    const items: { file_index: number; page_index: number }[] = [];
+    selectedSourceKeys.forEach((k) => {
+      const parsed = parseSourceKey(k);
+      if (parsed) {
+        items.push({ file_index: parsed.fileIndex, page_index: parsed.pageIndex });
+      }
+    });
+    items.sort((a, b) =>
+      a.file_index !== b.file_index ? a.file_index - b.file_index : a.page_index - b.page_index,
+    );
+    return items;
+  }, [selectedSourceKeys]);
+
   const lastHandledDropSeq = React.useRef<number>(0);
 
-  const loadPdfThumbsRange = React.useCallback(
-    async (fileIndex: number, info: PdfInfo, startPage: number, endPageExclusive: number) => {
-      const cap = Math.min(info.page_count, endPageExclusive);
-      for (let p = startPage; p < cap; p++) {
-        const key = `${fileIndex}:${p}`;
-        try {
-          const b64 = await renderPdfThumbBase64(info.path, p, 220);
-          setThumbs((prev) => ({ ...prev, [key]: `data:image/png;base64,${b64}` }));
-        } catch {
-          // ignore thumbnail error for malformed fonts
-        }
+  // Thumbnail queue & LRU cache (deterministic visible-range + section feeding)
+  const visibleThumbKeysRef = React.useRef<Set<string>>(new Set());
+  const sectionThumbKeysRef = React.useRef<Set<string>>(new Set());
+  const queuedThumbSetRef = React.useRef<Set<string>>(new Set());
+  const queuedThumbOrderRef = React.useRef<string[]>([]);
+  const inFlightThumbKeysRef = React.useRef<Set<string>>(new Set());
+  const failedThumbKeysRef = React.useRef<Set<string>>(new Set());
+  const activeThumbWorkersRef = React.useRef<number>(0);
+  const thumbGenRef = React.useRef<number>(0);
+  const pendingThumbBatchRef = React.useRef<Record<string, string>>({});
+  const thumbFlushTimerRef = React.useRef<number | null>(null);
+
+  const flushPendingPdfThumbs = React.useCallback(() => {
+    thumbFlushTimerRef.current = null;
+    const batch = pendingThumbBatchRef.current;
+    if (Object.keys(batch).length === 0) return;
+    pendingThumbBatchRef.current = {};
+    const protectedKeys = new Set<string>(visibleThumbKeysRef.current);
+    sectionThumbKeysRef.current.forEach((k) => protectedKeys.add(k));
+    const { nextCache } = mergeThumbCacheLru(thumbsRef.current, batch, 500, protectedKeys);
+    thumbsRef.current = nextCache;
+    setThumbs(nextCache);
+  }, []);
+
+  const schedulePdfThumbFlush = React.useCallback(() => {
+    if (thumbFlushTimerRef.current !== null) return;
+    thumbFlushTimerRef.current = window.setTimeout(flushPendingPdfThumbs, 40);
+  }, [flushPendingPdfThumbs]);
+
+  const pumpPdfThumbQueue = React.useCallback(() => {
+    if (!isTauriRuntime()) return;
+    const CONCURRENCY = 3;
+    while (activeThumbWorkersRef.current < CONCURRENCY && queuedThumbOrderRef.current.length > 0) {
+      const key = queuedThumbOrderRef.current.pop();
+      if (!key) break;
+      if (!queuedThumbSetRef.current.delete(key)) continue;
+      if (!visibleThumbKeysRef.current.has(key) && !sectionThumbKeysRef.current.has(key)) {
+        continue;
       }
+      if (
+        thumbsRef.current[key] ||
+        inFlightThumbKeysRef.current.has(key) ||
+        failedThumbKeysRef.current.has(key)
+      ) {
+        continue;
+      }
+      const parsed = parseSourceKey(key);
+      if (!parsed) continue;
+      const info = filesRef.current[parsed.fileIndex];
+      if (!info) continue;
+
+      inFlightThumbKeysRef.current.add(key);
+      activeThumbWorkersRef.current += 1;
+      const gen = thumbGenRef.current;
+
+      void (async () => {
+        try {
+          const thumbPath = await renderPdfThumbFile(info.path, parsed.pageIndex, 240);
+          if (thumbGenRef.current !== gen) return;
+          const url = convertFileSrc(thumbPath);
+          thumbsRef.current[key] = url;
+          pendingThumbBatchRef.current[key] = url;
+          schedulePdfThumbFlush();
+        } catch {
+          if (thumbGenRef.current === gen) {
+            failedThumbKeysRef.current.add(key);
+          }
+        } finally {
+          inFlightThumbKeysRef.current.delete(key);
+          activeThumbWorkersRef.current = Math.max(0, activeThumbWorkersRef.current - 1);
+          if (thumbGenRef.current === gen) {
+            pumpPdfThumbQueue();
+          }
+        }
+      })();
+    }
+  }, [schedulePdfThumbFlush]);
+
+  const enqueuePdfThumb = React.useCallback(
+    (key: string) => {
+      if (!isTauriRuntime()) return;
+      if (
+        thumbsRef.current[key] ||
+        inFlightThumbKeysRef.current.has(key) ||
+        failedThumbKeysRef.current.has(key)
+      ) {
+        return;
+      }
+      if (!queuedThumbSetRef.current.has(key)) {
+        queuedThumbSetRef.current.add(key);
+        queuedThumbOrderRef.current.push(key);
+      }
+      pumpPdfThumbQueue();
     },
-    [],
+    [pumpPdfThumbQueue],
   );
 
-  const getSplitStem = (info: PdfInfo): string =>
+  const enqueueThumbWindow = React.useCallback(
+    (keys: string[]) => {
+      if (!isTauriRuntime() || keys.length === 0) return;
+      visibleThumbKeysRef.current = new Set(keys);
+      // Push bottom-to-top so LIFO pop() renders top-most visible cards first
+      for (let i = keys.length - 1; i >= 0; i--) {
+        const key = keys[i];
+        if (
+          thumbsRef.current[key] ||
+          inFlightThumbKeysRef.current.has(key) ||
+          failedThumbKeysRef.current.has(key)
+        ) {
+          continue;
+        }
+        if (!queuedThumbSetRef.current.has(key)) {
+          queuedThumbSetRef.current.add(key);
+          queuedThumbOrderRef.current.push(key);
+        }
+      }
+      pumpPdfThumbQueue();
+    },
+    [pumpPdfThumbQueue],
+  );
+
+  const registerThumbCardRef = React.useCallback(
+    (key: string, el: HTMLDivElement | null) => {
+      if (el) {
+        visibleThumbKeysRef.current.add(key);
+        enqueuePdfThumb(key);
+      }
+    },
+    [enqueuePdfThumb],
+  );
+
+  React.useEffect(() => {
+    const nextSectionKeys = new Set<string>();
+    for (const sec of splitSections) {
+      for (const item of sec.pages) {
+        nextSectionKeys.add(sourceKey(item.file_index, item.page_index));
+      }
+    }
+    sectionThumbKeysRef.current = nextSectionKeys;
+    if (tab === "split" && nextSectionKeys.size > 0) {
+      nextSectionKeys.forEach((k) => enqueuePdfThumb(k));
+    }
+  }, [splitSections, tab, enqueuePdfThumb]);
+
+  React.useEffect(() => {
+    return () => {
+      if (thumbFlushTimerRef.current !== null) {
+        window.clearTimeout(thumbFlushTimerRef.current);
+      }
+    };
+  }, []);
+
+  // Measure Merge grid geometry, virtualize visible rows & queue thumbnails for visible window
+  const updateMergeVisibleRange = React.useCallback(() => {
+    const gridEl = mergeGridOuterRef.current;
+    const innerEl = mergeGridInnerRef.current;
+    const cols = Math.max(1, mergeColsRef.current);
+    if (innerEl) {
+      const firstCard = innerEl.firstElementChild as HTMLElement | null;
+      if (firstCard) {
+        const h = firstCard.getBoundingClientRect().height;
+        if (h > 40) {
+          const nextStride = Math.round(h + 12);
+          if (Math.abs(nextStride - mergeRowStrideRef.current) > 2) {
+            mergeRowStrideRef.current = nextStride;
+            setMergeRowStride(nextStride);
+          }
+        }
+      }
+    }
+
+    const total = selectionsLengthRef.current;
+    const scrollEl = gridEl?.closest("main") as HTMLElement | null;
+    let startRow = 0;
+    let endRow = Math.max(0, Math.min(Math.ceil(total / cols) - 1, 14));
+
+    if (gridEl && scrollEl && scrollEl.clientHeight > 0) {
+      const gridRect = gridEl.getBoundingClientRect();
+      const scrollRect = scrollEl.getBoundingClientRect();
+      const next = computeVisibleRowRange({
+        totalItems: total,
+        gridCols: cols,
+        rowStride: mergeRowStrideRef.current,
+        gridRectTop: gridRect.top,
+        scrollRectTop: scrollRect.top,
+        viewportHeight: scrollEl.clientHeight,
+        overscanRows: 3,
+      });
+      startRow = next.startRow;
+      endRow = next.endRow;
+    }
+
+    setMergeVisibleRange((prev) =>
+      prev.startRow === startRow && prev.endRow === endRow ? prev : { startRow, endRow },
+    );
+
+    if (tabRef.current === "merge" && total > 0 && endRow >= startRow) {
+      const startIdx = startRow * cols;
+      const endExcl = Math.min(total, (endRow + 1) * cols);
+      const keys: string[] = [];
+      for (let i = startIdx; i < endExcl; i++) {
+        const sel = selectionsRef.current[i];
+        if (sel) keys.push(sourceKey(sel.file_index, sel.page_index));
+      }
+      enqueueThumbWindow(keys);
+    }
+  }, [enqueueThumbWindow]);
+
+  React.useEffect(() => {
+    if (tab !== "merge" || selections.length === 0) return;
+    let rafId: number | null = null;
+    const schedule = () => {
+      if (rafId !== null) return;
+      rafId = window.requestAnimationFrame(() => {
+        rafId = null;
+        updateMergeVisibleRange();
+      });
+    };
+    schedule();
+    const gridEl = mergeGridOuterRef.current;
+    const scrollEl = gridEl?.closest("main") ?? null;
+    scrollEl?.addEventListener("scroll", schedule, { passive: true });
+    window.addEventListener("resize", schedule, { passive: true });
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined") {
+      ro = new ResizeObserver(schedule);
+      if (gridEl) ro.observe(gridEl);
+      if (scrollEl) ro.observe(scrollEl);
+    }
+    return () => {
+      if (rafId !== null) window.cancelAnimationFrame(rafId);
+      scrollEl?.removeEventListener("scroll", schedule);
+      window.removeEventListener("resize", schedule);
+      ro?.disconnect();
+    };
+  }, [tab, selections.length, mergeGridCols, updateMergeVisibleRange]);
+
+  // Measure & virtualize Split Source Pages scrollbox + deterministically enqueue visible thumbs
+  const updateSplitSourceVisibleRange = React.useCallback(() => {
+    const scrollEl = splitSourceScrollRef.current;
+    const gridEl = splitSourceGridOuterRef.current;
+    const innerEl = splitSourceGridInnerRef.current;
+    const cols = Math.max(1, splitSourceColsRef.current);
+
+    if (innerEl) {
+      const firstCard = innerEl.firstElementChild as HTMLElement | null;
+      if (firstCard) {
+        const h = firstCard.getBoundingClientRect().height;
+        if (h > 40) {
+          const nextStride = Math.round(h + 8); // gap-2 = 8px
+          if (Math.abs(nextStride - splitSourceRowStrideRef.current) > 2) {
+            splitSourceRowStrideRef.current = nextStride;
+            setSplitSourceRowStride(nextStride);
+          }
+        }
+      }
+    }
+
+    const list = displayedSplitSourceRef.current;
+    const total = list.length;
+    let startRow = 0;
+    let endRow = Math.max(0, Math.min(Math.ceil(total / cols) - 1, 14));
+
+    if (scrollEl && gridEl && scrollEl.clientHeight > 0) {
+      const gridRect = gridEl.getBoundingClientRect();
+      const scrollRect = scrollEl.getBoundingClientRect();
+      const next = computeVisibleRowRange({
+        totalItems: total,
+        gridCols: cols,
+        rowStride: splitSourceRowStrideRef.current,
+        gridRectTop: gridRect.top,
+        scrollRectTop: scrollRect.top,
+        viewportHeight: scrollEl.clientHeight,
+        overscanRows: 3,
+      });
+      startRow = next.startRow;
+      endRow = next.endRow;
+    }
+
+    setSplitSourceVisibleRange((prev) =>
+      prev.startRow === startRow && prev.endRow === endRow ? prev : { startRow, endRow },
+    );
+
+    if (tabRef.current === "split" && total > 0 && endRow >= startRow) {
+      const startIdx = startRow * cols;
+      const endExcl = Math.min(total, (endRow + 1) * cols);
+      const keys: string[] = [];
+      for (let i = startIdx; i < endExcl; i++) {
+        const it = list[i];
+        if (it) keys.push(sourceKey(it.fileIndex, it.pageIndex));
+      }
+      enqueueThumbWindow(keys);
+    }
+  }, [enqueueThumbWindow]);
+
+  React.useEffect(() => {
+    if (tab !== "split" || displayedSplitSourceItems.length === 0) return;
+    let rafId: number | null = null;
+    const schedule = () => {
+      if (rafId !== null) return;
+      rafId = window.requestAnimationFrame(() => {
+        rafId = null;
+        updateSplitSourceVisibleRange();
+      });
+    };
+    schedule();
+    const scrollEl = splitSourceScrollRef.current;
+    scrollEl?.addEventListener("scroll", schedule, { passive: true });
+    window.addEventListener("resize", schedule, { passive: true });
+    let ro: ResizeObserver | null = null;
+    if (scrollEl && typeof ResizeObserver !== "undefined") {
+      ro = new ResizeObserver(schedule);
+      ro.observe(scrollEl);
+    }
+    return () => {
+      if (rafId !== null) window.cancelAnimationFrame(rafId);
+      scrollEl?.removeEventListener("scroll", schedule);
+      window.removeEventListener("resize", schedule);
+      ro?.disconnect();
+    };
+  }, [
+    tab,
+    displayedSplitSourceItems.length,
+    splitSourceCols,
+    liveSourceHeightPx,
+    updateSplitSourceVisibleRange,
+  ]);
+
+  const getOrigStem = (info: PdfInfo): string =>
     info.path.split(/[\\/]/).pop()?.replace(/\.pdf$/i, "") || "split";
 
-  const makeDefaultSectionsForPdf = React.useCallback((info: PdfInfo): SplitSectionDraft[] => {
-    const stem = getSplitStem(info);
-    const firstId = crypto.randomUUID();
-    const secondId = crypto.randomUUID();
-    setActiveSectionId(firstId);
-    return [
-      { id: firstId, name: `${stem}_part01`, pages: [] },
-      { id: secondId, name: `${stem}_part02`, pages: [] },
-    ];
-  }, []);
+  const getSplitStemForFile = React.useCallback(
+    (info: PdfInfo, totalFiles: number): string => {
+      const orig = getOrigStem(info);
+      const cleanPrefix = splitPrefixFilename.trim().replace(/\.pdf$/i, "");
+      if (!cleanPrefix) return orig;
+      return totalFiles <= 1 ? cleanPrefix : `${cleanPrefix}_${orig}`;
+    },
+    [splitPrefixFilename],
+  );
+
+  const makeDefaultSectionsForPdf = React.useCallback(
+    (info: PdfInfo, totalFiles: number): SplitSectionDraft[] => {
+      const stem = getSplitStemForFile(info, totalFiles);
+      const firstId = crypto.randomUUID();
+      const secondId = crypto.randomUUID();
+      return [
+        { id: firstId, name: `${stem}_part01`, pages: [] },
+        { id: secondId, name: `${stem}_part02`, pages: [] },
+      ];
+    },
+    [getSplitStemForFile],
+  );
 
   const offsetBookmarks = React.useCallback(
     (nodes: BookmarkNode[], offset: number): BookmarkNode[] =>
@@ -322,9 +839,11 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
       const pdfPaths = picked.filter((p) => p.toLowerCase().endsWith(".pdf"));
       if (pdfPaths.length === 0) return;
       setErrorMsg(null);
+      setImportingPdfs(true);
+      setImportProgress({ done: 0, total: pdfPaths.length });
       try {
-        const baseFileIdx = tab === "split" ? 0 : files.length;
-        const basePageOffset = tab === "split" ? 0 : selections.length;
+        const baseFileIdx = filesRef.current.length;
+        const basePageOffset = selectionsRef.current.length;
         const newInfos: PdfInfo[] = [];
         const newSelections: PageSelection[] = [];
         const addedBookmarks: BookmarkNode[] = [];
@@ -332,6 +851,7 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
         let runningPageOffset = basePageOffset;
         for (let i = 0; i < pdfPaths.length; i++) {
           const info = await inspectPdfFile(pdfPaths[i]);
+          setImportProgress({ done: i + 1, total: pdfPaths.length });
           const fIdx = baseFileIdx + i;
           newInfos.push(info);
           for (let p = 0; p < info.page_count; p++) {
@@ -341,26 +861,23 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
             addedBookmarks.push(...offsetBookmarks(info.bookmarks, runningPageOffset));
           } else if (info.page_count > 0) {
             addedBookmarks.push({
-              title: getSplitStem(info),
+              title: getOrigStem(info),
               target_page_index: runningPageOffset,
               children: [],
             });
           }
           runningPageOffset += info.page_count;
-          void loadPdfThumbsRange(fIdx, info, 0, INITIAL_THUMB_LIMIT);
         }
 
-        if (tab === "split") {
-          const first = newInfos[0];
-          setThumbLimit(INITIAL_THUMB_LIMIT);
-          setFiles([first]);
-          setSelections(newSelections.filter((s) => s.file_index === 0));
-          setSplitSections(makeDefaultSectionsForPdf(first));
-          setMergeBookmarks(addedBookmarks.filter((_, idx) => idx === 0 || newInfos.length === 1));
-        } else {
-          setFiles((prev) => [...prev, ...newInfos]);
-          setSelections((prev) => [...prev, ...newSelections]);
-          setMergeBookmarks((prev) => [...prev, ...addedBookmarks]);
+        const mergedFileCount = baseFileIdx + newInfos.length;
+        setFiles((prev) => [...prev, ...newInfos]);
+        setSelections((prev) => [...prev, ...newSelections]);
+        setMergeBookmarks((prev) => [...prev, ...addedBookmarks]);
+
+        if (splitSectionsRef.current.length === 0 && newInfos[0]) {
+          const initialSections = makeDefaultSectionsForPdf(newInfos[0], mergedFileCount);
+          setSplitSections(initialSections);
+          setActiveSectionId(initialSections[0]?.id ?? null);
         }
 
         const label =
@@ -370,18 +887,12 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
         notifyImported(t.common.importSuccessToast(label));
       } catch (e) {
         setErrorMsg(String(e));
+      } finally {
+        setImportingPdfs(false);
+        setImportProgress(null);
       }
     },
-    [
-      files.length,
-      selections.length,
-      loadPdfThumbsRange,
-      makeDefaultSectionsForPdf,
-      notifyImported,
-      offsetBookmarks,
-      t.common,
-      tab,
-    ],
+    [makeDefaultSectionsForPdf, notifyImported, offsetBookmarks, t.common],
   );
 
   React.useEffect(() => {
@@ -392,7 +903,9 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
 
   React.useEffect(() => {
     if (tab === "split" && files.length > 0 && splitSections.length === 0) {
-      setSplitSections(makeDefaultSectionsForPdf(files[0]));
+      const initial = makeDefaultSectionsForPdf(files[0], files.length);
+      setSplitSections(initial);
+      setActiveSectionId(initial[0]?.id ?? null);
     }
   }, [tab, files, splitSections.length, makeDefaultSectionsForPdf]);
 
@@ -401,7 +914,7 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
     try {
       const picked = await pickFiles({
         title: t.pdfOps.pickPdfDialog,
-        multiple: tab === "merge",
+        multiple: true,
         filters: [{ name: "PDF", extensions: ["pdf"] }],
       });
       if (picked.length === 0) return;
@@ -437,44 +950,70 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
       let rafId: number | null = null;
 
       const computeInsert = (clientX: number, clientY: number): number | null => {
-        const gridEl = mergeGridRef.current;
+        const gridEl = mergeGridOuterRef.current;
         if (!gridEl) return null;
         const rect = gridEl.getBoundingClientRect();
-        const colsRaw = window.getComputedStyle(gridEl).gridTemplateColumns.trim();
-        const colCount = colsRaw ? colsRaw.split(/\s+/).length : mergeGridCols;
-        const firstCard = gridEl.firstElementChild as HTMLElement | null;
-        const cardHeight = firstCard ? firstCard.getBoundingClientRect().height : 200;
-        const gapPx = 12;
         return hitTestGridInsertIndex({
           gridLeft: rect.left,
           gridTop: rect.top,
           gridWidth: rect.width,
-          gridCols: Math.max(1, colCount),
-          gapPx,
-          rowStride: cardHeight + gapPx,
+          gridCols: Math.max(1, mergeColsRef.current),
+          gapPx: 12,
+          rowStride: mergeRowStrideRef.current,
           totalItems: selectionsLengthRef.current,
           clientX,
           clientY,
         });
       };
 
+      const tickDrag = () => {
+        rafId = null;
+        if (!dragging) return;
+
+        if (mergeDragGhostRef.current) {
+          mergeDragGhostRef.current.style.transform = `translate3d(${latestX + 14}px, ${latestY + 14}px, 0)`;
+        }
+
+        const scrollEl = mergeGridOuterRef.current?.closest("main");
+        if (scrollEl) {
+          const sr = scrollEl.getBoundingClientRect();
+          const edgePx = 56;
+          let dy = 0;
+          if (latestY < sr.top + edgePx) {
+            dy = -Math.ceil(((sr.top + edgePx - latestY) / edgePx) * 18);
+          } else if (latestY > sr.bottom - edgePx) {
+            dy = Math.ceil(((latestY - (sr.bottom - edgePx)) / edgePx) * 18);
+          }
+          if (dy !== 0) {
+            const prevTop = scrollEl.scrollTop;
+            scrollEl.scrollTop += dy;
+            if (scrollEl.scrollTop !== prevTop) {
+              rafId = window.requestAnimationFrame(tickDrag);
+            }
+          }
+        }
+
+        const nextInsert = computeInsert(latestX, latestY);
+        if (nextInsert !== mergeInsertAtRef.current) {
+          mergeInsertAtRef.current = nextInsert;
+          setMergeInsertAt(nextInsert);
+        }
+      };
+
       const onMove = (ev: PointerEvent) => {
         latestX = ev.clientX;
         latestY = ev.clientY;
-        if (!dragging && Math.hypot(latestX - startX, latestY - startY) < 6) {
-          return;
-        }
         if (!dragging) {
+          if (Math.hypot(latestX - startX, latestY - startY) < 5) return;
           dragging = true;
+          initialMergeGhostPosRef.current = { x: latestX + 14, y: latestY + 14 };
           setMergeDragIdx(idx);
           document.body.style.userSelect = "none";
           document.body.style.cursor = "grabbing";
         }
-        if (rafId !== null) return;
-        rafId = window.requestAnimationFrame(() => {
-          rafId = null;
-          setMergeInsertAt(computeInsert(latestX, latestY));
-        });
+        if (rafId === null) {
+          rafId = window.requestAnimationFrame(tickDrag);
+        }
       };
 
       const finish = (ev: PointerEvent) => {
@@ -488,24 +1027,49 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
         document.body.style.userSelect = "";
         document.body.style.cursor = "";
         if (dragging) {
-          const finalInsert = computeInsert(ev.clientX, ev.clientY);
-          if (finalInsert !== null) {
+          const finalInsert = computeInsert(ev.clientX, ev.clientY) ?? mergeInsertAtRef.current;
+          if (finalInsert !== null && finalInsert !== idx && finalInsert !== idx + 1) {
             const targetIdx = finalInsert > idx ? finalInsert - 1 : finalInsert;
-            if (targetIdx !== idx) {
-              reorderMergeSelection(idx, targetIdx);
-            }
+            reorderMergeSelection(idx, targetIdx);
           }
+          mergeInsertAtRef.current = null;
+          setMergeDragIdx(null);
+          setMergeInsertAt(null);
         }
-        setMergeDragIdx(null);
-        setMergeInsertAt(null);
       };
 
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", finish);
       window.addEventListener("pointercancel", finish);
     },
-    [mergeGridCols, reorderMergeSelection],
+    [reorderMergeSelection],
   );
+
+  const handleRotateMergePage = React.useCallback((idx: number) => {
+    setSelections((prev) =>
+      prev.map((s, i) =>
+        i === idx ? { ...s, rotation_deg: (s.rotation_deg + 90) % 360 } : s,
+      ),
+    );
+  }, []);
+
+  const handleRemoveMergePage = React.useCallback((idx: number) => {
+    setSelections((prev) => prev.filter((_, i) => i !== idx));
+  }, []);
+
+  const handleDoubleClickMergePage = React.useCallback((idx: number) => {
+    const sel = selectionsRef.current[idx];
+    if (!sel) return;
+    const srcPath = filesRef.current[sel.file_index]?.path ?? "";
+    if (!srcPath) return;
+    const key = sourceKey(sel.file_index, sel.page_index);
+    setZoomTarget({
+      path: srcPath,
+      pageIndex: sel.page_index,
+      rotationDeg: sel.rotation_deg,
+      fallbackThumbSrc: thumbsRef.current[key],
+    });
+  }, []);
 
   const confirmRemoveImportedFile = React.useCallback(() => {
     const removeIdx = pendingRemoveFileIdx;
@@ -535,39 +1099,61 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
         return [{ ...n, target_page_index: mapped, children }];
       });
 
+    thumbGenRef.current += 1;
+    queuedThumbSetRef.current.clear();
+    queuedThumbOrderRef.current = [];
+    failedThumbKeysRef.current.clear();
+    pendingThumbBatchRef.current = {};
+    visibleThumbKeysRef.current.clear();
+    sectionThumbKeysRef.current.clear();
+
     setFiles((prev) => prev.filter((_, idx) => idx !== removeIdx));
     setSelections(nextSelections);
     setMergeBookmarks((prev) => filterAndRemapBookmarks(prev));
+    setSplitSections((prev) =>
+      prev.map((sec) => ({
+        ...sec,
+        pages: sec.pages
+          .filter((p) => p.file_index !== removeIdx)
+          .map((p) => ({
+            ...p,
+            file_index: p.file_index > removeIdx ? p.file_index - 1 : p.file_index,
+          })),
+      })),
+    );
+    setSelectedSourceKeys(new Set());
+    setLastClickedSourcePos(null);
+    setSplitSourceFilterIdx((prev) => {
+      if (typeof prev !== "number") return prev;
+      if (prev === removeIdx) return "all";
+      return prev > removeIdx ? prev - 1 : prev;
+    });
     setThumbs((prev) => {
       const next: Record<string, string> = {};
       for (const [k, v] of Object.entries(prev)) {
-        const [fStr, pStr] = k.split(":");
-        const fNum = Number(fStr);
-        if (fNum === removeIdx) continue;
-        const remappedFile = fNum > removeIdx ? fNum - 1 : fNum;
-        next[`${remappedFile}:${pStr}`] = v;
+        const parsed = parseSourceKey(k);
+        if (!parsed || parsed.fileIndex === removeIdx) continue;
+        const remappedFile =
+          parsed.fileIndex > removeIdx ? parsed.fileIndex - 1 : parsed.fileIndex;
+        next[sourceKey(remappedFile, parsed.pageIndex)] = v;
       }
+      thumbsRef.current = next;
       return next;
     });
-    if (tab === "split" && removeIdx === 0) {
-      setSplitSections([]);
-    }
-  }, [pendingRemoveFileIdx, files.length, selections, tab]);
-
-  const handleLoadMoreSplitThumbs = () => {
-    if (files.length === 0) return;
-    const src = files[0];
-    const nextLimit = Math.min(src.page_count, thumbLimit + INITIAL_THUMB_LIMIT);
-    void loadPdfThumbsRange(0, src, thumbLimit, nextLimit);
-    setThumbLimit(nextLimit);
-  };
+  }, [pendingRemoveFileIdx, files.length, selections]);
 
   const handlePopulateSectionsFromRule = () => {
     if (files.length === 0) return;
     setErrorMsg(null);
-    const src = files[0];
-    const total = src.page_count;
-    const stem = getSplitStem(src);
+    const items = displayedSplitSourceItems;
+    const total = items.length;
+    if (total === 0) return;
+
+    const baseInfo =
+      typeof splitSourceFilterIdx === "number" && files[splitSourceFilterIdx]
+        ? files[splitSourceFilterIdx]
+        : files[0];
+    const stem = getSplitStemForFile(baseInfo, files.length);
 
     if (splitRuleKind === "every_n_pages") {
       const step = Math.max(1, everyN);
@@ -576,8 +1162,14 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
       for (let start = 0; start < total; start += step) {
         const end = Math.min(total, start + step);
         const pages: SplitSectionItem[] = [];
-        for (let p = start; p < end; p++) {
-          pages.push({ uid: crypto.randomUUID(), page_index: p, rotation_deg: 0 });
+        for (let i = start; i < end; i++) {
+          const it = items[i];
+          pages.push({
+            uid: crypto.randomUUID(),
+            file_index: it.fileIndex,
+            page_index: it.pageIndex,
+            rotation_deg: 0,
+          });
         }
         next.push({
           id: crypto.randomUUID(),
@@ -599,7 +1191,15 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
         {
           id: nextId,
           name: `${stem}_extracted`,
-          pages: parsed.map((p) => ({ uid: crypto.randomUUID(), page_index: p, rotation_deg: 0 })),
+          pages: parsed.map((idx) => {
+            const it = items[idx];
+            return {
+              uid: crypto.randomUUID(),
+              file_index: it.fileIndex,
+              page_index: it.pageIndex,
+              rotation_deg: 0,
+            };
+          }),
         },
       ]);
       setActiveSectionId(nextId);
@@ -607,7 +1207,7 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
   };
 
   const addSection = () => {
-    const stem = files[0] ? getSplitStem(files[0]) : "split";
+    const stem = files[0] ? getSplitStemForFile(files[0], files.length) : "split";
     const id = crypto.randomUUID();
     const num = splitSections.length + 1;
     setSplitSections((prev) => [
@@ -617,93 +1217,424 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
     setActiveSectionId(id);
   };
 
-  const appendSourcePagesToSection = (pageIndices: number[], targetSectionId?: string) => {
-    if (pageIndices.length === 0) return;
-    const targetId = targetSectionId ?? activeSectionId ?? splitSections[0]?.id;
-    if (!targetId) return;
-    const items: SplitSectionItem[] = pageIndices.map((pageIndex) => ({
-      uid: crypto.randomUUID(),
-      page_index: pageIndex,
-      rotation_deg: 0,
-    }));
-    setSplitSections((prev) =>
-      prev.map((sec) =>
-        sec.id === targetId
-          ? {
-              ...sec,
-              pages: [...sec.pages, ...items],
-            }
-          : sec,
-      ),
-    );
-  };
-
-  const appendSourcePageToSection = (pageIndex: number, targetSectionId?: string) => {
-    appendSourcePagesToSection([pageIndex], targetSectionId);
-  };
-
-  const handleDropOnSection = (targetSectionId: string, insertAtIndex?: number) => {
-    const payload = splitDragRef.current;
-    splitDragRef.current = null;
-    setHoverSectionId(null);
-    if (!payload) return;
-
-    if (payload.kind === "source" || payload.kind === "source_many") {
-      const indices =
-        payload.kind === "source_many" ? payload.page_indices : [payload.page_index];
-      const items: SplitSectionItem[] = indices.map((page_index) => ({
+  const appendSourceItemsToSection = React.useCallback(
+    (sourceItems: { file_index: number; page_index: number }[], targetSectionId?: string) => {
+      if (sourceItems.length === 0) return;
+      const targetId = targetSectionId ?? activeSectionId ?? splitSectionsRef.current[0]?.id;
+      if (!targetId) return;
+      const items: SplitSectionItem[] = sourceItems.map((it) => ({
         uid: crypto.randomUUID(),
-        page_index,
+        file_index: it.file_index,
+        page_index: it.page_index,
         rotation_deg: 0,
       }));
       setSplitSections((prev) =>
-        prev.map((sec) => {
-          if (sec.id !== targetSectionId) return sec;
-          const nextPages = [...sec.pages];
-          const idx =
-            insertAtIndex !== undefined ? Math.max(0, Math.min(nextPages.length, insertAtIndex)) : nextPages.length;
-          nextPages.splice(idx, 0, ...items);
-          return { ...sec, pages: nextPages };
-        }),
+        prev.map((sec) =>
+          sec.id === targetId ? { ...sec, pages: [...sec.pages, ...items] } : sec,
+        ),
       );
-      return;
-    }
+    },
+    [activeSectionId],
+  );
 
-    // Moving from one section item to another slot / another section
-    const { sectionId: fromSecId, itemIndex: fromIdx } = payload;
-    setSplitSections((prev) => {
-      const fromSec = prev.find((s) => s.id === fromSecId);
-      const moving = fromSec?.pages[fromIdx];
-      if (!moving) return prev;
+  const handleDropOnSection = React.useCallback(
+    (targetSectionId: string, insertAtIndex?: number) => {
+      const payload = splitDragRef.current;
+      splitDragRef.current = null;
+      setHoverSectionId(null);
+      setSplitInsertTarget(null);
+      if (!payload) return;
 
-      if (fromSecId === targetSectionId) {
-        return prev.map((sec) => {
-          if (sec.id !== targetSectionId) return sec;
-          const nextPages = [...sec.pages];
-          nextPages.splice(fromIdx, 1);
-          const rawTarget = insertAtIndex ?? nextPages.length;
-          const adjusted = fromIdx < rawTarget ? rawTarget - 1 : rawTarget;
-          const bounded = Math.max(0, Math.min(nextPages.length, adjusted));
-          nextPages.splice(bounded, 0, moving);
-          return { ...sec, pages: nextPages };
-        });
+      if (payload.kind === "source" || payload.kind === "source_many") {
+        const rawItems =
+          payload.kind === "source_many"
+            ? payload.items
+            : [{ file_index: payload.file_index, page_index: payload.page_index }];
+        const items: SplitSectionItem[] = rawItems.map((it) => ({
+          uid: crypto.randomUUID(),
+          file_index: it.file_index,
+          page_index: it.page_index,
+          rotation_deg: 0,
+        }));
+        setSplitSections((prev) =>
+          prev.map((sec) => {
+            if (sec.id !== targetSectionId) return sec;
+            const nextPages = [...sec.pages];
+            const idx =
+              insertAtIndex !== undefined
+                ? Math.max(0, Math.min(nextPages.length, insertAtIndex))
+                : nextPages.length;
+            nextPages.splice(idx, 0, ...items);
+            return { ...sec, pages: nextPages };
+          }),
+        );
+        return;
       }
 
-      return prev.map((sec) => {
-        if (sec.id === fromSecId) {
-          return { ...sec, pages: sec.pages.filter((_, i) => i !== fromIdx) };
+      const { sectionId: fromSecId, itemIndex: fromIdx } = payload;
+      setSplitSections((prev) => {
+        const fromSec = prev.find((s) => s.id === fromSecId);
+        const moving = fromSec?.pages[fromIdx];
+        if (!moving) return prev;
+
+        if (fromSecId === targetSectionId) {
+          return prev.map((sec) => {
+            if (sec.id !== targetSectionId) return sec;
+            const nextPages = [...sec.pages];
+            const rawTarget = insertAtIndex ?? nextPages.length;
+            if (rawTarget === fromIdx || rawTarget === fromIdx + 1) {
+              return sec;
+            }
+            nextPages.splice(fromIdx, 1);
+            const adjusted = fromIdx < rawTarget ? rawTarget - 1 : rawTarget;
+            const bounded = Math.max(0, Math.min(nextPages.length, adjusted));
+            nextPages.splice(bounded, 0, moving);
+            return { ...sec, pages: nextPages };
+          });
         }
-        if (sec.id === targetSectionId) {
-          const nextPages = [...sec.pages];
-          const idx =
-            insertAtIndex !== undefined ? Math.max(0, Math.min(nextPages.length, insertAtIndex)) : nextPages.length;
-          nextPages.splice(idx, 0, moving);
-          return { ...sec, pages: nextPages };
-        }
-        return sec;
+
+        return prev.map((sec) => {
+          if (sec.id === fromSecId) {
+            return { ...sec, pages: sec.pages.filter((_, i) => i !== fromIdx) };
+          }
+          if (sec.id === targetSectionId) {
+            const nextPages = [...sec.pages];
+            const idx =
+              insertAtIndex !== undefined
+                ? Math.max(0, Math.min(nextPages.length, insertAtIndex))
+                : nextPages.length;
+            nextPages.splice(idx, 0, moving);
+            return { ...sec, pages: nextPages };
+          }
+          return sec;
+        });
       });
-    });
-  };
+    },
+    [],
+  );
+
+  const selectedSourceKeysRef = React.useRef(selectedSourceKeys);
+  selectedSourceKeysRef.current = selectedSourceKeys;
+  const sortedSelectedSourceItemsRef = React.useRef(sortedSelectedSourceItems);
+  sortedSelectedSourceItemsRef.current = sortedSelectedSourceItems;
+  const handleSourcePageClickRef = React.useRef(handleSourcePageClick);
+  handleSourcePageClickRef.current = handleSourcePageClick;
+
+  // Pointer drag for Split Source -> Output Sections and Section Item reordering (matching Image2Pdf UX)
+  const startSplitPointerDrag = React.useCallback(
+    (
+      e: React.PointerEvent<HTMLDivElement>,
+      buildPayload: () => { payload: SplitDragPayload; visual: SplitDragVisual },
+      onNoDragClick?: () => void,
+    ) => {
+      if (e.button !== 0) return;
+      if ((e.target as HTMLElement).closest("button")) return;
+
+      const startX = e.clientX;
+      const startY = e.clientY;
+      let dragging = false;
+      let latestX = startX;
+      let latestY = startY;
+      let rafId: number | null = null;
+
+      // Per-section cached geometry during a drag so rAF never thrashes layout across sections
+      const sectionMetricsCache = new Map<
+        string,
+        { cols: number; rowStride: number; totalItems: number }
+      >();
+
+      const getGridMetrics = (gridEl: HTMLElement, sectionId: string) => {
+        const cached = sectionMetricsCache.get(sectionId);
+        if (cached) return cached;
+        const colsRaw = window.getComputedStyle(gridEl).gridTemplateColumns.trim();
+        const cols = colsRaw ? Math.max(1, colsRaw.split(/\s+/).length) : 4;
+        const firstCard = gridEl.firstElementChild as HTMLElement | null;
+        const cardH = firstCard ? firstCard.getBoundingClientRect().height : 108;
+        const rowStride = Math.max(60, Math.round(cardH + 8));
+        const totalItems =
+          splitSectionsRef.current.find((s) => s.id === sectionId)?.pages.length ?? 0;
+        const entry = { cols, rowStride, totalItems };
+        sectionMetricsCache.set(sectionId, entry);
+        return entry;
+      };
+
+      const computeSectionInsert = (
+        secEl: HTMLElement,
+        clientX: number,
+        clientY: number,
+      ): number => {
+        const sectionId = secEl.dataset.splitSectionId ?? "";
+        const gridEl = secEl.querySelector<HTMLElement>("[data-split-section-grid]");
+        if (!gridEl || !sectionId) {
+          return splitSectionsRef.current.find((s) => s.id === sectionId)?.pages.length ?? 0;
+        }
+        const metrics = getGridMetrics(gridEl, sectionId);
+        if (metrics.totalItems <= 0) return 0;
+        const rect = gridEl.getBoundingClientRect();
+        return (
+          hitTestGridInsertIndex({
+            gridLeft: rect.left,
+            gridTop: rect.top,
+            gridWidth: rect.width,
+            gridCols: metrics.cols,
+            gapPx: 8,
+            rowStride: metrics.rowStride,
+            totalItems: metrics.totalItems,
+            clientX,
+            clientY,
+          }) ?? metrics.totalItems
+        );
+      };
+
+      const autoScrollContainer = (el: HTMLElement | null, clientY: number) => {
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        const edge = 48;
+        if (clientY < r.top || clientY > r.bottom) return false;
+        let dy = 0;
+        if (clientY < r.top + edge) {
+          dy = -Math.ceil(((r.top + edge - clientY) / edge) * 14);
+        } else if (clientY > r.bottom - edge) {
+          dy = Math.ceil(((clientY - (r.bottom - edge)) / edge) * 14);
+        }
+        if (dy !== 0) {
+          const prev = el.scrollTop;
+          el.scrollTop += dy;
+          return el.scrollTop !== prev;
+        }
+        return false;
+      };
+
+      const tickSplit = () => {
+        rafId = null;
+        if (!dragging) return;
+        if (splitDragGhostRef.current) {
+          splitDragGhostRef.current.style.transform = `translate3d(${latestX + 14}px, ${latestY + 14}px, 0)`;
+        }
+
+        const scrolledSec = autoScrollContainer(splitSectionsScrollRef.current, latestY);
+        const scrolledMain = autoScrollContainer(
+          splitGridRef.current?.closest("main") as HTMLElement | null,
+          latestY,
+        );
+
+        const hit = document.elementFromPoint(latestX, latestY) as HTMLElement | null;
+        const secScrollEl = hit?.closest("[data-split-section-scroll]") as HTMLElement | null;
+        const scrolledInner = autoScrollContainer(secScrollEl, latestY);
+
+        if (scrolledSec || scrolledMain || scrolledInner) {
+          rafId = window.requestAnimationFrame(tickSplit);
+        }
+
+        const secEl = hit?.closest("[data-split-section-id]") as HTMLElement | null;
+        const nextHover = secEl?.dataset.splitSectionId ?? null;
+        if (nextHover !== hoverSectionIdRef.current) {
+          hoverSectionIdRef.current = nextHover;
+          setHoverSectionId(nextHover);
+        }
+
+        const nextTarget =
+          secEl && nextHover
+            ? {
+                sectionId: nextHover,
+                index: computeSectionInsert(secEl, latestX, latestY),
+              }
+            : null;
+        const prevTarget = splitInsertTargetRef.current;
+        if (
+          nextTarget?.sectionId !== prevTarget?.sectionId ||
+          nextTarget?.index !== prevTarget?.index
+        ) {
+          splitInsertTargetRef.current = nextTarget;
+          setSplitInsertTarget(nextTarget);
+        }
+      };
+
+      const onMove = (ev: PointerEvent) => {
+        latestX = ev.clientX;
+        latestY = ev.clientY;
+        if (!dragging) {
+          if (Math.hypot(latestX - startX, latestY - startY) < 5) return;
+          dragging = true;
+          const built = buildPayload();
+          splitDragRef.current = built.payload;
+          initialSplitGhostPosRef.current = { x: latestX + 14, y: latestY + 14 };
+          setSplitDragActive(built.visual);
+          document.body.style.userSelect = "none";
+          document.body.style.cursor = "grabbing";
+        }
+        if (rafId === null) {
+          rafId = window.requestAnimationFrame(tickSplit);
+        }
+      };
+
+      const finish = (ev: PointerEvent) => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", finish);
+        window.removeEventListener("pointercancel", finish);
+        if (rafId !== null) {
+          window.cancelAnimationFrame(rafId);
+          rafId = null;
+        }
+        document.body.style.userSelect = "";
+        document.body.style.cursor = "";
+        if (dragging) {
+          const hit = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null;
+          const secEl = hit?.closest("[data-split-section-id]") as HTMLElement | null;
+          if (secEl && secEl.dataset.splitSectionId) {
+            const targetSec = secEl.dataset.splitSectionId;
+            const insertIdx = computeSectionInsert(secEl, ev.clientX, ev.clientY);
+            handleDropOnSection(targetSec, insertIdx);
+          } else if (splitInsertTargetRef.current) {
+            handleDropOnSection(
+              splitInsertTargetRef.current.sectionId,
+              splitInsertTargetRef.current.index,
+            );
+          } else {
+            splitDragRef.current = null;
+            setHoverSectionId(null);
+            setSplitInsertTarget(null);
+          }
+          setSplitDragActive(null);
+        } else {
+          onNoDragClick?.();
+        }
+      };
+
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", finish);
+      window.addEventListener("pointercancel", finish);
+    },
+    [handleDropOnSection],
+  );
+
+  const handleSplitSourcePointerDown = React.useCallback(
+    (e: React.PointerEvent<HTMLDivElement>, fileIndex: number, pageIndex: number) => {
+      const clickSnapshot = {
+        shiftKey: e.shiftKey,
+        ctrlKey: e.ctrlKey,
+        metaKey: e.metaKey,
+      } as React.MouseEvent;
+      const key = sourceKey(fileIndex, pageIndex);
+      startSplitPointerDrag(
+        e,
+        () => {
+          const sel = selectedSourceKeysRef.current;
+          const sorted = sortedSelectedSourceItemsRef.current;
+          if (sel.has(key) && sorted.length > 1) {
+            return {
+              payload: { kind: "source_many", items: sorted },
+              visual: {
+                label: t.pdfOps.selectedCount(sorted.length),
+                count: sorted.length,
+                fileIndex,
+                pageIndex,
+                rotationDeg: 0,
+                thumbUrl: thumbsRef.current[key],
+              },
+            };
+          }
+          return {
+            payload: { kind: "source", file_index: fileIndex, page_index: pageIndex },
+            visual: {
+              label:
+                filesRef.current.length > 1
+                  ? `F${fileIndex + 1}·P${pageIndex + 1}`
+                  : `P${pageIndex + 1}`,
+              count: 1,
+              fileIndex,
+              pageIndex,
+              rotationDeg: 0,
+              thumbUrl: thumbsRef.current[key],
+            },
+          };
+        },
+        () => handleSourcePageClickRef.current(clickSnapshot, fileIndex, pageIndex),
+      );
+    },
+    [startSplitPointerDrag, t.pdfOps],
+  );
+
+  const handleSplitSectionItemPointerDown = React.useCallback(
+    (e: React.PointerEvent<HTMLDivElement>, sectionId: string, itemIndex: number) => {
+      startSplitPointerDrag(e, () => {
+        const sec = splitSectionsRef.current.find((s) => s.id === sectionId);
+        const item = sec?.pages[itemIndex];
+        const fileIndex = item?.file_index ?? 0;
+        const pageIndex = item?.page_index ?? 0;
+        const rotationDeg = item?.rotation_deg ?? 0;
+        const key = sourceKey(fileIndex, pageIndex);
+        return {
+          payload: { kind: "section_item", sectionId, itemIndex },
+          visual: {
+            label:
+              filesRef.current.length > 1
+                ? `F${fileIndex + 1}·P${pageIndex + 1}`
+                : `P${pageIndex + 1}`,
+            count: 1,
+            fileIndex,
+            pageIndex,
+            rotationDeg,
+            thumbUrl: thumbsRef.current[key],
+            sourceSecId: sectionId,
+            sourceItemIdx: itemIndex,
+          },
+        };
+      });
+    },
+    [startSplitPointerDrag],
+  );
+
+  const handleDoubleClickSplitPage = React.useCallback(
+    (fileIndex: number, pageIndex: number, rotationDeg = 0) => {
+      const src = filesRef.current[fileIndex];
+      if (!src) return;
+      setZoomTarget({
+        path: src.path,
+        pageIndex,
+        rotationDeg,
+        fallbackThumbSrc: thumbsRef.current[sourceKey(fileIndex, pageIndex)],
+      });
+    },
+    [],
+  );
+
+  const handleDoubleClickSplitSource = React.useCallback(
+    (fileIndex: number, pageIndex: number) => {
+      handleDoubleClickSplitPage(fileIndex, pageIndex, 0);
+    },
+    [handleDoubleClickSplitPage],
+  );
+
+  const handleQuickAddSourcePage = React.useCallback(
+    (fileIndex: number, pageIndex: number) => {
+      appendSourceItemsToSection([{ file_index: fileIndex, page_index: pageIndex }]);
+    },
+    [appendSourceItemsToSection],
+  );
+
+  const handleRotateSectionItem = React.useCallback((sectionId: string, uid: string) => {
+    setSplitSections((prev) =>
+      prev.map((s) =>
+        s.id === sectionId
+          ? {
+              ...s,
+              pages: s.pages.map((p) =>
+                p.uid === uid ? { ...p, rotation_deg: (p.rotation_deg + 90) % 360 } : p,
+              ),
+            }
+          : s,
+      ),
+    );
+  }, []);
+
+  const handleRemoveSectionItem = React.useCallback((sectionId: string, uid: string) => {
+    setSplitSections((prev) =>
+      prev.map((s) =>
+        s.id === sectionId ? { ...s, pages: s.pages.filter((p) => p.uid !== uid) } : s,
+      ),
+    );
+  }, []);
 
   const executeMerge = async (outPath: string) => {
     try {
@@ -769,13 +1700,20 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
     [nonEmptySections],
   );
 
-  const executeSplit = async (outDir: string, stem: string, rule: PdfSplitRule) => {
-    const src = files[0];
-    if (!src) return;
+  const executeSplit = async (
+    inputs: string[],
+    stems: string[],
+    outDir: string,
+    rule: PdfSplitRule,
+  ) => {
+    if (inputs.length === 0) return;
     try {
       const jobId = crypto.randomUUID();
       onStartJob(jobId, t.pdfOps.splitJobTitle);
-      const res = await splitPdfFile(jobId, src.path, outDir, stem, rule, onJobEvent);
+      const res =
+        inputs.length === 1 && rule.rule !== "custom_groups"
+          ? await splitPdfFile(jobId, inputs[0], outDir, stems[0] ?? "split", rule, onJobEvent)
+          : await splitMultiPdfFiles(jobId, inputs, stems, outDir, rule, onJobEvent);
       onFinishJob(
         t.pdfOps.splitJobTitle,
         res.output_files,
@@ -791,26 +1729,10 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
 
   const computeExpectedSplitPaths = (
     outDir: string,
-    stem: string,
+    stems: string[],
+    pageCounts: number[],
     rule: PdfSplitRule,
-    totalPages: number,
   ): string[] => {
-    if (rule.rule === "page_ranges") {
-      return [joinDirAndFile(outDir, `${stem}_extracted.pdf`)];
-    }
-    if (rule.rule === "extract_selected") {
-      return [joinDirAndFile(outDir, `${stem}_selected.pdf`)];
-    }
-    if (rule.rule === "every_n_pages") {
-      const step = Math.max(1, rule.n);
-      const out: string[] = [];
-      let part = 1;
-      for (let s = 0; s < totalPages; s += step) {
-        out.push(joinDirAndFile(outDir, `${stem}_part${String(part).padStart(2, "0")}.pdf`));
-        part += 1;
-      }
-      return out;
-    }
     if (rule.rule === "custom_groups") {
       return rule.groups.map((g, idx) => {
         const clean =
@@ -821,7 +1743,24 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
         return joinDirAndFile(outDir, `${clean}.pdf`);
       });
     }
-    return [];
+    const out: string[] = [];
+    for (let i = 0; i < stems.length; i++) {
+      const stem = stems[i] || "split";
+      const totalPages = pageCounts[i] ?? 0;
+      if (rule.rule === "page_ranges") {
+        out.push(joinDirAndFile(outDir, `${stem}_extracted.pdf`));
+      } else if (rule.rule === "extract_selected") {
+        out.push(joinDirAndFile(outDir, `${stem}_selected.pdf`));
+      } else if (rule.rule === "every_n_pages") {
+        const step = Math.max(1, rule.n);
+        let part = 1;
+        for (let s = 0; s < totalPages; s += step) {
+          out.push(joinDirAndFile(outDir, `${stem}_part${String(part).padStart(2, "0")}.pdf`));
+          part += 1;
+        }
+      }
+    }
+    return out;
   };
 
   const handleSplit = async () => {
@@ -834,8 +1773,9 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
         : await pickDirectory(t.pdfOps.pickSplitDirDialog);
       if (!outDir) return;
 
-      const src = files[0];
-      const stem = getSplitStem(src);
+      const inputs = files.map((f) => f.path);
+      const stems = files.map((f) => getSplitStemForFile(f, files.length));
+      const fallbackStem = stems[0] || "split";
 
       const useCustomGroups =
         splitRuleKind !== "max_bytes" && nonEmptySections.length > 0;
@@ -844,9 +1784,9 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
         ? {
             rule: "custom_groups",
             groups: nonEmptySections.map((sec) => ({
-              name: sec.name.trim() || stem,
+              name: sec.name.trim() || fallbackStem,
               pages: sec.pages.map((p) => ({
-                file_index: 0,
+                file_index: p.file_index,
                 page_index: p.page_index,
                 rotation_deg: p.rotation_deg,
               })),
@@ -858,16 +1798,28 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
             ? { rule: "every_n_pages", n: everyN }
             : { rule: "max_bytes", max_mb: splitMaxMb };
 
-      const candidates = computeExpectedSplitPaths(outDir, stem, rule, src.page_count);
+      const candidates = computeExpectedSplitPaths(
+        outDir,
+        stems,
+        files.map((f) => f.page_count),
+        rule,
+      );
       if (candidates.length > 0) {
         const conflicts = await checkExportConflicts(candidates);
         if (conflicts.length > 0) {
-          setPendingConflict({ kind: "split", outDir, stem, rule, conflicts });
+          setPendingConflict({
+            kind: "split",
+            inputs,
+            stems,
+            outDir,
+            rule,
+            conflicts,
+          });
           return;
         }
       }
 
-      await executeSplit(outDir, stem, rule);
+      await executeSplit(inputs, stems, outDir, rule);
     } catch (e) {
       setErrorMsg(String(e));
     }
@@ -888,11 +1840,10 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
     }
 
     if (choice === "overwrite") {
-      await executeSplit(pending.outDir, pending.stem, pending.rule);
+      await executeSplit(pending.inputs, pending.stems, pending.outDir, pending.rule);
       return;
     }
 
-    // Auto-rename stem or custom group names so they don't overwrite
     if (pending.rule.rule === "custom_groups") {
       const renamedGroups = await Promise.all(
         pending.rule.groups.map(async (g, idx) => {
@@ -907,17 +1858,22 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
           return { ...g, name: uniqueName };
         }),
       );
-      await executeSplit(pending.outDir, pending.stem, {
+      await executeSplit(pending.inputs, pending.stems, pending.outDir, {
         rule: "custom_groups",
         groups: renamedGroups,
       });
     } else {
-      const uniqueStem = `${pending.stem}_${Date.now().toString().slice(-4)}`;
-      await executeSplit(pending.outDir, uniqueStem, pending.rule);
+      const suffix = Date.now().toString().slice(-4);
+      const uniqueStems = pending.stems.map((s) => `${s}_${suffix}`);
+      await executeSplit(pending.inputs, uniqueStems, pending.outDir, pending.rule);
     }
   };
 
-  const sourcePdf = files[0] ?? null;
+  const totalSplitSourcePages = React.useMemo(
+    () => files.reduce((acc, f) => acc + f.page_count, 0),
+    [files],
+  );
+  const showFilePrefix = files.length > 1;
 
   return (
     <div className="space-y-4">
@@ -940,7 +1896,7 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
         ) : (
           <button
             type="button"
-            disabled={busy || !sourcePdf}
+            disabled={busy || files.length === 0}
             onClick={() => void handleSplit()}
             className="knit-control inline-flex items-center gap-1.5 rounded-[4px] bg-[#007BFF] px-4 text-sm font-semibold text-white hover:bg-[#0069D9] disabled:opacity-50"
           >
@@ -980,6 +1936,17 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
         </button>
       </div>
 
+      {/* Output Filename Bar (unified top position right below switcher) */}
+      <ExportFilenameControl
+        value={tab === "merge" ? mergeExportFilename : splitPrefixFilename}
+        onChange={tab === "merge" ? setMergeExportFilename : setSplitPrefixFilename}
+        label={tab === "split" ? t.pdfOps.splitPrefixLabel : undefined}
+        placeholder={tab === "merge" ? "merged.pdf" : t.pdfOps.splitPrefixPlaceholder}
+        defaultExportDir={defaultExportDir}
+        existsAtDefaultDir={tab === "merge" ? mergeExistsAtDefaultDir : false}
+        className="bg-white"
+      />
+
       {errorMsg && (
         <div className="rounded-[4px] border border-[#F5C6CB] bg-[#F8D7DA] px-3.5 py-2.5 text-sm text-[#721C24]">
           {errorMsg}
@@ -990,7 +1957,13 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
         title={tab === "merge" ? t.pdfOps.dropTitleMerge : t.pdfOps.dropTitleSplit}
         description={t.pdfOps.dropDesc}
         onPickFiles={() => void handleAddPdfs()}
-        filesLabel={tab === "merge" ? t.pdfOps.addPdfBtn : t.pdfOps.pickPdfBtn}
+        filesLabel={t.pdfOps.addPdfBtn}
+        loading={importingPdfs}
+        loadingLabel={
+          importProgress && importProgress.total > 1
+            ? t.pdfOps.importingProgress(importProgress.done, importProgress.total)
+            : t.pdfOps.importingLabel
+        }
       />
 
       {files.length > 0 && (
@@ -1022,10 +1995,14 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
                   : "border-[#E9ECEF] bg-[#F8F9FA]"
               }`}
             >
-              <span className="font-mono-code min-w-0 flex-1 truncate">{f.path}</span>
-              <span className="ml-2 shrink-0 font-mono-code text-[#6C757D]">
-                {t.pdfOps.docMeta(f.page_count, formatBytes(f.file_size_bytes), f.bookmarks.length)}
-              </span>
+              <div className="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-2">
+                <span className="font-mono-code truncate font-semibold text-[#212529]">
+                  {idx + 1}. {f.path.split(/[\\/]/).pop()}
+                </span>
+                <span className="text-[#6C757D]">
+                  {t.pdfOps.docMeta(f.page_count, formatBytes(f.file_size_bytes), f.bookmarks.length)}
+                </span>
+              </div>
               <button
                 type="button"
                 onClick={() => setPendingRemoveFileIdx(idx)}
@@ -1041,7 +2018,7 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
 
       {tab === "merge" && selections.length > 0 && (
         <div className="space-y-3">
-          <div className="space-y-2.5 rounded-[4px] border border-[#DEE2E6] bg-white px-4 py-3">
+          <div className="rounded-[4px] border border-[#DEE2E6] bg-white px-4 py-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <label className="flex items-center gap-2 text-sm font-semibold text-[#212529]">
                 <input
@@ -1056,7 +2033,7 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
                 <span className="text-xs font-semibold text-[#495057]">
                   {t.pdfOps.gridColumnsLabel}
                 </span>
-                {MERGE_GRID_OPTIONS.map((cols) => (
+                {GRID_COL_OPTIONS.map((cols) => (
                   <button
                     key={cols}
                     type="button"
@@ -1089,14 +2066,6 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
                 )}
               </div>
             </div>
-
-            <ExportFilenameControl
-              value={mergeExportFilename}
-              onChange={setMergeExportFilename}
-              placeholder="merged.pdf"
-              defaultExportDir={defaultExportDir}
-              existsAtDefaultDir={mergeExistsAtDefaultDir}
-            />
           </div>
 
           <div
@@ -1114,121 +2083,114 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
                 <span>{t.pdfOps.mergeDragHint}</span>
               </div>
 
-              <div
-                ref={mergeGridRef}
-                className={`grid gap-3 ${MERGE_GRID_CLASS[mergeGridCols] ?? "grid-cols-2 md:grid-cols-5"}`}
-              >
-                {selections.map((sel, idx) => {
-                  const key = `${sel.file_index}:${sel.page_index}`;
-                  const isDragging = mergeDragIdx === idx;
-                  const isNoOpInsert =
-                    mergeDragIdx !== null &&
-                    mergeInsertAt !== null &&
-                    (mergeInsertAt === mergeDragIdx || mergeInsertAt === mergeDragIdx + 1);
-                  const showBarLeft = !isNoOpInsert && mergeInsertAt === idx;
-                  const showBarEnd =
-                    !isNoOpInsert &&
-                    idx === selections.length - 1 &&
-                    mergeInsertAt === selections.length;
-                  const srcPath = files[sel.file_index]?.path ?? "";
-                  return (
+              {(() => {
+                const cols = Math.max(1, mergeGridCols);
+                const rowCount = Math.max(1, Math.ceil(selections.length / cols));
+                const safeStartRow = Math.min(mergeVisibleRange.startRow, Math.max(0, rowCount - 1));
+                const safeEndRow = Math.min(
+                  rowCount - 1,
+                  Math.max(safeStartRow, mergeVisibleRange.endRow),
+                );
+                const startIdx = safeStartRow * cols;
+                const endIdxExclusive = Math.min(selections.length, (safeEndRow + 1) * cols);
+                const visibleSelections = selections.slice(startIdx, endIdxExclusive);
+                const topPadPx = safeStartRow * mergeRowStride;
+                const bottomPadPx = Math.max(0, (rowCount - 1 - safeEndRow) * mergeRowStride);
+                const isDraggingAny = mergeDragIdx !== null;
+                const isNoOpInsert =
+                  mergeDragIdx !== null &&
+                  mergeInsertAt !== null &&
+                  (mergeInsertAt === mergeDragIdx || mergeInsertAt === mergeDragIdx + 1);
+                const draggedSel = mergeDragIdx !== null ? selections[mergeDragIdx] : undefined;
+                const draggedThumbUrl = draggedSel
+                  ? thumbs[sourceKey(draggedSel.file_index, draggedSel.page_index)]
+                  : undefined;
+
+                return (
+                  <div
+                    ref={mergeGridOuterRef}
+                    style={{
+                      paddingTop: topPadPx > 0 ? `${topPadPx}px` : undefined,
+                      paddingBottom: bottomPadPx > 0 ? `${bottomPadPx}px` : undefined,
+                    }}
+                  >
                     <div
-                      key={`${key}-${idx}`}
-                      onPointerDown={(e) => handleMergeCardPointerDown(e, idx)}
-                      onDoubleClick={() => {
-                        if (!srcPath) return;
-                        setZoomTarget({
-                          path: srcPath,
-                          pageIndex: sel.page_index,
-                          rotationDeg: sel.rotation_deg,
-                          fallbackThumbSrc: thumbs[key],
-                        });
-                      }}
-                      className="relative"
+                      ref={mergeGridInnerRef}
+                      className="grid auto-rows-max gap-3 select-none"
+                      style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
                     >
-                      {showBarLeft && (
-                        <div
-                          aria-hidden="true"
-                          className="pointer-events-none absolute -left-[9px] bottom-0 top-0 z-30 w-1.5 rounded-full bg-[#007BFF] shadow-[0_0_8px_rgba(0,123,255,0.75)]"
-                        />
-                      )}
-                      {showBarEnd && (
-                        <div
-                          aria-hidden="true"
-                          className="pointer-events-none absolute -right-[9px] bottom-0 top-0 z-30 w-1.5 rounded-full bg-[#007BFF] shadow-[0_0_8px_rgba(0,123,255,0.75)]"
-                        />
-                      )}
-                      <div
-                        className={`flex select-none flex-col overflow-hidden rounded-[4px] border bg-white ${
-                          mergeDragIdx !== null ? "cursor-grabbing" : "cursor-grab"
-                        } ${
-                          isDragging
-                            ? "border-[#007BFF] opacity-40 ring-2 ring-[#007BFF]"
-                            : "border-[#DEE2E6] hover:border-[#007BFF]"
-                        }`}
-                      >
-                        <div className="relative flex h-32 items-center justify-center bg-[#F1F3F5] p-1">
-                          {thumbs[key] ? (
-                            <img
-                              src={thumbs[key]}
-                              alt={`File ${sel.file_index + 1} P${sel.page_index + 1}`}
-                              draggable={false}
-                              className="pointer-events-none max-h-full max-w-full object-contain"
-                              style={{ transform: `rotate(${sel.rotation_deg}deg)` }}
-                            />
-                          ) : (
-                            <span className="font-mono-code text-xs text-[#6C757D]">
-                              F{sel.file_index + 1}·P{sel.page_index + 1}
-                            </span>
-                          )}
-                          <span className="absolute left-1 top-1 flex items-center gap-0.5 rounded-[4px] bg-[#343A40] px-1.5 py-0.5 font-mono-code text-[11px] text-white">
-                            <GripVertical className="h-3 w-3 text-[#ADB5BD]" />#{idx + 1}
-                          </span>
-                        </div>
-                        <div className="border-t border-[#DEE2E6] p-2">
-                          <div className="font-mono-code text-xs text-[#6C757D]">
-                            {t.pdfOps.pageMeta(
+                      {visibleSelections.map((sel, localIdx) => {
+                        const idx = startIdx + localIdx;
+                        const key = sourceKey(sel.file_index, sel.page_index);
+                        const showBarLeft = !isNoOpInsert && mergeInsertAt === idx;
+                        const showBarEnd =
+                          !isNoOpInsert &&
+                          idx === selections.length - 1 &&
+                          mergeInsertAt === selections.length;
+                        return (
+                          <MergePageCard
+                            key={`${key}-${idx}`}
+                            idx={idx}
+                            fileIndex={sel.file_index}
+                            pageIndex={sel.page_index}
+                            rotationDeg={sel.rotation_deg}
+                            thumbUrl={thumbs[key]}
+                            isDragged={mergeDragIdx === idx}
+                            isDraggingAny={isDraggingAny}
+                            showBarLeft={showBarLeft}
+                            showBarEnd={showBarEnd}
+                            metaText={t.pdfOps.pageMeta(
                               sel.file_index + 1,
                               sel.page_index + 1,
                               sel.rotation_deg,
                             )}
-                          </div>
-                          <div className="mt-1.5 flex items-center justify-between">
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setSelections((prev) =>
-                                  prev.map((s, i) =>
-                                    i === idx
-                                      ? { ...s, rotation_deg: (s.rotation_deg + 90) % 360 }
-                                      : s,
-                                  ),
-                                );
-                              }}
-                              title={t.image2pdf.rotateTitle}
-                              className="rounded-[4px] border border-[#DEE2E6] p-1 text-[#495057] hover:bg-[#F8F9FA]"
-                            >
-                              <RotateCw className="h-3.5 w-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setSelections((prev) => prev.filter((_, i) => i !== idx));
-                              }}
-                              title={t.image2pdf.deletePageTitle}
-                              className="rounded-[4px] p-1 text-[#DC3545] hover:bg-[#F8D7DA]"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                          </div>
+                            rotateTitle={t.image2pdf.rotateTitle}
+                            deleteTitle={t.image2pdf.deletePageTitle}
+                            onRegisterRef={registerThumbCardRef}
+                            onPointerDownCard={handleMergeCardPointerDown}
+                            onDoubleClickCard={handleDoubleClickMergePage}
+                            onRotate={handleRotateMergePage}
+                            onRemove={handleRemoveMergePage}
+                          />
+                        );
+                      })}
+                    </div>
+
+                    {draggedSel && mergeDragIdx !== null && (
+                      <div
+                        ref={mergeDragGhostRef}
+                        aria-hidden="true"
+                        style={{
+                          transform: `translate3d(${initialMergeGhostPosRef.current.x}px, ${initialMergeGhostPosRef.current.y}px, 0)`,
+                        }}
+                        className="pointer-events-none fixed left-0 top-0 z-50 w-36 overflow-hidden rounded-[4px] border-2 border-[#007BFF] bg-white shadow-2xl"
+                      >
+                        <div className="relative flex h-28 items-center justify-center bg-[#F1F3F5] p-1">
+                          {draggedThumbUrl ? (
+                            <img
+                              src={draggedThumbUrl}
+                              alt=""
+                              className="max-h-full max-w-full object-contain"
+                              style={
+                                draggedSel.rotation_deg % 360 !== 0
+                                  ? { transform: `rotate(${draggedSel.rotation_deg}deg)` }
+                                  : undefined
+                              }
+                            />
+                          ) : (
+                            <span className="font-mono-code text-xs text-[#6C757D]">
+                              F{draggedSel.file_index + 1}·P{draggedSel.page_index + 1}
+                            </span>
+                          )}
+                          <span className="absolute left-1 top-1 rounded-[4px] bg-[#007BFF] px-1.5 py-0.5 font-mono-code text-[11px] font-bold text-white">
+                            #{mergeDragIdx + 1}
+                          </span>
                         </div>
                       </div>
-                    </div>
-                  );
-                })}
-              </div>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
 
             {preserveBookmarks && showMergeBookmarks && (
@@ -1244,9 +2206,9 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
         </div>
       )}
 
-      {tab === "split" && sourcePdf && (
+      {tab === "split" && files.length > 0 && (
         <div className="space-y-4">
-          {/* Quick Split Presets + Main Split CTA */}
+          {/* Quick Split Presets */}
           <div className="flex flex-wrap items-end gap-3 rounded-[4px] border border-[#DEE2E6] bg-white p-4">
             <div className="min-w-[220px] flex-1">
               <label className="block text-xs font-semibold uppercase text-[#6C757D]">
@@ -1331,49 +2293,93 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
                 "--split-left": `${(liveSplitRatio * 100).toFixed(2)}%`,
               } as React.CSSProperties
             }
-            className="grid grid-cols-1 items-start gap-3 lg:gap-0 lg:[grid-template-columns:var(--split-left)_12px_minmax(0,1fr)]"
+            className="grid grid-cols-1 items-start gap-3 lg:gap-2 lg:[grid-template-columns:var(--split-left)_12px_minmax(0,1fr)]"
           >
-            {/* Source PDF Pages Strip */}
+            {/* Source PDF Pages Strip (Virtualized + pages/row selector + multi-file filter) */}
             <div className="flex min-w-0 flex-col overflow-hidden rounded-[4px] border border-[#DEE2E6] bg-white">
               <div className="space-y-2 border-b border-[#E9ECEF] p-3.5 pb-2.5">
-                <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-start justify-between gap-2">
                   <div>
                     <div className="text-base font-bold text-[#343A40]">
-                      {t.pdfOps.sourcePagesTitle(sourcePdf.page_count)}
+                      {t.pdfOps.sourcePagesTitle(totalSplitSourcePages)}
                     </div>
                     <div className="text-sm text-[#6C757D]">{t.pdfOps.sourcePagesHint}</div>
                   </div>
-                  {sourcePdf.page_count > thumbLimit && (
-                    <button
-                      type="button"
-                      onClick={handleLoadMoreSplitThumbs}
-                      className="knit-control-sm rounded-[4px] border border-[#CED4DA] bg-[#F8F9FA] px-2.5 text-sm font-semibold text-[#343A40] hover:bg-[#E9ECEF]"
-                    >
-                      {t.pdfOps.loadMoreThumbsBtn(thumbLimit, sourcePdf.page_count)}
-                    </button>
-                  )}
                 </div>
 
-                {sortedSelectedSourcePages.length > 0 && (
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-1.5 text-xs text-[#495057]">
+                    <span className="font-semibold">{t.pdfOps.gridColumnsLabel}</span>
+                    {GRID_COL_OPTIONS.map((cols) => (
+                      <button
+                        key={cols}
+                        type="button"
+                        onClick={() => setSplitSourceCols(cols)}
+                        className={`knit-control-sm rounded-[4px] border px-2 font-mono-code text-xs font-semibold ${
+                          splitSourceCols === cols
+                            ? "border-[#007BFF] bg-[#007BFF] text-white"
+                            : "border-[#CED4DA] bg-[#F8F9FA] text-[#343A40] hover:bg-[#E9ECEF]"
+                        }`}
+                      >
+                        {cols}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {files.length > 1 && (
+                  <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setSplitSourceFilterIdx("all")}
+                      className={`rounded-[4px] border px-2 py-0.5 text-xs font-semibold ${
+                        splitSourceFilterIdx === "all"
+                          ? "border-[#007BFF] bg-[#007BFF] text-white"
+                          : "border-[#CED4DA] bg-[#F8F9FA] text-[#343A40] hover:bg-[#E9ECEF]"
+                      }`}
+                    >
+                      {t.pdfOps.splitAllSourcesFilter} ({totalSplitSourcePages})
+                    </button>
+                    {files.map((f, fIdx) => {
+                      const shortName =
+                        f.path.split(/[\\/]/).pop()?.replace(/\.pdf$/i, "") ?? `PDF ${fIdx + 1}`;
+                      return (
+                        <button
+                          key={`${f.path}-${fIdx}`}
+                          type="button"
+                          onClick={() => setSplitSourceFilterIdx(fIdx)}
+                          title={shortName}
+                          className={`max-w-[160px] truncate rounded-[4px] border px-2 py-0.5 text-xs font-semibold ${
+                            splitSourceFilterIdx === fIdx
+                              ? "border-[#007BFF] bg-[#007BFF] text-white"
+                              : "border-[#CED4DA] bg-[#F8F9FA] text-[#343A40] hover:bg-[#E9ECEF]"
+                          }`}
+                        >
+                          {t.pdfOps.splitSourceFileFilter(fIdx + 1, shortName, f.page_count)}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {sortedSelectedSourceItems.length > 0 && (
                   <div className="flex flex-wrap items-center justify-between gap-2 rounded-[4px] border border-[#B8DAFF] bg-[#E7F1FF] px-2.5 py-1.5 text-sm">
                     <span className="font-semibold text-[#0056B3]">
-                      {t.pdfOps.selectedCount(sortedSelectedSourcePages.length)}
+                      {t.pdfOps.selectedCount(sortedSelectedSourceItems.length)}
                     </span>
                     <div className="flex flex-wrap items-center gap-1.5">
                       <button
                         type="button"
-                        onClick={() =>
-                          appendSourcePagesToSection(sortedSelectedSourcePages)
-                        }
+                        onClick={() => appendSourceItemsToSection(sortedSelectedSourceItems)}
                         className="rounded-[4px] bg-[#007BFF] px-2.5 py-0.5 text-xs font-semibold text-white hover:bg-[#0069D9]"
                       >
-                        {t.pdfOps.addSelectedBtn(sortedSelectedSourcePages.length)}
+                        {t.pdfOps.addSelectedBtn(sortedSelectedSourceItems.length)}
                       </button>
                       <button
                         type="button"
                         onClick={() => {
-                          setSelectedSourcePages(new Set());
-                          setLastClickedSourceIdx(null);
+                          setSelectedSourceKeys(new Set());
+                          setLastClickedSourcePos(null);
                         }}
                         className="rounded-[4px] border border-[#CED4DA] bg-white px-2.5 py-0.5 text-xs font-medium text-[#495057] hover:bg-[#F8F9FA]"
                       >
@@ -1384,94 +2390,65 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
                 )}
               </div>
 
-              <div
-                style={{ height: `${liveSourceHeightPx}px` }}
-                className="grid grid-cols-3 content-start gap-2 overflow-y-auto p-3.5 sm:grid-cols-4 lg:grid-cols-3"
-              >
-                {Array.from({ length: sourcePdf.page_count }, (_, pIdx) => {
-                  const thumbKey = `0:${pIdx}`;
-                  const isSelected = selectedSourcePages.has(pIdx);
-                  return (
+              {(() => {
+                const cols = Math.max(1, splitSourceCols);
+                const total = displayedSplitSourceItems.length;
+                const rowCount = Math.max(1, Math.ceil(total / cols));
+                const safeStartRow = Math.min(
+                  splitSourceVisibleRange.startRow,
+                  Math.max(0, rowCount - 1),
+                );
+                const safeEndRow = Math.min(
+                  rowCount - 1,
+                  Math.max(safeStartRow, splitSourceVisibleRange.endRow),
+                );
+                const startIdx = safeStartRow * cols;
+                const endIdxExclusive = Math.min(total, (safeEndRow + 1) * cols);
+                const visibleItems = displayedSplitSourceItems.slice(startIdx, endIdxExclusive);
+                const topPadPx = safeStartRow * splitSourceRowStride;
+                const bottomPadPx = Math.max(0, (rowCount - 1 - safeEndRow) * splitSourceRowStride);
+
+                return (
+                  <div
+                    ref={splitSourceScrollRef}
+                    style={{ height: `${liveSourceHeightPx}px` }}
+                    className="overflow-y-auto p-3.5"
+                  >
                     <div
-                      key={pIdx}
-                      draggable
-                      onClick={(e) => handleSourcePageClick(e, pIdx)}
-                      onDoubleClick={(e) => {
-                        e.stopPropagation();
-                        setZoomTarget({
-                          path: sourcePdf.path,
-                          pageIndex: pIdx,
-                          rotationDeg: 0,
-                          fallbackThumbSrc: thumbs[thumbKey],
-                        });
+                      ref={splitSourceGridOuterRef}
+                      style={{
+                        paddingTop: topPadPx > 0 ? `${topPadPx}px` : undefined,
+                        paddingBottom: bottomPadPx > 0 ? `${bottomPadPx}px` : undefined,
                       }}
-                      onDragStart={(e) => {
-                        if (isSelected && sortedSelectedSourcePages.length > 1) {
-                          splitDragRef.current = {
-                            kind: "source_many",
-                            page_indices: sortedSelectedSourcePages,
-                          };
-                          e.dataTransfer.setData(
-                            "text/plain",
-                            `source_many:${sortedSelectedSourcePages.join(",")}`,
-                          );
-                        } else {
-                          splitDragRef.current = { kind: "source", page_index: pIdx };
-                          e.dataTransfer.setData("text/plain", `source:${pIdx}`);
-                        }
-                        e.dataTransfer.effectAllowed = "copy";
-                      }}
-                      onDragEnd={() => {
-                        splitDragRef.current = null;
-                        setHoverSectionId(null);
-                      }}
-                      className={`group flex cursor-grab select-none flex-col overflow-hidden rounded-[4px] border active:cursor-grabbing ${
-                        isSelected
-                          ? "border-[#007BFF] bg-[#E7F1FF] ring-2 ring-[#007BFF]/40"
-                          : "border-[#DEE2E6] bg-[#F8F9FA] hover:border-[#007BFF]"
-                      }`}
                     >
-                      <div className="relative flex h-24 items-center justify-center bg-white p-1">
-                        {thumbs[thumbKey] ? (
-                          <img
-                            src={thumbs[thumbKey]}
-                            alt={`P${pIdx + 1}`}
-                            draggable={false}
-                            className="pointer-events-none max-h-full max-w-full object-contain"
-                          />
-                        ) : (
-                          <span className="font-mono-code text-sm text-[#6C757D]">
-                            P{pIdx + 1}
-                          </span>
-                        )}
-                        <span
-                          className={`absolute left-1 top-1 flex items-center gap-0.5 rounded-[4px] px-1.5 py-0.5 font-mono-code text-xs text-white ${
-                            isSelected ? "bg-[#007BFF]" : "bg-[#343A40]"
-                          }`}
-                        >
-                          {isSelected ? (
-                            <Check className="h-3 w-3" />
-                          ) : (
-                            <GripVertical className="h-3 w-3 text-[#ADB5BD]" />
-                          )}
-                          {pIdx + 1}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            appendSourcePageToSection(pIdx);
-                          }}
-                          title="Add to active section"
-                          className="absolute bottom-1 right-1 flex h-6 w-6 items-center justify-center rounded-[4px] bg-[#007BFF] text-white opacity-90 hover:opacity-100"
-                        >
-                          <Plus className="h-3.5 w-3.5" />
-                        </button>
+                      <div
+                        ref={splitSourceGridInnerRef}
+                        className="grid auto-rows-max gap-2 select-none"
+                        style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
+                      >
+                        {visibleItems.map((it) => {
+                          const key = sourceKey(it.fileIndex, it.pageIndex);
+                          return (
+                            <SplitSourceCard
+                              key={key}
+                              fileIndex={it.fileIndex}
+                              pageIndex={it.pageIndex}
+                              showFilePrefix={showFilePrefix}
+                              thumbUrl={thumbs[key]}
+                              isSelected={selectedSourceKeys.has(key)}
+                              isDraggingAny={splitDragActive !== null}
+                              onRegisterRef={registerThumbCardRef}
+                              onPointerDownCard={handleSplitSourcePointerDown}
+                              onDoubleClickCard={handleDoubleClickSplitSource}
+                              onQuickAdd={handleQuickAddSourcePage}
+                            />
+                          );
+                        })}
                       </div>
                     </div>
-                  );
-                })}
-              </div>
+                  </div>
+                );
+              })()}
 
               <div
                 role="separator"
@@ -1484,23 +2461,26 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
               </div>
             </div>
 
-            {/* Width Splitter (Desktop) */}
+            {/* Width Splitter (Desktop — matching height resizer bar styling) */}
             <div
               role="separator"
               aria-orientation="vertical"
               title={t.pdfOps.resizeWidthTitle}
               onPointerDown={handleSplitWidthResize}
-              className="hidden h-full min-h-[280px] cursor-col-resize select-none items-center justify-center lg:flex"
+              className="hidden self-stretch min-h-[280px] cursor-col-resize select-none items-center justify-center rounded-[4px] border border-[#DEE2E6] bg-[#F8F9FA] text-[#868E96] transition-colors hover:border-[#B8DAFF] hover:bg-[#E7F1FF] hover:text-[#007BFF] lg:flex"
             >
-              <div className="h-14 w-1 rounded-[2px] bg-[#CED4DA] transition-colors hover:bg-[#007BFF]" />
+              <GripVertical className="h-3.5 w-3.5" />
             </div>
 
             {/* Output Sections Builder */}
             <div className="flex min-w-0 flex-col overflow-hidden rounded-[4px] border border-[#DEE2E6] bg-white">
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#E9ECEF] px-3.5 py-2.5">
-                <span className="text-sm font-bold text-[#343A40]">
-                  {t.pdfOps.splitBuilderTitle}
-                </span>
+                <div>
+                  <span className="text-sm font-bold text-[#343A40]">
+                    {t.pdfOps.splitBuilderTitle}
+                  </span>
+                  <div className="text-xs text-[#6C757D]">{t.pdfOps.sectionItemDragHint}</div>
+                </div>
                 <button
                   type="button"
                   onClick={addSection}
@@ -1511,36 +2491,24 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
               </div>
 
               <div
+                ref={splitSectionsScrollRef}
                 style={{ height: `${liveSectionsHeightPx}px` }}
                 className="space-y-3 overflow-y-auto p-3.5"
               >
                 {splitSections.map((section, sIdx) => {
                   const isActive = activeSectionId === section.id;
                   const isHovered = hoverSectionId === section.id;
+                  const explicitSectionHeight =
+                    resizingSecHeight?.id === section.id
+                      ? resizingSecHeight.height
+                      : sectionHeightsPx[section.id];
+
                   return (
                     <div
                       key={section.id}
+                      data-split-section-id={section.id}
                       onClick={() => setActiveSectionId(section.id)}
-                      onDragOver={(e) => {
-                        if (!splitDragRef.current) return;
-                        e.preventDefault();
-                        e.dataTransfer.dropEffect =
-                          splitDragRef.current.kind === "source" ||
-                          splitDragRef.current.kind === "source_many"
-                            ? "copy"
-                            : "move";
-                        if (hoverSectionId !== section.id) setHoverSectionId(section.id);
-                      }}
-                      onDragLeave={() => {
-                        if (hoverSectionId === section.id) setHoverSectionId(null);
-                      }}
-                      onDrop={(e) => {
-                        if (!splitDragRef.current) return;
-                        e.preventDefault();
-                        e.stopPropagation();
-                        handleDropOnSection(section.id);
-                      }}
-                      className={`rounded-[4px] border bg-white p-3 transition-colors ${
+                      className={`overflow-hidden rounded-[4px] border bg-white transition-colors ${
                         isHovered
                           ? "border-2 border-dashed border-[#007BFF] bg-[#E7F1FF]/40"
                           : isActive
@@ -1548,7 +2516,7 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
                             : "border-[#DEE2E6]"
                       }`}
                     >
-                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#E9ECEF] pb-2.5">
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#E9ECEF] p-3 pb-2.5">
                         <div className="flex min-w-0 flex-1 items-center gap-2">
                           <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[4px] bg-[#343A40] font-mono-code text-xs font-bold text-white">
                             {sIdx + 1}
@@ -1602,117 +2570,120 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
                         </div>
                       </div>
 
-                      {section.pages.length === 0 ? (
-                        <div className="mt-2.5 rounded-[4px] border border-dashed border-[#CED4DA] bg-[#F8F9FA] py-5 text-center text-xs text-[#6C757D]">
-                          {t.pdfOps.emptySectionHint}
-                        </div>
-                      ) : (
-                        <div className="mt-2.5 grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-5">
-                          {section.pages.map((item, itemIdx) => {
-                            const thumbKey = `0:${item.page_index}`;
-                            return (
-                              <div
-                                key={item.uid}
-                                draggable
-                                onDragStart={(e) => {
-                                  e.stopPropagation();
-                                  splitDragRef.current = {
-                                    kind: "section_item",
-                                    sectionId: section.id,
-                                    itemIndex: itemIdx,
-                                  };
-                                  e.dataTransfer.effectAllowed = "move";
-                                  e.dataTransfer.setData("text/plain", item.uid);
-                                }}
-                                onDragOver={(e) => {
-                                  if (!splitDragRef.current) return;
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  if (hoverSectionId !== section.id) setHoverSectionId(section.id);
-                                }}
-                                onDrop={(e) => {
-                                  if (!splitDragRef.current) return;
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  handleDropOnSection(section.id, itemIdx);
-                                }}
-                                onDragEnd={() => {
-                                  splitDragRef.current = null;
-                                  setHoverSectionId(null);
-                                }}
-                                className="flex cursor-grab flex-col overflow-hidden rounded-[4px] border border-[#DEE2E6] bg-[#F8F9FA] active:cursor-grabbing"
-                              >
-                                <div className="relative flex h-20 items-center justify-center bg-white p-1">
-                                  {thumbs[thumbKey] ? (
-                                    <img
-                                      src={thumbs[thumbKey]}
-                                      alt={`Pg ${item.page_index + 1}`}
-                                      draggable={false}
-                                      className="pointer-events-none max-h-full max-w-full object-contain"
-                                      style={{ transform: `rotate(${item.rotation_deg}deg)` }}
-                                    />
-                                  ) : (
-                                    <span className="font-mono-code text-xs text-[#6C757D]">
-                                      P{item.page_index + 1}
-                                    </span>
-                                  )}
-                                  <span className="absolute left-1 top-1 rounded-[4px] bg-[#007BFF] px-1 py-0.5 font-mono-code text-[10px] text-white">
-                                    P{item.page_index + 1}
-                                  </span>
-                                </div>
-                                <div className="flex items-center justify-between border-t border-[#DEE2E6] px-1.5 py-1">
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setSplitSections((prev) =>
-                                        prev.map((s) =>
-                                          s.id === section.id
-                                            ? {
-                                                ...s,
-                                                pages: s.pages.map((p) =>
-                                                  p.uid === item.uid
-                                                    ? { ...p, rotation_deg: (p.rotation_deg + 90) % 360 }
-                                                    : p,
-                                                ),
-                                              }
-                                            : s,
-                                        ),
-                                      );
-                                    }}
-                                    className="rounded-[4px] p-0.5 text-[#495057] hover:bg-[#E9ECEF]"
-                                  >
-                                    <RotateCw className="h-3 w-3" />
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setSplitSections((prev) =>
-                                        prev.map((s) =>
-                                          s.id === section.id
-                                            ? {
-                                                ...s,
-                                                pages: s.pages.filter((p) => p.uid !== item.uid),
-                                              }
-                                            : s,
-                                        ),
-                                      );
-                                    }}
-                                    className="rounded-[4px] p-0.5 text-[#DC3545] hover:bg-[#F8D7DA]"
-                                  >
-                                    <Trash2 className="h-3 w-3" />
-                                  </button>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
+                      <div
+                        data-split-section-scroll={section.id}
+                        style={
+                          explicitSectionHeight !== undefined
+                            ? { height: `${explicitSectionHeight}px` }
+                            : undefined
+                        }
+                        className={`overflow-y-auto p-3 ${
+                          explicitSectionHeight === undefined ? "max-h-[280px]" : ""
+                        }`}
+                      >
+                        {section.pages.length === 0 ? (
+                          <div className="flex h-full min-h-[72px] items-center justify-center rounded-[4px] border border-dashed border-[#CED4DA] bg-[#F8F9FA] py-5 text-center text-xs text-[#6C757D]">
+                            {t.pdfOps.emptySectionHint}
+                          </div>
+                        ) : (
+                          <div
+                            data-split-section-grid={section.id}
+                            className="grid auto-rows-max grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-5"
+                          >
+                            {section.pages.map((item, itemIdx) => {
+                              const isTargetSec = splitInsertTarget?.sectionId === section.id;
+                              const insertIdx = isTargetSec ? splitInsertTarget.index : null;
+                              const isSelfNoOp =
+                                splitDragActive?.sourceSecId === section.id &&
+                                splitDragActive?.sourceItemIdx !== undefined &&
+                                insertIdx !== null &&
+                                (insertIdx === splitDragActive.sourceItemIdx ||
+                                  insertIdx === splitDragActive.sourceItemIdx + 1);
+                              const showBarLeft = !isSelfNoOp && insertIdx === itemIdx;
+                              const showBarEnd =
+                                !isSelfNoOp &&
+                                itemIdx === section.pages.length - 1 &&
+                                insertIdx === section.pages.length;
+                              const isDragged =
+                                splitDragActive?.sourceSecId === section.id &&
+                                splitDragActive?.sourceItemIdx === itemIdx;
+
+                              return (
+                                <SplitSectionItemCard
+                                  key={item.uid}
+                                  sectionId={section.id}
+                                  itemIndex={itemIdx}
+                                  uid={item.uid}
+                                  fileIndex={item.file_index}
+                                  pageIndex={item.page_index}
+                                  showFilePrefix={showFilePrefix}
+                                  rotationDeg={item.rotation_deg}
+                                  thumbUrl={thumbs[sourceKey(item.file_index, item.page_index)]}
+                                  isDragged={isDragged}
+                                  isDraggingAny={splitDragActive !== null}
+                                  showBarLeft={showBarLeft}
+                                  showBarEnd={showBarEnd}
+                                  rotateTitle={t.image2pdf.rotateTitle}
+                                  deleteTitle={t.image2pdf.deletePageTitle}
+                                  onPointerDownItem={handleSplitSectionItemPointerDown}
+                                  onDoubleClickItem={handleDoubleClickSplitPage}
+                                  onRotateItem={handleRotateSectionItem}
+                                  onRemoveItem={handleRemoveSectionItem}
+                                />
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+
+                      <div
+                        role="separator"
+                        aria-orientation="horizontal"
+                        title={t.pdfOps.resizeSectionHeightTitle}
+                        onPointerDown={(e) => handleSectionCardHeightResize(e, section.id)}
+                        className="flex h-3 cursor-row-resize items-center justify-center border-t border-[#E9ECEF] bg-[#F8F9FA] text-[#868E96] transition-colors hover:bg-[#E7F1FF] hover:text-[#007BFF]"
+                      >
+                        <GripHorizontal className="h-3.5 w-3.5" />
+                      </div>
                     </div>
                   );
                 })}
               </div>
+
+              {splitDragActive && (
+                <div
+                  ref={splitDragGhostRef}
+                  aria-hidden="true"
+                  style={{
+                    transform: `translate3d(${initialSplitGhostPosRef.current.x}px, ${initialSplitGhostPosRef.current.y}px, 0)`,
+                  }}
+                  className="pointer-events-none fixed left-0 top-0 z-50 w-28 overflow-hidden rounded-[4px] border-2 border-[#007BFF] bg-white shadow-2xl"
+                >
+                  <div className="relative flex h-24 items-center justify-center bg-[#F1F3F5] p-1">
+                    {splitDragActive.thumbUrl ? (
+                      <img
+                        src={splitDragActive.thumbUrl}
+                        alt=""
+                        className="max-h-full max-w-full object-contain"
+                        style={
+                          splitDragActive.rotationDeg % 360 !== 0
+                            ? { transform: `rotate(${splitDragActive.rotationDeg}deg)` }
+                            : undefined
+                        }
+                      />
+                    ) : (
+                      <span className="font-mono-code text-xs text-[#6C757D]">
+                        {splitDragActive.label}
+                      </span>
+                    )}
+                    <span className="absolute left-1 top-1 rounded-[4px] bg-[#007BFF] px-1.5 py-0.5 font-mono-code text-[11px] font-bold text-white">
+                      {splitDragActive.count > 1
+                        ? `+${splitDragActive.count}`
+                        : splitDragActive.label}
+                    </span>
+                  </div>
+                </div>
+              )}
 
               <div
                 role="separator"
@@ -1727,6 +2698,7 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
           </div>
         </div>
       )}
+
       {/* PDF Page Zoom Modal */}
       <PdfPageZoomModal
         pdfPath={zoomTarget?.path ?? null}
@@ -1832,12 +2804,23 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
               <button
                 type="button"
                 onClick={() => {
+                  thumbGenRef.current += 1;
+                  queuedThumbSetRef.current.clear();
+                  queuedThumbOrderRef.current = [];
+                  failedThumbKeysRef.current.clear();
+                  pendingThumbBatchRef.current = {};
+                  visibleThumbKeysRef.current.clear();
+                  sectionThumbKeysRef.current.clear();
+                  thumbsRef.current = {};
                   setPendingClearAll(false);
                   setFiles([]);
                   setSelections([]);
                   setMergeBookmarks([]);
                   setThumbs({});
                   setSplitSections([]);
+                  setSelectedSourceKeys(new Set());
+                  setLastClickedSourcePos(null);
+                  setSplitSourceFilterIdx("all");
                 }}
                 className="knit-control-sm rounded-[4px] bg-[#DC3545] px-3 text-xs font-semibold text-white hover:bg-[#C82333]"
               >
@@ -1868,7 +2851,14 @@ function parsePageRangesClient(spec: string, totalPages: number): number[] | nul
     if (dashIdx >= 0) {
       const a = Number.parseInt(part.slice(0, dashIdx).trim(), 10);
       const b = Number.parseInt(part.slice(dashIdx + 1).trim(), 10);
-      if (!Number.isFinite(a) || !Number.isFinite(b) || a < 1 || b < 1 || a > totalPages || b > totalPages) {
+      if (
+        !Number.isFinite(a) ||
+        !Number.isFinite(b) ||
+        a < 1 ||
+        b < 1 ||
+        a > totalPages ||
+        b > totalPages
+      ) {
         return null;
       }
       if (a <= b) {

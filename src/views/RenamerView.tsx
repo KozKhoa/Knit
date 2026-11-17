@@ -67,6 +67,7 @@ interface RenamerViewProps {
     outputs: string[],
     summary: string,
     status: "success" | "error" | "cancelled",
+    heading?: string,
   ) => void;
   busy: boolean;
   droppedBatch?: DroppedBatch | null;
@@ -427,6 +428,7 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
         roots,
         t.renamer.doneSummary(res.renamed_count, res.skipped_count, res.error_count),
         res.error_count > 0 ? "error" : "success",
+        t.renamer.renameSuccessTitle,
       );
       await refreshPreview(roots);
     } catch (e) {
@@ -447,6 +449,7 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
         roots,
         t.renamer.undoSummary(res.renamed_count, res.error_count),
         "success",
+        t.renamer.undoSuccessTitle,
       );
       await refreshPreview(roots);
     } catch (e) {

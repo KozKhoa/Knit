@@ -19,6 +19,6 @@ pub use models::{
 };
 pub use ops::{
     inspect_pdf, merge_pdfs, parse_page_ranges, render_pdf_bytes_thumbnails,
-    render_pdf_thumbnail, split_pdf,
+    render_pdf_thumbnail, render_pdf_thumbnail_jpeg, split_multi_pdf, split_pdf,
 };
 pub use packer::build_pdf_from_drafts;

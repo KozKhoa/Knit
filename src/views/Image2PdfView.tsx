@@ -96,7 +96,7 @@ type BgMode = "transparent" | "white" | "black" | "custom";
 type MarginUnit = "pt" | "mm";
 
 const PT_PER_MM = 72 / 25.4;
-const GRID_COL_OPTIONS = [2, 3, 4, 5, 6] as const;
+const GRID_COL_OPTIONS = [2, 3, 4, 5, 6, 8] as const;
 
 interface PageCardProps {
   page: PageDraft;
@@ -169,6 +169,7 @@ const PageCard: React.FC<PageCardProps> = React.memo(
 
     const handleDoubleClick = React.useCallback(
       (e: React.MouseEvent<HTMLDivElement>) => {
+        if ((e.target as HTMLElement).closest("button")) return;
         onDoubleClickCard(e, page.id);
       },
       [onDoubleClickCard, page.id],
@@ -243,7 +244,11 @@ const PageCard: React.FC<PageCardProps> = React.memo(
             <div className="mt-2 flex items-center justify-between gap-1">
               <button
                 type="button"
-                onClick={() => onRotate(page.id)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRotate(page.id);
+                }}
+                onDoubleClick={(e) => e.stopPropagation()}
                 className="rounded-[4px] border border-[#DEE2E6] p-1 text-[#495057] hover:bg-[#F8F9FA]"
                 title={rotateTitle}
               >
@@ -253,7 +258,11 @@ const PageCard: React.FC<PageCardProps> = React.memo(
                 <button
                   type="button"
                   disabled={!loadThumbs}
-                  onClick={() => onEdit(page.id)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onEdit(page.id);
+                  }}
+                  onDoubleClick={(e) => e.stopPropagation()}
                   className="rounded-[4px] border border-[#007BFF] px-2 py-0.5 text-xs font-semibold text-[#007BFF] hover:bg-[#007BFF] hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
                   title={editBtnTitle}
                 >
@@ -262,7 +271,11 @@ const PageCard: React.FC<PageCardProps> = React.memo(
                 </button>
                 <button
                   type="button"
-                  onClick={() => onRemove(page.id)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onRemove(page.id);
+                  }}
+                  onDoubleClick={(e) => e.stopPropagation()}
                   className="rounded-[4px] p-1 text-[#DC3545] hover:bg-[#F8D7DA]"
                   title={deletePageTitle}
                 >
@@ -1592,86 +1605,88 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
       )}
 
       {pages.length > 0 && (
-        <div className={`grid grid-cols-1 gap-4 ${showBookmarks ? "lg:grid-cols-3" : ""}`}>
-          <div className={`space-y-3 ${showBookmarks ? "lg:col-span-2" : ""}`}>
-            {/* Grid Density, Auto Sort, Undo & Bookmark Toggle Toolbar */}
-            <div className="flex flex-wrap items-center justify-between gap-2 rounded-[4px] border border-[#DEE2E6] bg-white px-3.5 py-2">
-              <div className="flex flex-wrap items-center gap-2 text-xs text-[#495057]">
-                <GripVertical className="h-4 w-4 text-[#007BFF]" />
-                <span className="text-[#6C757D]">{t.image2pdf.dragHint}</span>
-                <div className="ml-1 flex items-center gap-1.5 border-l border-[#DEE2E6] pl-2.5">
-                  <span className="font-semibold text-[#343A40]">{t.image2pdf.sortLabel}</span>
-                  <Select
-                    ariaLabel={t.image2pdf.sortLabel}
-                    size="sm"
-                    value={sortMode}
-                    onChange={(val) => handleSortModeChange(val as ImageSortMode)}
-                    className="w-36"
-                    options={[
-                      { value: "manual", label: t.image2pdf.sortManual },
-                      { value: "import_order", label: t.image2pdf.sortImportOrder },
-                      { value: "name", label: t.image2pdf.sortName },
-                      { value: "size", label: t.image2pdf.sortSize },
-                      { value: "type", label: t.image2pdf.sortType },
-                    ]}
-                  />
-                  {sortMode !== "manual" && (
-                    <button
-                      type="button"
-                      onClick={handleToggleSortDir}
-                      title={sortDir === "asc" ? t.image2pdf.sortAsc : t.image2pdf.sortDesc}
-                      className="knit-control-sm inline-flex items-center gap-1 rounded-[4px] border border-[#CED4DA] bg-[#F8F9FA] px-2 text-xs font-semibold text-[#343A40] hover:bg-[#E9ECEF]"
-                    >
-                      {sortDir === "asc" ? (
-                        <ArrowUpAZ className="h-3.5 w-3.5 text-[#007BFF]" />
-                      ) : (
-                        <ArrowDownAZ className="h-3.5 w-3.5 text-[#007BFF]" />
-                      )}
-                      <span>{sortDir === "asc" ? t.image2pdf.sortAsc : t.image2pdf.sortDesc}</span>
-                    </button>
-                  )}
+        <div className="space-y-3">
+          {/* Grid Density, Auto Sort, Undo & Bookmark Toggle Toolbar (fixed full width) */}
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-[4px] border border-[#DEE2E6] bg-white px-3.5 py-2">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-[#495057]">
+              <GripVertical className="h-4 w-4 text-[#007BFF]" />
+              <span className="text-[#6C757D]">{t.image2pdf.dragHint}</span>
+              <div className="ml-1 flex items-center gap-1.5 border-l border-[#DEE2E6] pl-2.5">
+                <span className="font-semibold text-[#343A40]">{t.image2pdf.sortLabel}</span>
+                <Select
+                  ariaLabel={t.image2pdf.sortLabel}
+                  size="sm"
+                  value={sortMode}
+                  onChange={(val) => handleSortModeChange(val as ImageSortMode)}
+                  className="w-36"
+                  options={[
+                    { value: "manual", label: t.image2pdf.sortManual },
+                    { value: "import_order", label: t.image2pdf.sortImportOrder },
+                    { value: "name", label: t.image2pdf.sortName },
+                    { value: "size", label: t.image2pdf.sortSize },
+                    { value: "type", label: t.image2pdf.sortType },
+                  ]}
+                />
+                {sortMode !== "manual" && (
                   <button
                     type="button"
-                    disabled={undoCount === 0}
-                    onClick={handleUndo}
-                    title={t.image2pdf.undoTooltip}
-                    className="knit-control-sm inline-flex items-center gap-1 rounded-[4px] border border-[#CED4DA] bg-[#F8F9FA] px-2 text-xs font-semibold text-[#343A40] hover:bg-[#E9ECEF] disabled:cursor-not-allowed disabled:opacity-45"
+                    onClick={handleToggleSortDir}
+                    title={sortDir === "asc" ? t.image2pdf.sortAsc : t.image2pdf.sortDesc}
+                    className="knit-control-sm inline-flex items-center gap-1 rounded-[4px] border border-[#CED4DA] bg-[#F8F9FA] px-2 text-xs font-semibold text-[#343A40] hover:bg-[#E9ECEF]"
                   >
-                    <Undo2 className="h-3.5 w-3.5" />
-                    <span>{t.image2pdf.undoBtn}</span>
+                    {sortDir === "asc" ? (
+                      <ArrowUpAZ className="h-3.5 w-3.5 text-[#007BFF]" />
+                    ) : (
+                      <ArrowDownAZ className="h-3.5 w-3.5 text-[#007BFF]" />
+                    )}
+                    <span>{sortDir === "asc" ? t.image2pdf.sortAsc : t.image2pdf.sortDesc}</span>
                   </button>
-                </div>
-              </div>
-              <div className="flex flex-wrap items-center gap-2 text-xs text-[#495057]">
-                <span className="font-semibold">{t.image2pdf.gridColumnsLabel}</span>
-                {GRID_COL_OPTIONS.map((cols) => (
-                  <button
-                    key={cols}
-                    type="button"
-                    onClick={() => setGridCols(cols)}
-                    className={`knit-control-sm rounded-[4px] border px-2.5 font-mono-code text-xs font-semibold ${
-                      gridCols === cols
-                        ? "border-[#007BFF] bg-[#007BFF] text-white"
-                        : "border-[#CED4DA] bg-[#F8F9FA] text-[#343A40] hover:bg-[#E9ECEF]"
-                    }`}
-                  >
-                    {cols}
-                  </button>
-                ))}
+                )}
                 <button
                   type="button"
-                  onClick={() => setShowBookmarks((v) => !v)}
-                  className="knit-control-sm ml-1 inline-flex items-center gap-1.5 rounded-[4px] border border-[#CED4DA] bg-[#F8F9FA] px-2.5 text-xs font-semibold text-[#343A40] hover:bg-[#E9ECEF]"
+                  disabled={undoCount === 0}
+                  onClick={handleUndo}
+                  title={t.image2pdf.undoTooltip}
+                  className="knit-control-sm inline-flex items-center gap-1 rounded-[4px] border border-[#CED4DA] bg-[#F8F9FA] px-2 text-xs font-semibold text-[#343A40] hover:bg-[#E9ECEF] disabled:cursor-not-allowed disabled:opacity-45"
                 >
-                  {showBookmarks ? (
-                    <PanelRightClose className="h-3.5 w-3.5 text-[#007BFF]" />
-                  ) : (
-                    <PanelRightOpen className="h-3.5 w-3.5 text-[#007BFF]" />
-                  )}
-                  {showBookmarks ? t.image2pdf.toggleBookmarksHide : t.image2pdf.toggleBookmarksShow}
+                  <Undo2 className="h-3.5 w-3.5" />
+                  <span>{t.image2pdf.undoBtn}</span>
                 </button>
               </div>
             </div>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-[#495057]">
+              <span className="font-semibold">{t.image2pdf.gridColumnsLabel}</span>
+              {GRID_COL_OPTIONS.map((cols) => (
+                <button
+                  key={cols}
+                  type="button"
+                  onClick={() => setGridCols(cols)}
+                  className={`knit-control-sm rounded-[4px] border px-2.5 font-mono-code text-xs font-semibold ${
+                    gridCols === cols
+                      ? "border-[#007BFF] bg-[#007BFF] text-white"
+                      : "border-[#CED4DA] bg-[#F8F9FA] text-[#343A40] hover:bg-[#E9ECEF]"
+                  }`}
+                >
+                  {cols}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => setShowBookmarks((v) => !v)}
+                className="knit-control-sm ml-1 inline-flex items-center gap-1.5 rounded-[4px] border border-[#CED4DA] bg-[#F8F9FA] px-2.5 text-xs font-semibold text-[#343A40] hover:bg-[#E9ECEF]"
+              >
+                {showBookmarks ? (
+                  <PanelRightClose className="h-3.5 w-3.5 text-[#007BFF]" />
+                ) : (
+                  <PanelRightOpen className="h-3.5 w-3.5 text-[#007BFF]" />
+                )}
+                {showBookmarks ? t.image2pdf.toggleBookmarksHide : t.image2pdf.toggleBookmarksShow}
+              </button>
+            </div>
+          </div>
+
+          <div className={`grid grid-cols-1 gap-4 ${showBookmarks ? "lg:grid-cols-3" : ""}`}>
+            <div className={`space-y-3 ${showBookmarks ? "lg:col-span-2" : ""}`}>
 
             {(() => {
               const isNoOpInsert =
@@ -1757,6 +1772,7 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
               />
             </div>
           )}
+          </div>
         </div>
       )}
 

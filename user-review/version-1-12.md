@@ -1,0 +1,4 @@
+- Trong tool image2pdf, bổ sung thêm việc có thể hold chuột vào một image để có tiến vào selection mode, giữ shift sẽ chọn hàng lọat, giữ ctrl sẽ chọn lần lượt từng cái. Có thể xoay, xóa đối với các image trong selection mode
+- Trong tool image2pdf, khi user xóa ảnh thì cũng cần cập nhật bookmark. Hiện tại, tôi có 10 folder, mỗi folder có 10 ảnh, mỗi folder sẽ cho ra một bookmark (tức là bookmark 1 là page 1, bookmark 2 là page 11,...), cái này oke. Nhưng khi tôi xóa đi 5 ảnh của folder đầu tiên thì bookmark giữ nguyên, tôi muốn thêm một checkbox cho phép auto update bookmark luôn (măc định là on). Khi checkbox này on thì khi tôi xóa 5 ảnh của folder đầu tiên thì bookmark kì vọng là bookmark 1ở page 1, bookmark 2 ở page 6, bookmark 3 ở page 16,...
+- Trong tool image2pdf và merge pdf, trong khung ảnh/page, bổ sung thêm tag đánh dấu page này có một bookmark. 
+- 

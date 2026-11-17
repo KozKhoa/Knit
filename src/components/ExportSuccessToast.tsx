@@ -7,6 +7,7 @@ export interface CompletedExportInfo {
   title: string;
   summary: string;
   outputs: string[];
+  heading?: string;
 }
 
 interface ExportSuccessToastProps {
@@ -52,7 +53,7 @@ export const ExportSuccessToast: React.FC<ExportSuccessToastProps> = ({
         <div className="flex min-w-0 items-center gap-2">
           <CheckCircle2 className="h-4 w-4 shrink-0 text-[#28A745]" />
           <div className="truncate text-sm font-bold text-[#212529]">
-            {t.common.exportSuccessTitle}: {result.title}
+            {result.heading ?? t.common.exportSuccessTitle}: {result.title}
           </div>
         </div>
         <button

@@ -2,10 +2,10 @@ use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
 use knit_core::{CancellationToken, NoopReporter};
 use knit_pdf::{
     build_pdf_from_drafts, inspect_image_dimensions, inspect_pdf, merge_pdfs, parse_page_ranges,
-    remap_tree, render_page_draft_preview_jpeg, render_pdf_thumbnail, scan_image_folder,
-    split_pdf, AnimatedImagePolicy, AnnotationLayer, BookmarkNode, CropRect, Image2PdfConfig,
-    PageDraft, PageLayoutPolicy, PageSelection, PageSource, PdfMergeConfig, PdfSplitRule,
-    StrokeAnnotation, TextAnnotation,
+    remap_tree, render_page_draft_preview_jpeg, render_pdf_thumbnail, scan_image_files,
+    scan_image_folder, split_multi_pdf, split_pdf, AnimatedImagePolicy, AnnotationLayer,
+    BookmarkNode, CropRect, Image2PdfConfig, PageDraft, PageLayoutPolicy, PageSelection,
+    PageSource, PdfMergeConfig, PdfSplitGroup, PdfSplitRule, StrokeAnnotation, TextAnnotation,
 };
 use std::io::Cursor;
 use tempfile::tempdir;
@@ -689,4 +689,72 @@ fn split_by_max_pages_per_file_and_preview_draft_edits_and_monotonic_progress() 
         assert!(pair[1] >= pair[0], "progress went backwards: {:?}", *dones);
     }
     assert_eq!(*dones.last().unwrap(), 5);
+}
+
+#[test]
+fn split_multi_pdf_handles_cross_file_custom_groups_and_batch_rules() {
+    let tmp = tempdir().unwrap();
+    let img_a = tmp.path().join("a.png");
+    let img_b = tmp.path().join("b.png");
+    make_sample_png(&img_a, 80, 60, [255, 0, 0, 255]);
+    make_sample_png(&img_b, 80, 60, [0, 0, 255, 255]);
+
+    let pdf1 = tmp.path().join("doc1.pdf");
+    let pdf2 = tmp.path().join("doc2.pdf");
+    let scan1 = scan_image_files(&[img_a.clone(), img_b.clone()], AnimatedImagePolicy::FirstFrameOnly).unwrap();
+    let scan2 = scan_image_files(&[img_b.clone(), img_a.clone()], AnimatedImagePolicy::FirstFrameOnly).unwrap();
+
+    let cfg = |p: &std::path::Path| Image2PdfConfig {
+        output_path: p.to_path_buf(),
+        layout: PageLayoutPolicy::OriginalSize { dpi: 72.0 },
+        jpeg_quality: 85,
+        lossless_passthrough: true,
+        animated_policy: AnimatedImagePolicy::FirstFrameOnly,
+        max_mb: None,
+        max_pages_per_file: None,
+    };
+    build_pdf_from_drafts(&scan1.pages, &[], &cfg(&pdf1), &CancellationToken::new(), &NoopReporter).unwrap();
+    build_pdf_from_drafts(&scan2.pages, &[], &cfg(&pdf2), &CancellationToken::new(), &NoopReporter).unwrap();
+
+    let custom_dir = tmp.path().join("custom_out");
+    let res_custom = split_multi_pdf(
+        &[pdf1.clone(), pdf2.clone()],
+        &["doc1".into(), "doc2".into()],
+        &custom_dir,
+        &PdfSplitRule::CustomGroups {
+            groups: vec![
+                PdfSplitGroup {
+                    name: "mix_section".into(),
+                    pages: vec![
+                        PageSelection { file_index: 0, page_index: 1, rotation_deg: 90 },
+                        PageSelection { file_index: 1, page_index: 0, rotation_deg: 0 },
+                    ],
+                },
+                PdfSplitGroup {
+                    name: "only_second".into(),
+                    pages: vec![PageSelection { file_index: 1, page_index: 1, rotation_deg: 0 }],
+                },
+            ],
+        },
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+    assert_eq!(res_custom.output_files.len(), 2);
+    assert_eq!(res_custom.total_pages, 3);
+    assert_eq!(inspect_pdf(&res_custom.output_files[0]).unwrap().page_count, 2);
+    assert_eq!(inspect_pdf(&res_custom.output_files[1]).unwrap().page_count, 1);
+
+    let batch_dir = tmp.path().join("batch_out");
+    let res_batch = split_multi_pdf(
+        &[pdf1, pdf2],
+        &["first".into(), "second".into()],
+        &batch_dir,
+        &PdfSplitRule::EveryNPages { n: 1 },
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+    assert_eq!(res_batch.output_files.len(), 4);
+    assert_eq!(res_batch.total_pages, 4);
 }

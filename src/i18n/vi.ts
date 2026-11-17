@@ -165,7 +165,7 @@ export const vi: Translations = {
     mergeTab: "Gộp / Sắp xếp",
     splitTab: "Tách PDF",
     dropTitleMerge: "Chọn hoặc kéo thả các tệp PDF cần gộp",
-    dropTitleSplit: "Chọn hoặc kéo thả 1 tệp PDF cần tách",
+    dropTitleSplit: "Chọn hoặc kéo thả một hoặc nhiều tệp PDF cần tách",
     dropDesc: "PDF được phân tích cục bộ, hỗ trợ xem trước từng trang và bảo toàn Outlines.",
     addPdfBtn: "Thêm tệp PDF",
     pickPdfBtn: "Chọn tệp PDF",
@@ -222,6 +222,14 @@ export const vi: Translations = {
     splitJobTitle: "Tách PDF",
     mergeDoneSummary: (pages, size) => `Đã gộp ${pages} trang (${size}).`,
     splitDoneSummary: (files, pages) => `Đã tách thành ${files} tệp PDF (${pages} trang).`,
+    importingLabel: "Đang đọc và phân tích tệp PDF...",
+    importingProgress: (done, total) => `Đang phân tích tệp PDF (${done}/${total})...`,
+    splitPrefixLabel: "Tiền tố tên tệp tách:",
+    splitPrefixPlaceholder: "Để trống = dùng tên tệp nguồn",
+    splitAllSourcesFilter: "Tất cả tệp",
+    splitSourceFileFilter: (fileIdx, name, count) => `Tệp ${fileIdx} · ${name} (${count})`,
+    resizeSectionHeightTitle: "Kéo để chỉnh chiều cao section này",
+    sectionItemDragHint: "Kéo thả để sắp xếp hoặc chuyển giữa các section · Nháy đúp xem lớn",
   },
   docs2pdf: {
     title: "Chuyển Tài liệu sang PDF",
@@ -460,6 +468,8 @@ export const vi: Translations = {
     doneSummary: (renamed, skipped, errors) =>
       `Đã đổi tên ${renamed} mục (${skipped} bỏ qua, ${errors} lỗi).`,
     undoSummary: (renamed, errors) => `Đã hoàn tác ${renamed} mục về tên cũ (${errors} lỗi).`,
+    renameSuccessTitle: "Đổi tên thành công",
+    undoSuccessTitle: "Hoàn tác đổi tên thành công",
     fixedPresets: {
       manga_chapter: "Manga Chapter -> Chapter XX",
       manga_volume: "Manga Volume -> Volume XX",

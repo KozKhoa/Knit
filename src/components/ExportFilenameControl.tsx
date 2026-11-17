@@ -5,6 +5,7 @@ import { useI18n } from "../i18n";
 interface ExportFilenameControlProps {
   value: string;
   onChange: (next: string) => void;
+  label?: string;
   placeholder?: string;
   defaultExportDir: string;
   existsAtDefaultDir: boolean;
@@ -14,6 +15,7 @@ interface ExportFilenameControlProps {
 export const ExportFilenameControl: React.FC<ExportFilenameControlProps> = ({
   value,
   onChange,
+  label,
   placeholder,
   defaultExportDir,
   existsAtDefaultDir,
@@ -29,7 +31,7 @@ export const ExportFilenameControl: React.FC<ExportFilenameControlProps> = ({
       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
         <span className="flex shrink-0 items-center gap-1.5 font-semibold text-[#343A40]">
           <FileOutput className="h-3.5 w-3.5 text-[#007BFF]" />
-          {t.common.exportFilenameLabel}
+          {label ?? t.common.exportFilenameLabel}
         </span>
         <input
           type="text"

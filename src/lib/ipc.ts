@@ -221,6 +221,14 @@ export async function renderPdfThumbBase64(
   return await invoke("render_pdf_thumb", { path, pageIndex, maxWidth });
 }
 
+export async function renderPdfThumbFile(
+  path: string,
+  pageIndex: number,
+  maxWidth = 260,
+): Promise<string> {
+  return await invoke("render_pdf_thumb_file", { path, pageIndex, maxWidth });
+}
+
 export async function buildImage2Pdf(
   jobId: string,
   drafts: PageDraft[],
@@ -267,6 +275,24 @@ export async function splitPdfFile(
     inputPath,
     outputDir,
     stem,
+    rule,
+    onEvent: makeChannel(onEvent),
+  });
+}
+
+export async function splitMultiPdfFiles(
+  jobId: string,
+  inputs: string[],
+  stems: string[],
+  outputDir: string,
+  rule: PdfSplitRule,
+  onEvent?: (ev: JobEvent) => void,
+): Promise<PdfBuildResult> {
+  return await invoke("pdf_split_multi", {
+    jobId,
+    inputs,
+    stems,
+    outputDir,
     rule,
     onEvent: makeChannel(onEvent),
   });

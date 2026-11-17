@@ -135,6 +135,25 @@ describe("Knit Workbench UI", () => {
     vi.useRealTimers();
   });
 
+  it("uses custom heading on ExportSuccessToast when provided (e.g. Rename Complete)", () => {
+    render(
+      <I18nProvider>
+        <ExportSuccessToast
+          result={{
+            title: "Đổi tên hàng loạt",
+            heading: "Đổi tên thành công",
+            summary: "Đã đổi tên 4 mục (0 bỏ qua, 0 lỗi).",
+            outputs: ["/tmp/folder"],
+          }}
+          onClose={() => {}}
+        />
+      </I18nProvider>,
+    );
+
+    expect(screen.getByText(/Đổi tên thành công: Đổi tên hàng loạt/)).toBeTruthy();
+    expect(screen.queryByText(/Xuất kết quả hoàn tất/)).toBeNull();
+  });
+
   it("formats byte sizes consistently", () => {
     expect(formatBytes(512)).toBe("512 B");
     expect(formatBytes(2048)).toBe("2.0 KB");

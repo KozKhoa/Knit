@@ -60,3 +60,22 @@
   - Added Scanned Folders card with per-folder removal and dedicated empty filter-match state (also added empty scan state to Manga Packager).
 - **Manga Packager Active Folder Banner**: Moved green import/rescan highlight onto a dedicated active source folder banner below Dropzone.
 - **Verification**: `cargo test` (42/42), `cargo check -p knit-desktop` (exit 0), `pnpm build` (exit 0), `pnpm test` (26/26 across 9 files).
+
+## PDF Merge & Split Performance Optimization (2026-11-17)
+- **Rust-cached JPEG PDF Thumbnails**: Added `render_pdf_thumbnail_jpeg` in `knit-pdf` and `render_pdf_thumb_file` Tauri IPC command returning `.jpg` cache paths served via `convertFileSrc` instead of base64 PNG strings.
+- **Viewport-driven Concurrent Queue & LRU Batching**: Wired `IntersectionObserver` + 3-worker LIFO queue (`thumbGenRef` cancellation), 40ms `flushPendingPdfThumbs` state batching (`mergeThumbCacheLru` cap 300), and `loading="lazy" decoding="async"`.
+- **Memoized Cards & Virtualized Merge Grid**: Extracted `MergePageCard`, `SplitSourceCard`, and `SplitSectionItemCard` into `src/components/PdfPageCards.tsx`; virtualized the Merge grid (`computeVisibleRowRange` + `ResizeObserver`), eliminated `getComputedStyle`/`getBoundingClientRect` per-frame layout thrashing during `tickDrag`, added `mergeInsertAtRef` guard, GPU `translate3d` drag ghost, and `56px` edge auto-scroll.
+- **Pointer Drag for Split PDF**: Replaced HTML5 `draggable` in Split source & section cards with pointer drag (`startSplitPointerDrag`), `elementFromPoint` hit-testing, `splitDragGhostRef`, and edge auto-scroll.
+- **Verification**: `cargo test` (42/42), `cargo check -p knit-desktop` (exit 0), `pnpm build` (exit 0), `pnpm test` (26/26 across 9 files).
+
+## Review v1.11 Implementation (2026-11-17)
+- **Image → PDF & Toolbar Alignment**: Lifted the toolbar (Grid density, Sort, Undo, Bookmark toggle) above the `lg:grid-cols-3` container so toggling Bookmarks no longer shifts the button/toolbar; added `8` images/row option (`[2, 3, 4, 5, 6, 8]`).
+- **Double-click Zoom Button Guard**: Prevented double-clicks on Rotate / Edit / Delete / Quick-Add buttons inside `PageCard`, `MergePageCard`, `SplitSourceCard`, and `SplitSectionItemCard` from bubbling up to open the zoom/edit modal.
+- **Batch Rename Toast Heading**: Added `heading?: string` to `CompletedExportInfo` (`ExportSuccessToast`) and `onFinishJob`, displaying `"Đổi tên thành công"` / `"Rename Complete"` (and Undo heading) instead of `"Export Complete"`.
+- **PDF Merge & Split Upgrades**:
+  - Unified `ExportFilenameControl` at the top right below the `Merge` / `Split` mode switcher (filename for Merge, prefix for Split); added `8` pages/row option for Merge and `[2, 3, 4, 5, 6, 8]` for Split Source Pages.
+  - Added PDF import loading indicator + progress inside `Dropzone`.
+  - Virtualized Split `Source PDF Pages` with `computeVisibleRowRange`, `auto-rows-max`, and `shrink-0` cards (fixing >300-page row height collapse), and switched thumbnail scheduling in both Merge and Split to deterministic visible-window queuing (`enqueueThumbWindow` + 500-entry LRU) so scrolling down always loads page thumbnails.
+  - Added multi-file PDF Split support (`split_multi_pdf` in `knit-pdf`, `pdf_split_multi` Tauri command, file filter pills, cross-file `file_index` tracking in sections, and batch rule splitting).
+  - Upgraded Output PDF Sections drag & drop to `Image2Pdf`-style `hitTestGridInsertIndex` insertion bars + card thumbnail ghost, double-click zoom modal on section items, per-section height resize handles (`120..720px`), and matched the vertical width splitter styling to horizontal height resizers.
+- **Verification**: `cargo check -p knit-desktop` (exit 0, 0 warnings), `cargo test` (43/43), `pnpm build` (exit 0), `pnpm test` (29/29 across 10 files).

@@ -45,6 +45,56 @@ pub fn render_pdf_thumbnail(path: &Path, page_index: usize, max_width: u32) -> R
     render_pdf_page_png(page, max_width)
 }
 
+/// Render 1 trang PDF sang JPEG thumbnail nhẹ bằng engine pure-Rust `hayro` (dùng cho disk cache).
+pub fn render_pdf_thumbnail_jpeg(
+    path: &Path,
+    page_index: usize,
+    max_width: u32,
+    quality: u8,
+) -> Result<Vec<u8>> {
+    let bytes = std::fs::read(path)?;
+    let pdf = Pdf::new(Arc::new(bytes))
+        .map_err(|_| KnitError::InvalidInput(format!("Khong doc duoc PDF {}", path.display())))?;
+    let pages = pdf.pages();
+    let page = pages.get(page_index).ok_or_else(|| {
+        KnitError::InvalidInput(format!("Trang {} khong ton tai (tong {})", page_index + 1, pages.len()))
+    })?;
+    let (pw, _ph) = page.render_dimensions();
+    let scale = if pw > 0.0 && max_width > 0 {
+        (max_width as f32 / pw).clamp(0.1, 4.0)
+    } else {
+        1.0
+    };
+    let cache = RenderCache::new();
+    let pixmap = hayro::render(
+        page,
+        &cache,
+        &InterpreterSettings::default(),
+        &RenderSettings::default(),
+        &PixmapSettings {
+            x_scale: scale,
+            y_scale: scale,
+            bg_color: WHITE,
+        },
+    );
+    let w = pixmap.width() as u32;
+    let h = pixmap.height() as u32;
+    let rgba = pixmap.data_as_u8_slice();
+    let mut rgb = Vec::with_capacity((w * h * 3) as usize);
+    for px in rgba.chunks_exact(4) {
+        rgb.push(px[0]);
+        rgb.push(px[1]);
+        rgb.push(px[2]);
+    }
+    let img_buf = image::RgbImage::from_raw(w, h, rgb)
+        .ok_or_else(|| KnitError::InvalidInput("Khong tao duoc buffer anh PDF".into()))?;
+    let mut out = Vec::new();
+    let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality.clamp(30, 95));
+    enc.encode_image(&image::DynamicImage::ImageRgb8(img_buf))
+        .map_err(|e| KnitError::InvalidInput(format!("Loi nen JPEG PDF thumbnail: {e}")))?;
+    Ok(out)
+}
+
 /// Render hàng loạt trang từ bytes PDF (trong bộ nhớ) sang PNG thumbnails + trả về tổng số trang.
 pub fn render_pdf_bytes_thumbnails(
     bytes: &[u8],
@@ -493,6 +543,160 @@ pub fn split_pdf(
     Ok(PdfBuildResult {
         output_files,
         total_pages: total_out_pages,
+        total_bytes,
+        passthrough_pages: 0,
+    })
+}
+
+/// Tách nhiều tệp PDF cùng lúc (hỗ trợ cả `CustomGroups` gộp/chia chéo trang từ nhiều tệp
+/// lẫn tách hàng loạt theo quy tắc cho từng tệp nguồn).
+pub fn split_multi_pdf(
+    inputs: &[PathBuf],
+    stems: &[String],
+    output_dir: &Path,
+    rule: &PdfSplitRule,
+    cancel: &CancellationToken,
+    reporter: &dyn JobReporter,
+) -> Result<PdfBuildResult> {
+    if inputs.is_empty() {
+        return Err(KnitError::InvalidInput("Can it nhat 1 file PDF".into()));
+    }
+    std::fs::create_dir_all(output_dir)?;
+
+    if let PdfSplitRule::CustomGroups { groups } = rule {
+        let non_empty: Vec<_> = groups.iter().filter(|g| !g.pages.is_empty()).collect();
+        if non_empty.is_empty() {
+            return Err(KnitError::InvalidInput(
+                "Chua co trang nao trong cac section dau ra".into(),
+            ));
+        }
+        let mut seen_names: HashMap<String, usize> = HashMap::new();
+        let mut output_files = Vec::with_capacity(non_empty.len());
+        let mut total_pages = 0usize;
+        let mut total_bytes = 0u64;
+        let total_parts = non_empty.len();
+
+        for (idx, g) in non_empty.iter().enumerate() {
+            if cancel.is_cancelled() {
+                return Err(KnitError::Cancelled);
+            }
+            let base_name = sanitize_split_group_name(&g.name, idx + 1);
+            let occ = seen_names.entry(base_name.clone()).or_insert(0);
+            *occ += 1;
+            let unique_name = if *occ == 1 {
+                base_name
+            } else {
+                format!("{base_name}_{}", *occ)
+            };
+            let out_path = output_dir.join(format!("{unique_name}.pdf"));
+
+            let mut local_index_by_file: HashMap<usize, usize> = HashMap::new();
+            let mut local_inputs: Vec<PathBuf> = Vec::new();
+            let mut remapped_pages: Vec<PageSelection> = Vec::with_capacity(g.pages.len());
+
+            for sel in &g.pages {
+                let src = inputs.get(sel.file_index).ok_or_else(|| {
+                    KnitError::InvalidInput(format!(
+                        "file_index {} khong hop le",
+                        sel.file_index
+                    ))
+                })?;
+                let local_file_idx = *local_index_by_file.entry(sel.file_index).or_insert_with(|| {
+                    let next = local_inputs.len();
+                    local_inputs.push(src.clone());
+                    next
+                });
+                remapped_pages.push(PageSelection {
+                    file_index: local_file_idx,
+                    page_index: sel.page_index,
+                    rotation_deg: sel.rotation_deg,
+                });
+            }
+
+            reporter.normal(format!(
+                "Đang tách tệp {}/{} ({} trang): {unique_name}.pdf",
+                idx + 1,
+                total_parts,
+                remapped_pages.len()
+            ));
+            reporter.on_progress(JobProgress {
+                phase: "split".into(),
+                done: (idx + 1) as u64,
+                total: total_parts as u64,
+                bytes_done: 0,
+                bytes_total: 0,
+                current_item: format!("Dang ghi phan {}/{}", idx + 1, total_parts),
+            });
+
+            let res = merge_pdfs(
+                &PdfMergeConfig {
+                    inputs: local_inputs,
+                    selected_pages: Some(remapped_pages),
+                    output_path: out_path.clone(),
+                    preserve_bookmarks: true,
+                    custom_bookmarks: None,
+                },
+                cancel,
+                reporter,
+            )?;
+            total_pages += res.total_pages;
+            total_bytes += res.total_bytes;
+            output_files.extend(res.output_files);
+        }
+
+        return Ok(PdfBuildResult {
+            output_files,
+            total_pages,
+            total_bytes,
+            passthrough_pages: 0,
+        });
+    }
+
+    let mut output_files = Vec::new();
+    let mut total_pages = 0usize;
+    let mut total_bytes = 0u64;
+    let total_files = inputs.len();
+
+    for (idx, input_path) in inputs.iter().enumerate() {
+        if cancel.is_cancelled() {
+            return Err(KnitError::Cancelled);
+        }
+        let stem = stems
+            .get(idx)
+            .map(|s| s.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| {
+                input_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("split")
+            });
+        reporter.normal(format!(
+            "Đang tách tệp nguồn {}/{}: {}",
+            idx + 1,
+            total_files,
+            input_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("input.pdf")
+        ));
+        let res = split_pdf(input_path, output_dir, stem, rule, cancel, reporter)?;
+        total_pages += res.total_pages;
+        total_bytes += res.total_bytes;
+        output_files.extend(res.output_files);
+        reporter.on_progress(JobProgress {
+            phase: "split".into(),
+            done: (idx + 1) as u64,
+            total: total_files as u64,
+            bytes_done: 0,
+            bytes_total: 0,
+            current_item: format!("Da tach xong tep {}/{}", idx + 1, total_files),
+        });
+    }
+
+    Ok(PdfBuildResult {
+        output_files,
+        total_pages,
         total_bytes,
         passthrough_pages: 0,
     })

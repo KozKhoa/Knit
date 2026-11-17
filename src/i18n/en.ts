@@ -165,7 +165,7 @@ export const en: Translations = {
     mergeTab: "Merge / Reorder",
     splitTab: "Split PDF",
     dropTitleMerge: "Select or drag & drop PDF files to merge",
-    dropTitleSplit: "Select or drag & drop 1 PDF file to split",
+    dropTitleSplit: "Select or drag & drop PDF file(s) to split",
     dropDesc: "PDFs are inspected locally with per-page thumbnails and Outline remapping.",
     addPdfBtn: "Add PDF files",
     pickPdfBtn: "Select PDF file",
@@ -222,6 +222,14 @@ export const en: Translations = {
     splitJobTitle: "PDF Split",
     mergeDoneSummary: (pages, size) => `Merged ${pages} pages (${size}).`,
     splitDoneSummary: (files, pages) => `Split into ${files} PDF files (${pages} pages).`,
+    importingLabel: "Inspecting PDF files...",
+    importingProgress: (done, total) => `Inspecting PDF files (${done}/${total})...`,
+    splitPrefixLabel: "Output filename prefix:",
+    splitPrefixPlaceholder: "Blank = keep each PDF filename",
+    splitAllSourcesFilter: "All PDFs",
+    splitSourceFileFilter: (fileIdx, name, count) => `F${fileIdx} · ${name} (${count})`,
+    resizeSectionHeightTitle: "Drag to resize this section height",
+    sectionItemDragHint: "Drag cards to reorder or move between sections · Double-click to zoom",
   },
   docs2pdf: {
     title: "Document to PDF",
@@ -459,6 +467,8 @@ export const en: Translations = {
     doneSummary: (renamed, skipped, errors) =>
       `Renamed ${renamed} item(s) (${skipped} skipped, ${errors} errors).`,
     undoSummary: (renamed, errors) => `Reverted ${renamed} item(s) (${errors} errors).`,
+    renameSuccessTitle: "Rename Complete",
+    undoSuccessTitle: "Undo Rename Complete",
     fixedPresets: {
       manga_chapter: "Manga Chapter -> Chapter XX",
       manga_volume: "Manga Volume -> Volume XX",

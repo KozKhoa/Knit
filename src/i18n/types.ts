@@ -219,6 +219,14 @@ export interface Translations {
     splitJobTitle: string;
     mergeDoneSummary: (pages: number, size: string) => string;
     splitDoneSummary: (files: number, pages: number) => string;
+    importingLabel: string;
+    importingProgress: (done: number, total: number) => string;
+    splitPrefixLabel: string;
+    splitPrefixPlaceholder: string;
+    splitAllSourcesFilter: string;
+    splitSourceFileFilter: (fileIdx: number, name: string, count: number) => string;
+    resizeSectionHeightTitle: string;
+    sectionItemDragHint: string;
   };
   docs2pdf: {
     title: string;
@@ -409,6 +417,8 @@ export interface Translations {
     colStatus: string;
     doneSummary: (renamed: number, skipped: number, errors: number) => string;
     undoSummary: (renamed: number, errors: number) => string;
+    renameSuccessTitle: string;
+    undoSuccessTitle: string;
     fixedPresets: Record<string, string>;
   };
   settings: {

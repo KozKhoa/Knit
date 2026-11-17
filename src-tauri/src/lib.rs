@@ -15,8 +15,9 @@ use knit_manga::{default_output_name, pack_stories, scan_stories, MangaPackOptio
 use knit_pdf::{
     build_pdf_from_drafts, inspect_pdf, merge_pdfs, render_image_thumbnail,
     render_image_thumbnail_jpeg, render_page_draft_preview_jpeg, render_pdf_bytes_thumbnails,
-    render_pdf_thumbnail, scan_image_files_with_reporter, scan_image_folder_with_reporter,
-    split_pdf, AnimatedImagePolicy, BookmarkNode, Image2PdfConfig, ImageScanResult, PageDraft,
+    render_pdf_thumbnail, render_pdf_thumbnail_jpeg, scan_image_files_with_reporter,
+    scan_image_folder_with_reporter, split_multi_pdf, split_pdf, AnimatedImagePolicy,
+    BookmarkNode, Image2PdfConfig, ImageScanResult, PageDraft,
     PageSource, PdfBuildResult, PdfInfo, PdfMergeConfig, PdfSplitRule,
 };
 use knit_renamer::{
@@ -704,6 +705,69 @@ async fn render_pdf_thumb(
 }
 
 #[tauri::command]
+async fn render_pdf_thumb_file(
+    path: PathBuf,
+    page_index: usize,
+    max_width: u32,
+) -> Result<PathBuf, String> {
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    if let Ok(meta) = std::fs::metadata(&path) {
+        meta.len().hash(&mut hasher);
+        if let Ok(mtime) = meta.modified() {
+            if let Ok(dur) = mtime.duration_since(UNIX_EPOCH) {
+                dur.as_secs().hash(&mut hasher);
+            }
+        }
+    }
+    page_index.hash(&mut hasher);
+    max_width.hash(&mut hasher);
+    let cache_path = thumb_cache_dir().join(format!(
+        "pdf_thumb_{:016x}_{}_{}.jpg",
+        hasher.finish(),
+        page_index,
+        max_width
+    ));
+    if cache_path.is_file() {
+        return Ok(cache_path);
+    }
+
+    let _permit = thumb_semaphore()
+        .acquire()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if cache_path.is_file() {
+        return Ok(cache_path);
+    }
+
+    tauri::async_runtime::spawn_blocking(move || {
+        if cache_path.is_file() {
+            return Ok(cache_path);
+        }
+        let jpg = render_pdf_thumbnail_jpeg(&path, page_index, max_width, 78)
+            .map_err(|e| e.to_string())?;
+        let tmp_name = format!(
+            ".{}.{}.tmp",
+            cache_path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("pdf_thumb"),
+            std::process::id()
+        );
+        let tmp_path = cache_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join(tmp_name);
+        std::fs::write(&tmp_path, &jpg).map_err(|e| e.to_string())?;
+        let _ = std::fs::rename(&tmp_path, &cache_path);
+        Ok(cache_path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 async fn render_pdf_page_preview_file(
     path: PathBuf,
     page_index: usize,
@@ -830,6 +894,30 @@ async fn pdf_split(
     tauri::async_runtime::spawn_blocking(move || {
         let reporter = make_reporter(&state_arc, on_event);
         let res = split_pdf(&input_path, &output_dir, &stem, &rule, &token, &reporter)
+            .map_err(|e| e.to_string());
+        state_arc.finish_job(&job_id);
+        trim_process_heap();
+        res
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn pdf_split_multi(
+    job_id: String,
+    inputs: Vec<PathBuf>,
+    stems: Vec<String>,
+    output_dir: PathBuf,
+    rule: PdfSplitRule,
+    on_event: Channel<JobEvent>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<PdfBuildResult, String> {
+    let token = state.register_job(&job_id);
+    let state_arc = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || {
+        let reporter = make_reporter(&state_arc, on_event);
+        let res = split_multi_pdf(&inputs, &stems, &output_dir, &rule, &token, &reporter)
             .map_err(|e| e.to_string());
         state_arc.finish_job(&job_id);
         trim_process_heap();
@@ -1455,12 +1543,14 @@ pub fn run() {
             render_image_thumb_file,
             render_page_draft_preview_file,
             render_pdf_thumb,
+            render_pdf_thumb_file,
             render_pdf_page_preview_file,
             get_app_metrics,
             pdf_build_from_images,
             pdf_inspect,
             pdf_merge,
             pdf_split,
+            pdf_split_multi,
             docs_engine_status,
             docs_convert_to_pdf,
             docs_read_text_file,
