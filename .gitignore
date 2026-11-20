@@ -35,6 +35,8 @@ src-tauri/gen/schemas/
 
 # Local AI agent skills
 .agents/
+.archify/
+skills-lock.json
 
 # OS / Editor
 .DS_Store

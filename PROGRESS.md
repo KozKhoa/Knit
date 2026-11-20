@@ -2,7 +2,7 @@
 
 ## Tổng quan Trạng thái
 - **Giai đoạn hiện tại:** Hoàn tất toàn bộ 6 core crates (`knit-core`, `knit-archive`, `knit-manga`, `knit-renamer`, `knit-pdf`, `knit-docs`), Frontend React/TypeScript/Tailwind Workbench, lớp vỏ `src-tauri` Desktop Shell và GitHub Actions CI/Release.
-- **Cập nhật lần cuối:** 2026-11-14
+- **Cập nhật lần cuối:** 2026-11-20
 
 | Milestone | Trạng thái | Ghi chú |
 |---|---|---|
@@ -79,3 +79,43 @@
   - Added multi-file PDF Split support (`split_multi_pdf` in `knit-pdf`, `pdf_split_multi` Tauri command, file filter pills, cross-file `file_index` tracking in sections, and batch rule splitting).
   - Upgraded Output PDF Sections drag & drop to `Image2Pdf`-style `hitTestGridInsertIndex` insertion bars + card thumbnail ghost, double-click zoom modal on section items, per-section height resize handles (`120..720px`), and matched the vertical width splitter styling to horizontal height resizers.
 - **Verification**: `cargo check -p knit-desktop` (exit 0, 0 warnings), `cargo test` (43/43), `pnpm build` (exit 0), `pnpm test` (29/29 across 10 files).
+
+## Frontend View Modularization & Shared UI/Hooks Refactor (2026-11-17)
+- **Shared CSS Tokens & UI Primitives**: Added `@layer components` helpers (`.knit-card`, `.knit-input`, `.knit-btn-*`, `.knit-alert-error`) in `src/styles/tokens.css`, plus `ViewHeader`, `ErrorBanner`, `ConfirmModal`, `GridColumnSelector`, `PaneResizeHandle`, and `DocumentFindBar` in `src/components/`.
+- **Shared Hooks**: Extracted `useThumbnailQueue` (LIFO worker pool, 40ms batching, generation cancellation, LRU eviction), `useVirtualizedGrid`, and `useHorizontalRatioResize` into `src/hooks/` with unit tests.
+- **View Decomposition**:
+  - `PdfOpsView.tsx` (2,876 → 1,107 lines) split into `src/views/pdf-ops/{pdfOpsTypes,LoadedPdfList,PdfMergePane,PdfSplitPane}`.
+  - `Image2PdfView.tsx` (1,926 → 1,179 lines) split into `src/views/image2pdf/{ImagePageCard,Image2PdfSettingsCard,ImagePreviewModal}`.
+  - `Docs2PdfView.tsx` (1,300 → 804 lines) split into `src/views/docs2pdf/{Docs2PdfSettingsCard,DocsSplitWorkbench}`.
+  - `RenamerView.tsx` (1,159 → 615 lines) split into `src/views/renamer/{RenamerFilterCard,RenamerRuleCard,RenamerPreviewTable}`.
+  - Adopted `ViewHeader` & `ErrorBanner` across `ArchiveView`, `MangaPackView`, and `SettingsView`.
+- **Verification**: `pnpm build` (exit 0), `pnpm test` (15/15 files, 35/35 tests), `cargo check -p knit-desktop && cargo test` (43/43 tests).
+
+## Review v1.12 Implementation (2026-11-18)
+- **Image → PDF Selection Mode & Auto-Bookmark Remap**: Added multi-select mode (`400ms` long-press, `Ctrl+Click`, `Shift+Click`, batch rotate & delete with single Undo snapshot), `remapBookmarksAfterPageRemoval` (`[target, nextStop)` interval remap), and shared `BookmarkPageBadge` across Image2PDF and Merge PDF.
+- **PDF Thumbnail & Preview Concurrency**: Added `HAYRO_PDF_CACHE` (4-entry `Arc<Pdf>` mmap LRU), isolated `preview_semaphore()` (2 permits) from background `thumb_semaphore()`, and updated `useThumbnailQueue` to prune scrolled-away keys and prioritize visible viewport cards.
+- **Linux PSS RAM Measurement & Activity Log Pinning**: Switched `read_linux_process_ram_bytes` to read `Pss_Anon + Pss_Shmem` from `/proc/{pid}/smaps_rollup` and fixed `WorkbenchShell` log auto-follow with `useLayoutEffect` + `↓ Latest` pill.
+- **Verification**: `cargo test --workspace` (46/46), `cargo check -p knit-desktop` (exit 0), `pnpm build` (exit 0), `pnpm test` (16/16 files, 41/41 tests).
+
+## Review v1.13 Implementation (2026-11-19)
+- **Non-blocking Output Size Estimation**: Added `estimate_archive_output`, `Story.total_bytes`, `get_file_size_bytes`, and `src/lib/sizeEstimate.ts` across all 5 export tools.
+- **Bookmark Tree Drag-Drop, Validation & Resizable Sticky Layout**: Added pointer drag-drop (`moveBookmarkNode`), non-blocking logical warnings (`validateBookmarks`), 6-digit `w-28` page input, horizontal ratio splitter + sticky Bookmark column in `Image2PdfView`, and 9-action `ImageContextMenu`.
+- **PDF Duplicate Filename Disambiguation & CSS Variable Splitter**: Added full-path disambiguation and duplicate-name warning badges in `LoadedPdfList`/`PdfSplitPane`, CSS variable `rAF` drag mode in `useHorizontalRatioResize` (eliminating React re-renders while dragging splitters on multi-GB PDFs), and fixed mid-document TOC placement (`introspector.page(loc)`) in `knit-docs`.
+- **Verification**: `cargo test --workspace` (49/49), `cargo check -p knit-desktop` (exit 0), `pnpm build` (exit 0), `pnpm test` (18/18 files, 54/54 tests).
+
+## Review v1.14 Implementation (2026-11-19)
+- **Card Size Presets & Context Menus**: Added `CardSizeSelector` (`small` | `medium` | `large`) for Image2PDF and PDF Merge & Split, plus `PdfPageContextMenu` for Merge and Split cards.
+- **Bookmark Tree UX & Undo**: Fixed warning badge dimensions (`knit-control-sm min-w-8`), unconstrained vertical resize height, edge auto-scroll in `useVerticalResize`, restricted nesting drop zone to the grip handle icon, added 50-step Bookmark Undo (`Ctrl+Z`), chunked async `handlePopulateSectionsFromRule` with UI lock, and simplified inline `~size` output estimate text.
+- **Verification**: `cargo test --workspace` (49/49), `cargo check -p knit-desktop` (exit 0), `pnpm build` (exit 0), `pnpm test` (19/19 files, 62/62 tests).
+
+## Review v1.15 Implementation (2026-11-20)
+- **PDF Merge Per-Page / Per-File Modes & Split Item Context Menu**: Added `PdfMergeMode` (`per_page` ↔ `per_file` with `MergeFileCard` and contiguity confirmation guard) and extended `PdfPageContextMenu` in `Output PDF Sections` with Rotate (`90°`/`180°`/`270°`) and Delete actions.
+- **Interactive Zoom & Pan Modal**: Created `ZoomPanViewport` (cursor-centered wheel zoom `100%..500%` + pointer pan) and wired it into `ImagePreviewModal`, `PdfPageZoomModal`, and double-click page zoom on `PdfJsPreview` (`Docs2PdfView`).
+- **Localized Cancellation, English Activity Logs, 0-based Page Numbering & Multi-Card Drag**: Standardized Rust `JobReporter` logs to English, localized cancellation banners via `isJobCancelledError`, allowed `Start numbering at = 0` in `Docs2Pdf`, added pre-export `check_missing_files` validation + `Missing file` card badges in `Image2PdfView`, and enabled multi-selected card group drag-and-drop (`reorderSelectedPages`).
+- **Verification**: `cargo test --workspace` (50/50), `cargo check -p knit-desktop` (exit 0), `pnpm build` (exit 0), `pnpm test` (20/20 files, 69/69 tests).
+
+## Document → PDF Memory Hygiene & Preview Concurrency Fix (2026-11-20)
+- **Typst `comemo` Cache Eviction & Shared Virtual Assets**: Added `comemo::evict(2)` via `ComemoEvictGuard` after each Typst compilation, `evict_typst_cache()`, and `Arc<HashMap<String, Bytes>>` in `KnitTypstWorld` to avoid cloning virtual asset maps across multi-pass TOC compilations.
+- **Single-Entry Parsed EPUB Cache**: Added `LAST_PARSED_EPUB` in `crates/knit-docs/src/html_epub.rs` keyed by `(path, file_len, mtime_nanos)` so changing page numbering or layout options reuses pre-parsed markup and normalized image buffers without re-extracting the `.epub` archive.
+- **Serialized Cancellable Preview IPC & PDF.js Canvas Release**: Added `docs_preview_cancel` + 1-permit `docs_preview_semaphore()` + `trim_process_heap()` in `src-tauri/src/lib.rs`, `destroyPdfDoc` (`doc.destroy()` / `loadingTask.destroy()`), and two-way `IntersectionObserver` off-screen `<canvas>` backing-store release (`canvas.width = 0; canvas.height = 0`) in `PdfJsPreview.tsx`.
+- **Verification**: `cargo test --workspace` (51/51), `cargo check -p knit-desktop` (exit 0), `pnpm build` (exit 0), `pnpm test` (20/20 files, 69/69 tests), `python3 .agents/skills/knit-qa-gate/scripts/audit-rules.py` (Pass).
