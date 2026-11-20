@@ -37,7 +37,7 @@ pub fn apply_rename_plan(
             Ok(()) => {
                 item.status = RenameStatus::Renamed;
                 renamed_count += 1;
-                reporter.info(format!("Đổi tên: {} -> {}", item.original_name, item.new_name));
+                reporter.info(format!("Renamed: {} -> {}", item.original_name, item.new_name));
                 undo_entries.push(UndoEntry {
                     original_path: item.original_path.clone(),
                     new_path: item.new_path.clone(),
@@ -48,7 +48,7 @@ pub fn apply_rename_plan(
                 item.status = RenameStatus::Error;
                 item.error_message = Some(e.to_string());
                 error_count += 1;
-                reporter.error(format!("Lỗi đổi tên {}: {e}", item.original_name));
+                reporter.error(format!("Rename failed for {}: {e}", item.original_name));
             }
         }
     }
@@ -97,7 +97,7 @@ fn rename_with_case_safety(from: &PathBuf, to: &PathBuf) -> std::io::Result<()> 
 pub fn undo_manifest(manifest_path: &PathBuf, reporter: &dyn JobReporter) -> Result<usize> {
     if !manifest_path.is_file() {
         return Err(KnitError::NotFound(
-            "Không có lịch sử đổi tên nào để hoàn tác".to_string(),
+            "No rename history found to undo".to_string(),
         ));
     }
 
@@ -109,7 +109,7 @@ pub fn undo_manifest(manifest_path: &PathBuf, reporter: &dyn JobReporter) -> Res
     // Hoàn tác theo thứ tự ngược lại (parent trước hoặc file sau cùng trước)
     for entry in manifest.entries.iter().rev() {
         if !entry.new_path.exists() {
-            reporter.warn(format!("Bỏ qua hoàn tác (không tồn tại): {}", entry.new_path.display()));
+            reporter.warn(format!("Skipping undo (missing): {}", entry.new_path.display()));
             continue;
         }
         let same_casefold = entry
@@ -118,7 +118,7 @@ pub fn undo_manifest(manifest_path: &PathBuf, reporter: &dyn JobReporter) -> Res
             .eq_ignore_ascii_case(&entry.original_path.to_string_lossy());
         if !same_casefold && entry.original_path.exists() {
             reporter.warn(format!(
-                "Bỏ qua hoàn tác (đích đã tồn tại): {}",
+                "Skipping undo (target already exists): {}",
                 entry.original_path.display()
             ));
             continue;
@@ -126,7 +126,7 @@ pub fn undo_manifest(manifest_path: &PathBuf, reporter: &dyn JobReporter) -> Res
         rename_with_case_safety(&entry.new_path, &entry.original_path)?;
         restored += 1;
         reporter.info(format!(
-            "Hoàn tác: {} -> {}",
+            "Undid rename: {} -> {}",
             entry.new_path.display(),
             entry.original_path.display()
         ));

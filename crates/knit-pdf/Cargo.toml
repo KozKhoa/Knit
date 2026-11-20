@@ -18,6 +18,7 @@ imageproc.workspace = true
 flate2.workspace = true
 typst-assets.workspace = true
 uuid.workspace = true
+memmap2.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

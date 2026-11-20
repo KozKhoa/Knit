@@ -383,6 +383,29 @@ pub fn inspect_story(
         warnings.push("Không tìm thấy ảnh trang nào".to_string());
     }
 
+    let mut total_bytes = 0u64;
+    if let Some(ref cover_rel) = cover {
+        let mut cover_path = story_dir.to_path_buf();
+        for part in cover_rel.split('/') {
+            cover_path.push(part);
+        }
+        if let Ok(m) = fs::metadata(&cover_path) {
+            total_bytes = total_bytes.saturating_add(m.len());
+        }
+    }
+    if let Some(ref info_rel) = info_file {
+        if let Ok(m) = fs::metadata(story_dir.join(info_rel)) {
+            total_bytes = total_bytes.saturating_add(m.len());
+        }
+    }
+    for ch in &chapters {
+        for img in &ch.images {
+            if let Ok(m) = fs::metadata(ch.path.join(img)) {
+                total_bytes = total_bytes.saturating_add(m.len());
+            }
+        }
+    }
+
     Story {
         dir_name: resolved_dir_name,
         path: story_dir.to_path_buf(),
@@ -391,6 +414,7 @@ pub fn inspect_story(
         cover,
         chapters,
         warnings,
+        total_bytes,
     }
 }
 
@@ -453,7 +477,7 @@ pub fn scan_stories(
         }
         other => other,
     };
-    reporter.info(format!("Chế độ quét Manga: {effective_mode:?}"));
+    reporter.info(format!("Manga scan mode: {effective_mode:?}"));
 
     let targets: Vec<(String, std::path::PathBuf)> = match effective_mode {
         MangaScanMode::Single => {

@@ -90,6 +90,104 @@ pub struct ArchiveSummary {
     pub output_bytes: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArchiveEstimate {
+    pub files_count: usize,
+    pub input_bytes: u64,
+    pub estimated_output_bytes: u64,
+}
+
+fn is_already_compressed_ext(path: &Path) -> bool {
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+        return false;
+    };
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "jpg"
+            | "jpeg"
+            | "png"
+            | "webp"
+            | "avif"
+            | "gif"
+            | "zip"
+            | "cbz"
+            | "7z"
+            | "rar"
+            | "gz"
+            | "zst"
+            | "xz"
+            | "bz2"
+            | "mp3"
+            | "aac"
+            | "ogg"
+            | "flac"
+            | "mp4"
+            | "mkv"
+            | "webm"
+            | "mov"
+            | "avi"
+            | "pdf"
+            | "woff2"
+    )
+}
+
+/// Ước lượng dung lượng xuất ra cho cấu hình nén hiện tại (chỉ đọc metadata, không đọc nội dung file).
+pub fn estimate_archive_output(
+    inputs: &[PathBuf],
+    include_root_dir: bool,
+    ignore_hidden: bool,
+    options: &ArchiveOptions,
+) -> Result<ArchiveEstimate> {
+    let entries = collect_entries(inputs, include_root_dir, ignore_hidden)?;
+    let files_count = entries.len();
+    let mut input_bytes = 0u64;
+    let mut compressible_bytes = 0u64;
+    let mut precompressed_bytes = 0u64;
+
+    for e in &entries {
+        input_bytes = input_bytes.saturating_add(e.size_bytes);
+        if is_already_compressed_ext(&e.source_path) {
+            precompressed_bytes = precompressed_bytes.saturating_add(e.size_bytes);
+        } else {
+            compressible_bytes = compressible_bytes.saturating_add(e.size_bytes);
+        }
+    }
+
+    let (comp_ratio, pre_ratio, overhead_per_file): (f64, f64, u64) = match options.format {
+        ArchiveFormat::Tar => (1.0, 1.0, 512),
+        ArchiveFormat::Zip => match options.compression {
+            CompressionLevel::Store => (1.0, 1.0, 96),
+            CompressionLevel::Fast => (0.55, 0.99, 96),
+            CompressionLevel::Normal => (0.45, 0.985, 96),
+            CompressionLevel::Best => (0.38, 0.98, 96),
+        },
+        ArchiveFormat::TarGz => match options.compression {
+            CompressionLevel::Store => (1.0, 1.0, 512),
+            CompressionLevel::Fast => (0.50, 0.99, 512),
+            CompressionLevel::Normal => (0.42, 0.985, 512),
+            CompressionLevel::Best => (0.36, 0.98, 512),
+        },
+        ArchiveFormat::TarZst => match options.compression {
+            CompressionLevel::Store => (1.0, 1.0, 512),
+            CompressionLevel::Fast => (0.46, 0.99, 512),
+            CompressionLevel::Normal => (0.36, 0.985, 512),
+            CompressionLevel::Best => (0.30, 0.98, 512),
+        },
+    };
+
+    let estimated_payload = ((compressible_bytes as f64) * comp_ratio
+        + (precompressed_bytes as f64) * pre_ratio)
+        .round() as u64;
+    let overhead = (files_count as u64).saturating_mul(overhead_per_file);
+    let estimated_output_bytes = estimated_payload.saturating_add(overhead);
+
+    Ok(ArchiveEstimate {
+        files_count,
+        input_bytes,
+        estimated_output_bytes,
+    })
+}
+
 /// Gom danh sách file/thư mục đầu vào thành `ArchiveEntrySpec` với đường dẫn POSIX `/`.
 pub fn collect_entries(
     inputs: &[PathBuf],
@@ -219,7 +317,7 @@ pub fn pack_entries(
 
     let throttled = ThrottledReporter::new(ForwardReporter(reporter), Duration::from_millis(100));
     reporter.info(format!(
-        "Bắt đầu nén {} tệp ({}) -> {}",
+        "Starting archive of {} files ({}) -> {}",
         entries.len(),
         human_size(total_bytes),
         output_path.display()
@@ -255,7 +353,7 @@ pub fn pack_entries(
 
     let output_bytes = fs::metadata(output_path).map(|m| m.len()).unwrap_or(0);
     reporter.info(format!(
-        "Hoàn tất nén: {} ({})",
+        "Archive complete: {} ({})",
         output_path.display(),
         human_size(output_bytes)
     ));
@@ -293,9 +391,9 @@ fn write_zip(
             .unwrap_or("");
         if !parent_dir.is_empty() && parent_dir != last_dir {
             last_dir = parent_dir.to_string();
-            reporter.normal(format!("Đang nén: {last_dir}"));
+            reporter.normal(format!("Compressing folder: {last_dir}"));
         }
-        reporter.detailed(format!("Đang đóng gói tệp: {}", entry.archive_path));
+        reporter.detailed(format!("Packing file: {}", entry.archive_path));
 
         let level = entry.compression_override.unwrap_or(options.compression);
         let opts = build_zip_options(level, &options.encryption, entry.size_bytes)?;
@@ -430,9 +528,9 @@ fn append_tar_entries<W: Write>(
             .unwrap_or("");
         if !parent_dir.is_empty() && parent_dir != last_dir {
             last_dir = parent_dir.to_string();
-            reporter.normal(format!("Đang nén: {last_dir}"));
+            reporter.normal(format!("Compressing folder: {last_dir}"));
         }
-        reporter.detailed(format!("Đang đóng gói tệp: {}", entry.archive_path));
+        reporter.detailed(format!("Packing file: {}", entry.archive_path));
         builder.append_path_with_name(&entry.source_path, &entry.archive_path)?;
         done_bytes += entry.size_bytes;
         reporter.on_progress(JobProgress {

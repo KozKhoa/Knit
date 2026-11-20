@@ -1,28 +1,124 @@
-use crate::bookmarks::{read_outlines, remap_tree, write_outlines};
+use crate::bookmarks::{read_outlines, remap_tree};
 use crate::models::{
     BookmarkNode, PageSelection, PdfBuildResult, PdfInfo, PdfMergeConfig, PdfSplitRule,
 };
+use crate::packer::{part_temp_path, trim_heap_if_supported, StreamingPdfWriter, TempFilesGuard};
 use hayro::hayro_interpret::InterpreterSettings;
 use hayro::hayro_syntax::Pdf;
 use hayro::vello_cpu::color::palette::css::WHITE;
 use hayro::{PixmapSettings, RenderCache, RenderSettings};
 use knit_core::{
-    atomic_write_file, ensure_disk_space, CancellationToken, JobProgress, JobReporter,
-    JobReporterExt, KnitError, Result,
+    ensure_disk_space, CancellationToken, JobProgress, JobReporter, JobReporterExt, KnitError,
+    Result,
 };
-use lopdf::{dictionary, Document, Object, ObjectId};
-use std::collections::HashMap;
-use std::io::Write;
+use lopdf::{Document, LoadOptions, Object, ObjectId};
+use memmap2::Mmap;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::fs::{self, File};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::UNIX_EPOCH;
+
+#[derive(Clone, PartialEq, Eq)]
+struct PdfCacheKey {
+    canonical: PathBuf,
+    len: u64,
+    mtime_nanos: u128,
+}
+
+const HAYRO_CACHE_CAP: usize = 4;
+
+fn hayro_pdf_cache() -> &'static Mutex<Vec<(PdfCacheKey, Arc<Pdf>)>> {
+    static CACHE: OnceLock<Mutex<Vec<(PdfCacheKey, Arc<Pdf>)>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(Vec::with_capacity(HAYRO_CACHE_CAP)))
+}
+
+/// Giải phóng cache `hayro::Pdf` đã parse (khi người dùng dọn cache hoặc xóa file).
+pub fn clear_pdf_reader_cache() {
+    if let Ok(mut guard) = hayro_pdf_cache().lock() {
+        guard.clear();
+    }
+}
+
+fn load_cached_hayro_pdf(path: &Path) -> Result<Arc<Pdf>> {
+    let meta = fs::metadata(path)?;
+    let mtime_nanos = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let key = PdfCacheKey {
+        canonical: path.canonicalize().unwrap_or_else(|_| path.to_path_buf()),
+        len: meta.len(),
+        mtime_nanos,
+    };
+
+    if let Ok(mut guard) = hayro_pdf_cache().lock() {
+        if let Some(pos) = guard.iter().position(|(k, _)| k == &key) {
+            let entry = guard.remove(pos);
+            let pdf = Arc::clone(&entry.1);
+            guard.push(entry);
+            return Ok(pdf);
+        }
+    }
+
+    let mmap = mmap_pdf_readonly(path)?;
+    let parsed = Arc::new(
+        Pdf::new(Arc::new(mmap))
+            .map_err(|_| KnitError::InvalidInput(format!("Khong doc duoc PDF {}", path.display())))?,
+    );
+
+    if let Ok(mut guard) = hayro_pdf_cache().lock() {
+        if let Some(pos) = guard.iter().position(|(k, _)| k == &key) {
+            guard.remove(pos);
+        } else if guard.len() >= HAYRO_CACHE_CAP {
+            guard.remove(0);
+        }
+        guard.push((key, Arc::clone(&parsed)));
+    }
+    Ok(parsed)
+}
+
+fn mmap_pdf_readonly(path: &Path) -> Result<Mmap> {
+    let file = File::open(path)?;
+    if file.metadata()?.len() == 0 {
+        return Err(KnitError::InvalidInput(format!(
+            "Tep PDF rong: {}",
+            path.display()
+        )));
+    }
+    // SAFETY: tệp chỉ được mở read-only để ánh xạ đọc cấu trúc/render PDF, không bị sửa đổi đồng thời trong tiến trình này.
+    unsafe { Mmap::map(&file) }.map_err(KnitError::Io)
+}
+
+fn filter_inspect_objects(id: ObjectId, obj: &mut Object) -> Option<(ObjectId, Object)> {
+    if let Object::Stream(ref stream) = obj {
+        // Giữ nguyên ObjStm để lopdf giải nén các object cấu trúc; bỏ qua stream ảnh/nội dung nặng.
+        if !stream.dict.has_type(b"ObjStm") {
+            return None;
+        }
+    }
+    Some((id, std::mem::replace(obj, Object::Null)))
+}
 
 pub fn inspect_pdf(path: &Path) -> Result<PdfInfo> {
     if !path.is_file() {
         return Err(KnitError::NotFound(path.display().to_string()));
     }
-    let meta = std::fs::metadata(path)?;
-    let doc = Document::load(path)
-        .map_err(|e| KnitError::InvalidInput(format!("Khong mo duoc PDF {}: {e}", path.display())))?;
+    let meta = fs::metadata(path)?;
+    let mmap = mmap_pdf_readonly(path)?;
+
+    let filtered = Document::load_mem_with_options(&mmap, LoadOptions::with_filter(filter_inspect_objects));
+    let doc = match filtered {
+        Ok(d) if !d.get_pages().is_empty() => d,
+        _ => Document::load_mem(&mmap).map_err(|e| {
+            KnitError::InvalidInput(format!("Khong mo duoc PDF {}: {e}", path.display()))
+        })?,
+    };
+    drop(mmap);
+
     let page_count = doc.get_pages().len();
     let bookmarks = read_outlines(&doc);
     Ok(PdfInfo {
@@ -33,31 +129,35 @@ pub fn inspect_pdf(path: &Path) -> Result<PdfInfo> {
     })
 }
 
-/// Render 1 trang PDF sang PNG thumbnail bằng engine pure-Rust `hayro`.
+/// Render 1 trang PDF sang PNG thumbnail bằng engine pure-Rust `hayro` qua mmap + LRU cache (tránh parse lại xref/page-tree nhiều lần).
 pub fn render_pdf_thumbnail(path: &Path, page_index: usize, max_width: u32) -> Result<Vec<u8>> {
-    let bytes = std::fs::read(path)?;
-    let pdf = Pdf::new(Arc::new(bytes))
-        .map_err(|_| KnitError::InvalidInput(format!("Khong doc duoc PDF {}", path.display())))?;
+    let pdf = load_cached_hayro_pdf(path)?;
     let pages = pdf.pages();
     let page = pages.get(page_index).ok_or_else(|| {
-        KnitError::InvalidInput(format!("Trang {} khong ton tai (tong {})", page_index + 1, pages.len()))
+        KnitError::InvalidInput(format!(
+            "Trang {} khong ton tai (tong {})",
+            page_index + 1,
+            pages.len()
+        ))
     })?;
     render_pdf_page_png(page, max_width)
 }
 
-/// Render 1 trang PDF sang JPEG thumbnail nhẹ bằng engine pure-Rust `hayro` (dùng cho disk cache).
+/// Render 1 trang PDF sang JPEG thumbnail nhẹ bằng engine pure-Rust `hayro` qua mmap + LRU cache (dùng cho disk cache).
 pub fn render_pdf_thumbnail_jpeg(
     path: &Path,
     page_index: usize,
     max_width: u32,
     quality: u8,
 ) -> Result<Vec<u8>> {
-    let bytes = std::fs::read(path)?;
-    let pdf = Pdf::new(Arc::new(bytes))
-        .map_err(|_| KnitError::InvalidInput(format!("Khong doc duoc PDF {}", path.display())))?;
+    let pdf = load_cached_hayro_pdf(path)?;
     let pages = pdf.pages();
     let page = pages.get(page_index).ok_or_else(|| {
-        KnitError::InvalidInput(format!("Trang {} khong ton tai (tong {})", page_index + 1, pages.len()))
+        KnitError::InvalidInput(format!(
+            "Trang {} khong ton tai (tong {})",
+            page_index + 1,
+            pages.len()
+        ))
     })?;
     let (pw, _ph) = page.render_dimensions();
     let scale = if pw > 0.0 && max_width > 0 {
@@ -89,7 +189,8 @@ pub fn render_pdf_thumbnail_jpeg(
     let img_buf = image::RgbImage::from_raw(w, h, rgb)
         .ok_or_else(|| KnitError::InvalidInput("Khong tao duoc buffer anh PDF".into()))?;
     let mut out = Vec::new();
-    let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality.clamp(30, 95));
+    let mut enc =
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality.clamp(30, 95));
     enc.encode_image(&image::DynamicImage::ImageRgb8(img_buf))
         .map_err(|e| KnitError::InvalidInput(format!("Loi nen JPEG PDF thumbnail: {e}")))?;
     Ok(out)
@@ -113,7 +214,10 @@ pub fn render_pdf_bytes_thumbnails(
     Ok((total, rendered))
 }
 
-fn render_pdf_page_png(page: &hayro::hayro_syntax::page::Page<'_>, max_width: u32) -> Result<Vec<u8>> {
+fn render_pdf_page_png(
+    page: &hayro::hayro_syntax::page::Page<'_>,
+    max_width: u32,
+) -> Result<Vec<u8>> {
     let (pw, _ph) = page.render_dimensions();
     let scale = if pw > 0.0 && max_width > 0 {
         (max_width as f32 / pw).clamp(0.1, 4.0)
@@ -166,7 +270,9 @@ pub fn parse_page_ranges(spec: &str, total_pages: usize) -> Result<Vec<usize>> {
         }
     }
     if out.is_empty() {
-        return Err(KnitError::InvalidInput("Khong co trang hop le nao duoc chon".into()));
+        return Err(KnitError::InvalidInput(
+            "Khong co trang hop le nao duoc chon".into(),
+        ));
     }
     Ok(out)
 }
@@ -183,214 +289,234 @@ fn parse_one_based(token: &str, total_pages: usize) -> Result<usize> {
     Ok(val)
 }
 
-/// Hợp nhất nhiều PDF (hỗ trợ chọn trang, sắp xếp lại, xoay góc mod 360, và giữ/ánh xạ bookmark).
+/// Hợp nhất nhiều PDF theo cơ chế streaming từng tệp một:
+/// chỉ giữ tối đa 1 tệp nguồn tại một thời điểm, ghi thẳng object ra ổ cứng qua `StreamingPdfWriter`
+/// thay vì nạp toàn bộ + clone `merged: Document` + serialize `Vec<u8>`.
 pub fn merge_pdfs(
     config: &PdfMergeConfig,
     cancel: &CancellationToken,
     reporter: &dyn JobReporter,
 ) -> Result<PdfBuildResult> {
     if config.inputs.is_empty() {
-        return Err(KnitError::InvalidInput("Can it nhat 1 file PDF de gop".into()));
+        return Err(KnitError::InvalidInput(
+            "Can it nhat 1 file PDF de gop".into(),
+        ));
     }
     if cancel.is_cancelled() {
         return Err(KnitError::Cancelled);
     }
 
-    reporter.info("Dang nap cac file PDF dau vao");
-    let mut docs = Vec::with_capacity(config.inputs.len());
     let mut total_input_bytes = 0u64;
     for path in &config.inputs {
         if !path.is_file() {
             return Err(KnitError::NotFound(path.display().to_string()));
         }
-        total_input_bytes += std::fs::metadata(path)?.len();
-        let doc = Document::load(path)
-            .map_err(|e| KnitError::InvalidInput(format!("Loi doc PDF {}: {e}", path.display())))?;
-        docs.push(doc);
+        total_input_bytes += fs::metadata(path)?.len();
     }
 
     if let Some(parent) = config.output_path.parent() {
         if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-            ensure_disk_space(parent, total_input_bytes.saturating_mul(2))?;
+            fs::create_dir_all(parent)?;
+            ensure_disk_space(parent, total_input_bytes.saturating_add(65536))?;
         }
     }
 
-    let selections: Vec<PageSelection> = match &config.selected_pages {
-        Some(sel) if !sel.is_empty() => sel.clone(),
-        _ => {
-            let mut all = Vec::new();
-            for (file_index, doc) in docs.iter().enumerate() {
-                for page_index in 0..doc.get_pages().len() {
-                    all.push(PageSelection {
-                        file_index,
-                        page_index,
-                        rotation_deg: 0,
-                    });
-                }
+    let explicit_selections = config
+        .selected_pages
+        .as_ref()
+        .filter(|sel| !sel.is_empty());
+
+    let total_docs = config.inputs.len();
+    let mut by_file: Vec<Vec<(usize, usize, i32)>> = vec![Vec::new(); total_docs];
+    if let Some(sels) = explicit_selections {
+        for (sel_idx, sel) in sels.iter().enumerate() {
+            if sel.file_index >= total_docs {
+                return Err(KnitError::InvalidInput(format!(
+                    "file_index {} khong hop le",
+                    sel.file_index
+                )));
             }
-            all
+            by_file[sel.file_index].push((sel_idx, sel.page_index, sel.rotation_deg));
         }
-    };
-
-    if selections.is_empty() {
-        return Err(KnitError::InvalidInput("Khong co trang nao duoc chon de gop".into()));
     }
 
-    // Materialize inherited Resources/MediaBox before renumbering, then renumber each doc cleanly
-    let mut next_id = 1u32;
-    let mut per_doc_pages: Vec<Vec<ObjectId>> = Vec::with_capacity(docs.len());
-    let mut per_doc_bookmarks: Vec<Vec<BookmarkNode>> = Vec::with_capacity(docs.len());
+    let mut final_page_ids: Vec<u32> = explicit_selections
+        .map(|s| vec![0u32; s.len()])
+        .unwrap_or_default();
+    let mut page_index_map: HashMap<(usize, usize), usize> = HashMap::new();
+    let mut per_doc_bookmarks: Vec<Vec<BookmarkNode>> = vec![Vec::new(); total_docs];
 
-    let total_docs = docs.len();
-    for (i, doc) in docs.iter_mut().enumerate() {
+    let mut guard = TempFilesGuard::new();
+    let tmp_path = part_temp_path(&config.output_path, 1);
+    guard.register(tmp_path.clone());
+    let mut writer = StreamingPdfWriter::create(&tmp_path)?;
+
+    let mut running_merged_idx = 0usize;
+    let total_selected_count = explicit_selections.map(|s| s.len()).unwrap_or(0);
+    let mut merged_done = 0usize;
+
+    reporter.info(format!("Merging {} PDF files (streaming)", total_docs));
+
+    for (file_idx, path) in config.inputs.iter().enumerate() {
         if cancel.is_cancelled() {
             return Err(KnitError::Cancelled);
         }
+        if explicit_selections.is_some() && by_file[file_idx].is_empty() {
+            continue;
+        }
+
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("pdf");
         reporter.normal(format!(
-            "Chuẩn bị tệp PDF {}/{}: {}",
-            i + 1,
+            "Processing PDF {}/{}: {}",
+            file_idx + 1,
             total_docs,
-            config.inputs[i]
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("pdf")
+            file_name
         ));
+
+        let mmap = mmap_pdf_readonly(path)?;
+        let mut doc = Document::load_mem(&mmap).map_err(|e| {
+            KnitError::InvalidInput(format!("Failed to load PDF {}: {e}", path.display()))
+        })?;
+        drop(mmap);
+
+        if config.preserve_bookmarks && config.custom_bookmarks.is_none() {
+            per_doc_bookmarks[file_idx] = read_outlines(&doc);
+        }
+
+        let doc_pages: Vec<ObjectId> = doc.get_pages().into_values().collect();
+        let file_items: Vec<(usize, usize, i32)> = if explicit_selections.is_some() {
+            std::mem::take(&mut by_file[file_idx])
+        } else {
+            let mut items = Vec::with_capacity(doc_pages.len());
+            for page_idx in 0..doc_pages.len() {
+                let sel_idx = running_merged_idx;
+                running_merged_idx += 1;
+                items.push((sel_idx, page_idx, 0));
+                final_page_ids.push(0);
+            }
+            items
+        };
+
+        if file_items.is_empty() {
+            drop(doc);
+            continue;
+        }
+
+        for &(_, page_idx, _) in &file_items {
+            if page_idx >= doc_pages.len() {
+                return Err(KnitError::InvalidInput(format!(
+                    "page_index {} khong ton tai trong file {}",
+                    page_idx, file_idx
+                )));
+            }
+        }
+
+        let unique_orig_pages: Vec<ObjectId> = {
+            let mut seen = HashSet::new();
+            let mut list = Vec::new();
+            for &(_, page_idx, _) in &file_items {
+                let pid = doc_pages[page_idx];
+                if seen.insert(pid) {
+                    list.push(pid);
+                }
+            }
+            list
+        };
+        for &pid in &unique_orig_pages {
+            materialize_inherited_page_attrs(&mut doc, pid)?;
+        }
+
+        let occurrences: Vec<(usize, ObjectId, i32)> = file_items
+            .iter()
+            .map(|&(sel_idx, page_idx, rot)| (sel_idx, doc_pages[page_idx], rot))
+            .collect();
+        for &(sel_idx, page_idx, _) in &file_items {
+            page_index_map
+                .entry((file_idx, page_idx))
+                .or_insert(sel_idx);
+        }
+
+        let written_pairs = stream_doc_occurrences_to_writer(
+            &mut doc,
+            &unique_orig_pages,
+            &occurrences,
+            true,
+            &mut writer,
+            cancel,
+        )?;
+        for (sel_idx, new_pid) in written_pairs {
+            final_page_ids[sel_idx] = new_pid;
+            merged_done += 1;
+            if total_selected_count > 0 {
+                reporter.detailed(format!(
+                    "Merged page {merged_done}/{total_selected_count}: File {}",
+                    file_idx + 1
+                ));
+            }
+        }
+
+        drop(doc);
+        trim_heap_if_supported();
         reporter.on_progress(JobProgress {
-            phase: "prepare".into(),
-            done: (i + 1) as u64,
+            phase: "merge".into(),
+            done: (file_idx + 1) as u64,
             total: total_docs as u64,
             bytes_done: 0,
             bytes_total: 0,
-            current_item: format!("Chuan bi file {}/{}", i + 1, total_docs),
+            current_item: format!("Merged file {}/{}: {}", file_idx + 1, total_docs, file_name),
         });
-        if config.preserve_bookmarks {
-            per_doc_bookmarks.push(read_outlines(doc));
-        } else {
-            per_doc_bookmarks.push(Vec::new());
-        }
-        let page_ids: Vec<ObjectId> = doc.get_pages().into_values().collect();
-        for &pid in &page_ids {
-            materialize_inherited_page_attrs(doc, pid)?;
-        }
-        doc.renumber_objects_with(next_id);
-        next_id = doc.max_id.saturating_add(1);
-        let renumbered_pages: Vec<ObjectId> = doc.get_pages().into_values().collect();
-        per_doc_pages.push(renumbered_pages);
     }
 
-    let mut merged = Document::with_version("1.5");
-    for doc in &docs {
-        for (&obj_id, obj) in &doc.objects {
-            if is_catalog_or_pages(obj) {
-                continue;
-            }
-            merged.objects.insert(obj_id, obj.clone());
-        }
-    }
-    merged.max_id = next_id;
-    let new_pages_id = merged.new_object_id();
-
-    let mut final_page_ids = Vec::with_capacity(selections.len());
-    // Map (file_index, original_page_index) -> first merged page index
-    let mut page_index_map: HashMap<(usize, usize), usize> = HashMap::new();
-
-    for (merged_idx, sel) in selections.iter().enumerate() {
-        if cancel.is_cancelled() {
-            return Err(KnitError::Cancelled);
-        }
-        reporter.detailed(format!(
-            "Đang gộp trang {}/{}: Tệp {} · Trang {} (xoay {}°)",
-            merged_idx + 1,
-            selections.len(),
-            sel.file_index + 1,
-            sel.page_index + 1,
-            sel.rotation_deg
+    if final_page_ids.is_empty() {
+        return Err(KnitError::InvalidInput(
+            "No pages selected to merge".into(),
         ));
-        let doc_pages = per_doc_pages.get(sel.file_index).ok_or_else(|| {
-            KnitError::InvalidInput(format!("file_index {} khong hop le", sel.file_index))
-        })?;
-        let orig_page_id = *doc_pages.get(sel.page_index).ok_or_else(|| {
-            KnitError::InvalidInput(format!(
-                "page_index {} khong ton tai trong file {}",
-                sel.page_index, sel.file_index
-            ))
-        })?;
-
-        // Nếu cùng 1 trang được chọn lặp lại, clone dictionary trang mới để không đè /Parent
-        let target_page_id = if final_page_ids.contains(&orig_page_id) {
-            let cloned_obj = merged
-                .get_object(orig_page_id)
-                .map_err(|e| KnitError::InvalidInput(e.to_string()))?
-                .clone();
-            merged.add_object(cloned_obj)
-        } else {
-            orig_page_id
-        };
-
-        if let Ok(Object::Dictionary(ref mut dict)) = merged.get_object_mut(target_page_id) {
-            dict.set("Parent", new_pages_id);
-            if sel.rotation_deg.rem_euclid(360) != 0 {
-                let existing_rot = dict
-                    .get(b"Rotate")
-                    .ok()
-                    .and_then(|o| o.as_i64().ok())
-                    .unwrap_or(0);
-                let new_rot = (existing_rot + sel.rotation_deg as i64).rem_euclid(360);
-                dict.set("Rotate", Object::Integer(new_rot));
-            }
-        }
-
-        page_index_map
-            .entry((sel.file_index, sel.page_index))
-            .or_insert(merged_idx);
-        final_page_ids.push(target_page_id);
     }
 
-    merged.objects.insert(
-        new_pages_id,
-        Object::Dictionary(dictionary! {
-            "Type" => "Pages",
-            "Kids" => final_page_ids.iter().copied().map(Object::Reference).collect::<Vec<_>>(),
-            "Count" => final_page_ids.len() as i64,
-        }),
-    );
-
-    let catalog_id = merged.add_object(dictionary! {
-        "Type" => "Catalog",
-        "Pages" => new_pages_id,
-    });
-    merged.trailer.set("Root", catalog_id);
-
-    if config.preserve_bookmarks {
+    let final_bookmarks = if config.preserve_bookmarks {
         if let Some(ref custom) = config.custom_bookmarks {
-            write_outlines(&mut merged, &final_page_ids, custom);
+            custom.clone()
         } else {
-            let mut combined_bookmarks = Vec::new();
+            let mut combined = Vec::new();
             for (file_idx, tree) in per_doc_bookmarks.iter().enumerate() {
-                combined_bookmarks.extend(remap_bookmarks_for_selection(tree, file_idx, &page_index_map));
+                combined.extend(remap_bookmarks_for_selection(tree, file_idx, &page_index_map));
             }
-            write_outlines(&mut merged, &final_page_ids, &combined_bookmarks);
+            combined
         }
+    } else {
+        Vec::new()
+    };
+
+    writer.set_page_ids(final_page_ids.clone());
+    let total_bytes = writer.finish(&final_bookmarks)?;
+
+    if config.output_path.exists() {
+        let _ = fs::remove_file(&config.output_path);
     }
+    fs::rename(&tmp_path, &config.output_path)?;
+    guard.committed = true;
 
-    merged.prune_objects();
-
-    let mut bytes = Vec::new();
-    merged
-        .save_to(&mut bytes)
-        .map_err(|e| KnitError::InvalidInput(format!("Loi luu PDF sau khi gop: {e}")))?;
-    atomic_write_file(&config.output_path, |f| Ok(f.write_all(&bytes)?))?;
+    reporter.on_progress(JobProgress {
+        phase: "done".into(),
+        done: total_docs as u64,
+        total: total_docs as u64,
+        bytes_done: total_bytes,
+        bytes_total: total_bytes,
+        current_item: "PDF merge complete".into(),
+    });
 
     Ok(PdfBuildResult {
         output_files: vec![config.output_path.clone()],
         total_pages: final_page_ids.len(),
-        total_bytes: bytes.len() as u64,
+        total_bytes,
         passthrough_pages: 0,
     })
 }
 
-/// Tách 1 file PDF theo `PdfSplitRule` (`PageRanges`, `EveryNPages`, `ExtractSelected`, `MaxBytes`).
+/// Tách 1 file PDF theo `PdfSplitRule` (`PageRanges`, `EveryNPages`, `ExtractSelected`, `MaxBytes`, `CustomGroups`).
 pub fn split_pdf(
     input_path: &Path,
     output_dir: &Path,
@@ -406,16 +532,23 @@ pub fn split_pdf(
         return Err(KnitError::Cancelled);
     }
 
-    std::fs::create_dir_all(output_dir)?;
-    let input_size = std::fs::metadata(input_path)?.len();
-    ensure_disk_space(output_dir, input_size.saturating_mul(2))?;
+    fs::create_dir_all(output_dir)?;
+    let input_size = fs::metadata(input_path)?.len();
+    ensure_disk_space(output_dir, input_size.saturating_add(65536))?;
 
-    reporter.info("Dang doc file PDF can tach");
-    let doc = Document::load(input_path)
-        .map_err(|e| KnitError::InvalidInput(format!("Loi mo PDF: {e}")))?;
-    let total_pages = doc.get_pages().len();
+    reporter.info("Reading source PDF for splitting");
+    let mmap = mmap_pdf_readonly(input_path)?;
+    let mut doc = Document::load_mem(&mmap)
+        .map_err(|e| KnitError::InvalidInput(format!("Failed to open PDF: {e}")))?;
+    drop(mmap);
+
+    let all_pages: Vec<ObjectId> = doc.get_pages().into_values().collect();
+    let total_pages = all_pages.len();
     if total_pages == 0 {
-        return Err(KnitError::InvalidInput("PDF rong, khong co trang".into()));
+        return Err(KnitError::InvalidInput("PDF is empty (0 pages)".into()));
+    }
+    for &pid in &all_pages {
+        materialize_inherited_page_attrs(&mut doc, pid)?;
     }
     let bookmarks = read_outlines(&doc);
 
@@ -438,7 +571,9 @@ pub fn split_pdf(
         }
         PdfSplitRule::ExtractSelected { page_indices } => {
             if page_indices.is_empty() {
-                return Err(KnitError::InvalidInput("Chua chon trang nao de trich xuat".into()));
+                return Err(KnitError::InvalidInput(
+                    "Chua chon trang nao de trich xuat".into(),
+                ));
             }
             for &idx in page_indices {
                 if idx >= total_pages {
@@ -472,12 +607,26 @@ pub fn split_pdf(
                 return Err(KnitError::InvalidInput("max_mb phai lon hon 0".into()));
             }
             let limit = (*max_mb * 1024.0 * 1024.0) as usize;
-            return split_pdf_by_max_bytes(&doc, &bookmarks, total_pages, output_dir, &safe_stem, limit, cancel, reporter);
+            return split_pdf_by_max_bytes(
+                &mut doc,
+                &all_pages,
+                &bookmarks,
+                total_pages,
+                output_dir,
+                &safe_stem,
+                limit,
+                cancel,
+                reporter,
+            );
         }
-        PdfSplitRule::CustomGroups { groups: custom_groups } => {
+        PdfSplitRule::CustomGroups {
+            groups: custom_groups,
+        } => {
             let non_empty: Vec<_> = custom_groups.iter().filter(|g| !g.pages.is_empty()).collect();
             if non_empty.is_empty() {
-                return Err(KnitError::InvalidInput("Chua co trang nao trong cac section dau ra".into()));
+                return Err(KnitError::InvalidInput(
+                    "Chua co trang nao trong cac section dau ra".into(),
+                ));
             }
             let mut seen_names: HashMap<String, usize> = HashMap::new();
             let mut resolved_groups = Vec::with_capacity(non_empty.len());
@@ -516,7 +665,7 @@ pub fn split_pdf(
             return Err(KnitError::Cancelled);
         }
         reporter.normal(format!(
-            "Đang tách tệp {}/{} ({} trang): {}",
+            "Splitting part {}/{} ({} pages): {}",
             idx + 1,
             total_parts,
             page_items.len(),
@@ -531,12 +680,12 @@ pub fn split_pdf(
             total: total_parts as u64,
             bytes_done: 0,
             bytes_total: 0,
-            current_item: format!("Dang ghi phan {}/{}", idx + 1, total_parts),
+            current_item: format!("Writing part {}/{}", idx + 1, total_parts),
         });
-        let bytes = build_subset_pdf_bytes(&doc, &bookmarks, &page_items)?;
+        let written =
+            stream_subset_pdf_to_path(&mut doc, &all_pages, &bookmarks, &page_items, &out_path, cancel)?;
         total_out_pages += page_items.len();
-        total_bytes += bytes.len() as u64;
-        atomic_write_file(&out_path, |f| Ok(f.write_all(&bytes)?))?;
+        total_bytes += written;
         output_files.push(out_path);
     }
 
@@ -561,7 +710,7 @@ pub fn split_multi_pdf(
     if inputs.is_empty() {
         return Err(KnitError::InvalidInput("Can it nhat 1 file PDF".into()));
     }
-    std::fs::create_dir_all(output_dir)?;
+    fs::create_dir_all(output_dir)?;
 
     if let PdfSplitRule::CustomGroups { groups } = rule {
         let non_empty: Vec<_> = groups.iter().filter(|g| !g.pages.is_empty()).collect();
@@ -596,10 +745,7 @@ pub fn split_multi_pdf(
 
             for sel in &g.pages {
                 let src = inputs.get(sel.file_index).ok_or_else(|| {
-                    KnitError::InvalidInput(format!(
-                        "file_index {} khong hop le",
-                        sel.file_index
-                    ))
+                    KnitError::InvalidInput(format!("file_index {} khong hop le", sel.file_index))
                 })?;
                 let local_file_idx = *local_index_by_file.entry(sel.file_index).or_insert_with(|| {
                     let next = local_inputs.len();
@@ -614,7 +760,7 @@ pub fn split_multi_pdf(
             }
 
             reporter.normal(format!(
-                "Đang tách tệp {}/{} ({} trang): {unique_name}.pdf",
+                "Splitting part {}/{} ({} pages): {unique_name}.pdf",
                 idx + 1,
                 total_parts,
                 remapped_pages.len()
@@ -625,7 +771,7 @@ pub fn split_multi_pdf(
                 total: total_parts as u64,
                 bytes_done: 0,
                 bytes_total: 0,
-                current_item: format!("Dang ghi phan {}/{}", idx + 1, total_parts),
+                current_item: format!("Writing part {}/{}", idx + 1, total_parts),
             });
 
             let res = merge_pdfs(
@@ -672,7 +818,7 @@ pub fn split_multi_pdf(
                     .unwrap_or("split")
             });
         reporter.normal(format!(
-            "Đang tách tệp nguồn {}/{}: {}",
+            "Splitting source PDF {}/{}: {}",
             idx + 1,
             total_files,
             input_path
@@ -690,7 +836,7 @@ pub fn split_multi_pdf(
             total: total_files as u64,
             bytes_done: 0,
             bytes_total: 0,
-            current_item: format!("Da tach xong tep {}/{}", idx + 1, total_files),
+            current_item: format!("Finished splitting file {}/{}", idx + 1, total_files),
         });
     }
 
@@ -720,8 +866,10 @@ fn sanitize_split_group_name(raw: &str, fallback_idx: usize) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn split_pdf_by_max_bytes(
-    doc: &Document,
+    doc: &mut Document,
+    all_pages: &[ObjectId],
     bookmarks: &[BookmarkNode],
     total_pages: usize,
     output_dir: &Path,
@@ -739,21 +887,24 @@ fn split_pdf_by_max_bytes(
         if cancel.is_cancelled() {
             return Err(KnitError::Cancelled);
         }
-        // Binary search longest range [start..=hi] fitting within `limit`
         let mut lo = start;
         let mut hi = total_pages - 1;
         let mut best = start;
-        let mut best_bytes = build_subset_pdf_bytes(doc, bookmarks, &[(start, 0)])?;
+        let single_size =
+            measure_subset_pdf_bytes(doc, all_pages, bookmarks, &[(start, 0)], cancel)?;
 
-        if best_bytes.len() <= limit && lo < hi {
+        if single_size <= limit as u64 && lo < hi {
             lo = start + 1;
             while lo <= hi {
+                if cancel.is_cancelled() {
+                    return Err(KnitError::Cancelled);
+                }
                 let mid = (lo + hi) / 2;
                 let range: Vec<(usize, i32)> = (start..=mid).map(|i| (i, 0)).collect();
-                let candidate = build_subset_pdf_bytes(doc, bookmarks, &range)?;
-                if candidate.len() <= limit {
+                let candidate_len =
+                    measure_subset_pdf_bytes(doc, all_pages, bookmarks, &range, cancel)?;
+                if candidate_len <= limit as u64 {
                     best = mid;
-                    best_bytes = candidate;
                     lo = mid + 1;
                 } else {
                     if mid == 0 {
@@ -765,11 +916,19 @@ fn split_pdf_by_max_bytes(
         }
 
         let out_path = output_dir.join(format!("{safe_stem}_part{part:02}.pdf"));
-        total_bytes += best_bytes.len() as u64;
-        atomic_write_file(&out_path, |f| Ok(f.write_all(&best_bytes)?))?;
+        let final_range: Vec<(usize, i32)> = (start..=best).map(|i| (i, 0)).collect();
+        let written = stream_subset_pdf_to_path(
+            doc,
+            all_pages,
+            bookmarks,
+            &final_range,
+            &out_path,
+            cancel,
+        )?;
+        total_bytes += written;
         output_files.push(out_path);
         reporter.normal(format!(
-            "Đã ghi phần {} (trang {}..={}) -> {}",
+            "Wrote part {} (pages {}..={}) -> {}",
             part,
             start + 1,
             best + 1,
@@ -785,7 +944,7 @@ fn split_pdf_by_max_bytes(
             total: total_pages as u64,
             bytes_done: 0,
             bytes_total: 0,
-            current_item: format!("Da tach den trang {}/{}", best + 1, total_pages),
+            current_item: format!("Split up to page {}/{}", best + 1, total_pages),
         });
         start = best + 1;
         part += 1;
@@ -799,75 +958,306 @@ fn split_pdf_by_max_bytes(
     })
 }
 
-fn build_subset_pdf_bytes(
-    orig: &Document,
+fn measure_subset_pdf_bytes(
+    doc: &mut Document,
+    all_pages: &[ObjectId],
     bookmarks: &[BookmarkNode],
     items: &[(usize, i32)],
-) -> Result<Vec<u8>> {
-    let mut doc = orig.clone();
-    let all_pages: Vec<ObjectId> = doc.get_pages().into_values().collect();
-    for &pid in &all_pages {
-        materialize_inherited_page_attrs(&mut doc, pid)?;
+    cancel: &CancellationToken,
+) -> Result<u64> {
+    let mut writer = StreamingPdfWriter::from_writer(io::sink())?;
+    stream_subset_pdf_with_writer(doc, all_pages, bookmarks, items, &mut writer, cancel)?;
+    let mapped_bookmarks = build_subset_bookmarks(bookmarks, items);
+    writer.finish(&mapped_bookmarks)
+}
+
+fn stream_subset_pdf_to_path(
+    doc: &mut Document,
+    all_pages: &[ObjectId],
+    bookmarks: &[BookmarkNode],
+    items: &[(usize, i32)],
+    out_path: &Path,
+    cancel: &CancellationToken,
+) -> Result<u64> {
+    let mut guard = TempFilesGuard::new();
+    let tmp_path = part_temp_path(out_path, 1);
+    guard.register(tmp_path.clone());
+    let mut writer = StreamingPdfWriter::create(&tmp_path)?;
+    stream_subset_pdf_with_writer(doc, all_pages, bookmarks, items, &mut writer, cancel)?;
+    let mapped_bookmarks = build_subset_bookmarks(bookmarks, items);
+    let total_bytes = writer.finish(&mapped_bookmarks)?;
+    if out_path.exists() {
+        let _ = fs::remove_file(out_path);
     }
+    fs::rename(&tmp_path, out_path)?;
+    guard.committed = true;
+    Ok(total_bytes)
+}
 
-    // Tạo trang Pages root mới chỉ chứa các trang được chọn
-    let pages_id = doc.new_object_id();
-    let mut selected_ids = Vec::with_capacity(items.len());
-    let mut index_map = HashMap::new();
+fn build_subset_bookmarks(bookmarks: &[BookmarkNode], items: &[(usize, i32)]) -> Vec<BookmarkNode> {
+    let mut index_map = HashMap::with_capacity(items.len());
+    for (new_idx, &(orig_idx, _)) in items.iter().enumerate() {
+        index_map.entry(orig_idx).or_insert(new_idx);
+    }
+    remap_bookmarks_with_single_map(bookmarks, &index_map)
+}
 
+fn stream_subset_pdf_with_writer<W: Write>(
+    doc: &mut Document,
+    all_pages: &[ObjectId],
+    _bookmarks: &[BookmarkNode],
+    items: &[(usize, i32)],
+    writer: &mut StreamingPdfWriter<W>,
+    cancel: &CancellationToken,
+) -> Result<()> {
+    let mut unique_orig_pages = Vec::new();
+    let mut seen = HashSet::new();
+    let mut occurrences = Vec::with_capacity(items.len());
     for (new_idx, &(orig_idx, rot_delta)) in items.iter().enumerate() {
         let orig_pid = *all_pages.get(orig_idx).ok_or_else(|| {
             KnitError::InvalidInput(format!("Trang {} khong ton tai", orig_idx + 1))
         })?;
-        let pid = if selected_ids.contains(&orig_pid) {
-            let cloned = doc
-                .get_object(orig_pid)
-                .map_err(|e| KnitError::InvalidInput(e.to_string()))?
-                .clone();
-            doc.add_object(cloned)
-        } else {
-            orig_pid
-        };
-        if let Ok(Object::Dictionary(ref mut d)) = doc.get_object_mut(pid) {
-            d.set("Parent", pages_id);
-            if rot_delta.rem_euclid(360) != 0 {
-                let existing_rot = d.get(b"Rotate").and_then(|o| o.as_i64()).unwrap_or(0);
-                let new_rot = (existing_rot + rot_delta as i64).rem_euclid(360);
-                d.set("Rotate", new_rot);
-            }
+        if seen.insert(orig_pid) {
+            unique_orig_pages.push(orig_pid);
         }
-        index_map.entry(orig_idx).or_insert(new_idx);
-        selected_ids.push(pid);
+        occurrences.push((new_idx, orig_pid, rot_delta));
     }
 
-    // Xóa cấu trúc Catalog/Outlines cũ trước khi prune
-    doc.bookmarks.clear();
-    doc.bookmark_table.clear();
-    doc.max_bookmark_id = 0;
+    let written_pairs = stream_doc_occurrences_to_writer(
+        doc,
+        &unique_orig_pages,
+        &occurrences,
+        false,
+        writer,
+        cancel,
+    )?;
+    let mut page_ids = vec![0u32; items.len()];
+    for (idx, pid) in written_pairs {
+        page_ids[idx] = pid;
+    }
+    writer.set_page_ids(page_ids);
+    Ok(())
+}
 
-    doc.objects.insert(
-        pages_id,
-        Object::Dictionary(dictionary! {
-            "Type" => "Pages",
-            "Kids" => selected_ids.iter().copied().map(Object::Reference).collect::<Vec<_>>(),
-            "Count" => selected_ids.len() as i64,
-        }),
-    );
-    let catalog_id = doc.add_object(dictionary! {
-        "Type" => "Catalog",
-        "Pages" => pages_id,
-    });
-    doc.trailer.set("Root", catalog_id);
+/// Ghi các trang được chọn + toàn bộ object con cháu (Fonts, XObjects, Contents, Resources...) của 1 `Document`
+/// thẳng vào `StreamingPdfWriter`. Nếu `consume_doc == true` (dùng trong `merge_pdfs`), mỗi object ghi xong sẽ bị gỡ
+/// khỏi `doc.objects` và giải phóng ngay khỏi RAM.
+fn stream_doc_occurrences_to_writer<W: Write>(
+    doc: &mut Document,
+    unique_orig_pages: &[ObjectId],
+    occurrences: &[(usize, ObjectId, i32)],
+    consume_doc: bool,
+    writer: &mut StreamingPdfWriter<W>,
+    cancel: &CancellationToken,
+) -> Result<Vec<(usize, u32)>> {
+    let non_page_order = collect_reachable_objects_for_pages(doc, unique_orig_pages);
 
-    // Remap bookmarks: nếu indices liên tục thì dùng remap_tree, không thì dùng index_map tổng quát
-    let mapped_bookmarks = remap_bookmarks_with_single_map(bookmarks, &index_map);
-    write_outlines(&mut doc, &selected_ids, &mapped_bookmarks);
+    let mut id_map: HashMap<ObjectId, ObjectId> =
+        HashMap::with_capacity(unique_orig_pages.len() + non_page_order.len());
+    let mut allocated_occ_ids: Vec<(usize, ObjectId, i32, u32)> =
+        Vec::with_capacity(occurrences.len());
 
-    doc.prune_objects();
-    let mut bytes = Vec::new();
-    doc.save_to(&mut bytes)
-        .map_err(|e| KnitError::InvalidInput(format!("Loi ghi PDF tach: {e}")))?;
-    Ok(bytes)
+    for &(sel_idx, orig_pid, rot_deg) in occurrences {
+        let new_pid = writer.alloc_id();
+        id_map.entry(orig_pid).or_insert((new_pid, 0));
+        allocated_occ_ids.push((sel_idx, orig_pid, rot_deg, new_pid));
+    }
+    for &old_id in &non_page_order {
+        let new_id = writer.alloc_id();
+        id_map.insert(old_id, (new_id, 0));
+    }
+
+    for old_id in non_page_order {
+        if cancel.is_cancelled() {
+            return Err(KnitError::Cancelled);
+        }
+        let opt_obj = if consume_doc {
+            doc.objects.remove(&old_id)
+        } else {
+            doc.objects.get(&old_id).cloned()
+        };
+        if let Some(mut obj) = opt_obj {
+            rewrite_object_refs(&mut obj, &id_map);
+            if let Object::Stream(ref mut stream) = obj {
+                stream
+                    .dict
+                    .set("Length", Object::Integer(stream.content.len() as i64));
+            }
+            let new_id = id_map[&old_id].0;
+            writer.write_lopdf_object(new_id, &obj)?;
+        }
+    }
+
+    // Chuẩn bị base Page dict (đã rewrite ref & gắn /Parent 1 0 R) cho từng trang gốc, tránh clone lại toàn cây doc.
+    let mut base_page_dicts: HashMap<ObjectId, Object> =
+        HashMap::with_capacity(unique_orig_pages.len());
+    for &orig_pid in unique_orig_pages {
+        let opt_page = if consume_doc {
+            doc.objects.remove(&orig_pid)
+        } else {
+            doc.objects.get(&orig_pid).cloned()
+        };
+        if let Some(mut page_obj) = opt_page {
+            if let Object::Dictionary(ref mut dict) = page_obj {
+                dict.remove(b"Parent");
+                dict.remove(b"B");
+            }
+            rewrite_object_refs(&mut page_obj, &id_map);
+            if let Object::Dictionary(ref mut dict) = page_obj {
+                dict.set("Parent", Object::Reference((1, 0)));
+            }
+            base_page_dicts.insert(orig_pid, page_obj);
+        }
+    }
+
+    let mut remaining_counts: HashMap<ObjectId, usize> = HashMap::new();
+    for &(_, orig_pid, _, _) in &allocated_occ_ids {
+        *remaining_counts.entry(orig_pid).or_insert(0) += 1;
+    }
+
+    let mut out_pairs = Vec::with_capacity(allocated_occ_ids.len());
+    for (sel_idx, orig_pid, rot_deg, new_pid) in allocated_occ_ids {
+        if cancel.is_cancelled() {
+            return Err(KnitError::Cancelled);
+        }
+        let rem = remaining_counts.get_mut(&orig_pid).expect("remaining count");
+        *rem -= 1;
+        let mut page_obj = if *rem == 0 {
+            base_page_dicts.remove(&orig_pid).ok_or_else(|| {
+                KnitError::InvalidInput(format!("Thieu Page object {:?}", orig_pid))
+            })?
+        } else {
+            base_page_dicts
+                .get(&orig_pid)
+                .cloned()
+                .ok_or_else(|| KnitError::InvalidInput(format!("Thieu Page object {:?}", orig_pid)))?
+        };
+
+        if rot_deg.rem_euclid(360) != 0 {
+            if let Object::Dictionary(ref mut dict) = page_obj {
+                let existing_rot = dict
+                    .get(b"Rotate")
+                    .ok()
+                    .and_then(|o| o.as_i64().ok())
+                    .unwrap_or(0);
+                let new_rot = (existing_rot + rot_deg as i64).rem_euclid(360);
+                dict.set("Rotate", Object::Integer(new_rot));
+            }
+        }
+        writer.write_lopdf_object(new_pid, &page_obj)?;
+        out_pairs.push((sel_idx, new_pid));
+    }
+
+    Ok(out_pairs)
+}
+
+fn collect_reachable_objects_for_pages(
+    doc: &Document,
+    selected_page_ids: &[ObjectId],
+) -> Vec<ObjectId> {
+    let selected_set: HashSet<ObjectId> = selected_page_ids.iter().copied().collect();
+    let mut visited: HashSet<ObjectId> = selected_set.clone();
+    let mut queue: VecDeque<ObjectId> = VecDeque::new();
+    let mut non_page_order: Vec<ObjectId> = Vec::new();
+
+    for &pid in selected_page_ids {
+        if let Some(Object::Dictionary(dict)) = doc.objects.get(&pid) {
+            for (key, val) in dict.iter() {
+                if key == b"Parent" || key == b"B" || key == b"StructParents" {
+                    continue;
+                }
+                enqueue_refs_in_object(doc, val, &selected_set, &mut visited, &mut queue);
+            }
+        }
+    }
+
+    while let Some(oid) = queue.pop_front() {
+        let Some(obj) = doc.objects.get(&oid) else {
+            continue;
+        };
+        if is_catalog_or_pages(obj) {
+            continue;
+        }
+        non_page_order.push(oid);
+        enqueue_refs_in_object(doc, obj, &selected_set, &mut visited, &mut queue);
+    }
+
+    non_page_order
+}
+
+fn enqueue_refs_in_object(
+    doc: &Document,
+    obj: &Object,
+    selected_set: &HashSet<ObjectId>,
+    visited: &mut HashSet<ObjectId>,
+    queue: &mut VecDeque<ObjectId>,
+) {
+    match obj {
+        Object::Reference(id) => {
+            if visited.contains(id) {
+                return;
+            }
+            if let Some(target) = doc.objects.get(id) {
+                if is_catalog_or_pages(target) || (is_page_dict(target) && !selected_set.contains(id))
+                {
+                    return;
+                }
+                visited.insert(*id);
+                queue.push_back(*id);
+            }
+        }
+        Object::Array(arr) => {
+            for item in arr {
+                enqueue_refs_in_object(doc, item, selected_set, visited, queue);
+            }
+        }
+        Object::Dictionary(dict) => {
+            let skip_parent = dict
+                .get(b"Type")
+                .and_then(|o| o.as_name())
+                .is_ok_and(|t| t == b"Page");
+            for (key, val) in dict.iter() {
+                if skip_parent && (key == b"Parent" || key == b"B") {
+                    continue;
+                }
+                enqueue_refs_in_object(doc, val, selected_set, visited, queue);
+            }
+        }
+        Object::Stream(stream) => {
+            for (_, val) in stream.dict.iter() {
+                enqueue_refs_in_object(doc, val, selected_set, visited, queue);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_object_refs(obj: &mut Object, id_map: &HashMap<ObjectId, ObjectId>) {
+    match obj {
+        Object::Reference(ref mut id) => {
+            if let Some(&mapped) = id_map.get(id) {
+                *id = mapped;
+            } else {
+                *obj = Object::Null;
+            }
+        }
+        Object::Array(ref mut arr) => {
+            for item in arr.iter_mut() {
+                rewrite_object_refs(item, id_map);
+            }
+        }
+        Object::Dictionary(ref mut dict) => {
+            for (_, val) in dict.iter_mut() {
+                rewrite_object_refs(val, id_map);
+            }
+        }
+        Object::Stream(ref mut stream) => {
+            for (_, val) in stream.dict.iter_mut() {
+                rewrite_object_refs(val, id_map);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn remap_bookmarks_for_selection(
@@ -913,6 +1303,15 @@ fn is_catalog_or_pages(obj: &Object) -> bool {
     if let Ok(dict) = obj.as_dict() {
         if let Ok(t) = dict.get(b"Type").and_then(|o| o.as_name()) {
             return matches!(t, b"Catalog" | b"Pages" | b"Outlines");
+        }
+    }
+    false
+}
+
+fn is_page_dict(obj: &Object) -> bool {
+    if let Ok(dict) = obj.as_dict() {
+        if let Ok(t) = dict.get(b"Type").and_then(|o| o.as_name()) {
+            return t == b"Page";
         }
     }
     false

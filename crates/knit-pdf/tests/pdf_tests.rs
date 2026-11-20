@@ -5,7 +5,8 @@ use knit_pdf::{
     remap_tree, render_page_draft_preview_jpeg, render_pdf_thumbnail, scan_image_files,
     scan_image_folder, split_multi_pdf, split_pdf, AnimatedImagePolicy, AnnotationLayer,
     BookmarkNode, CropRect, Image2PdfConfig, PageDraft, PageLayoutPolicy, PageSelection,
-    PageSource, PdfMergeConfig, PdfSplitGroup, PdfSplitRule, StrokeAnnotation, TextAnnotation,
+    PageSource, PdfExportMode, PdfMergeConfig, PdfSplitGroup, PdfSplitRule, StrokeAnnotation,
+    TextAnnotation,
 };
 use std::io::Cursor;
 use tempfile::tempdir;
@@ -63,6 +64,7 @@ fn image2pdf_passthrough_jpg_and_avif_webp_and_bookmarks() {
             jpeg_quality: 85,
             lossless_passthrough: true,
             animated_policy: AnimatedImagePolicy::FirstFrameOnly,
+            export_mode: PdfExportMode::Balanced,
             max_mb: None,
             max_pages_per_file: None,
         },
@@ -135,6 +137,7 @@ fn non_destructive_crop_rotate_text_and_draw_render_into_pdf() {
             jpeg_quality: 90,
             lossless_passthrough: true,
             animated_policy: AnimatedImagePolicy::FirstFrameOnly,
+            export_mode: PdfExportMode::Balanced,
             max_mb: None,
             max_pages_per_file: None,
         },
@@ -171,6 +174,7 @@ fn pdf_merge_and_split_preserve_outlines_and_page_selection() {
         jpeg_quality: 80,
         lossless_passthrough: true,
         animated_policy: AnimatedImagePolicy::FirstFrameOnly,
+        export_mode: PdfExportMode::Balanced,
         max_mb: None,
         max_pages_per_file: None,
     };
@@ -362,6 +366,7 @@ fn animated_gif_unpacks_frames_with_duration() {
             jpeg_quality: 85,
             lossless_passthrough: true,
             animated_policy: AnimatedImagePolicy::UnpackAllFrames,
+            export_mode: PdfExportMode::Balanced,
             max_mb: None,
             max_pages_per_file: None,
         },
@@ -398,6 +403,7 @@ fn a4_background_colors_and_padding_render_correctly() {
             jpeg_quality: 90,
             lossless_passthrough: true,
             animated_policy: AnimatedImagePolicy::FirstFrameOnly,
+            export_mode: PdfExportMode::Balanced,
             max_mb: None,
             max_pages_per_file: None,
         },
@@ -430,6 +436,7 @@ fn a4_background_colors_and_padding_render_correctly() {
             jpeg_quality: 90,
             lossless_passthrough: true,
             animated_policy: AnimatedImagePolicy::FirstFrameOnly,
+            export_mode: PdfExportMode::Balanced,
             max_mb: None,
             max_pages_per_file: None,
         },
@@ -465,6 +472,7 @@ fn split_pdf_custom_groups_supports_reordering_duplication_and_rotation() {
             jpeg_quality: 90,
             lossless_passthrough: true,
             animated_policy: AnimatedImagePolicy::FirstFrameOnly,
+            export_mode: PdfExportMode::Balanced,
             max_mb: None,
             max_pages_per_file: None,
         },
@@ -667,6 +675,7 @@ fn split_by_max_pages_per_file_and_preview_draft_edits_and_monotonic_progress() 
             jpeg_quality: 85,
             lossless_passthrough: true,
             animated_policy: AnimatedImagePolicy::FirstFrameOnly,
+            export_mode: PdfExportMode::Balanced,
             max_mb: None,
             max_pages_per_file: Some(2),
         },
@@ -710,6 +719,7 @@ fn split_multi_pdf_handles_cross_file_custom_groups_and_batch_rules() {
         jpeg_quality: 85,
         lossless_passthrough: true,
         animated_policy: AnimatedImagePolicy::FirstFrameOnly,
+        export_mode: PdfExportMode::Balanced,
         max_mb: None,
         max_pages_per_file: None,
     };
@@ -757,4 +767,335 @@ fn split_multi_pdf_handles_cross_file_custom_groups_and_batch_rules() {
     .unwrap();
     assert_eq!(res_batch.output_files.len(), 4);
     assert_eq!(res_batch.total_pages, 4);
+}
+
+#[test]
+fn streaming_packer_splits_by_max_mb_and_preserves_special_bookmarks_and_cleans_temp_on_cancel() {
+    let tmp = tempdir().unwrap();
+    let mut paths = Vec::new();
+    for i in 0..4 {
+        let p = tmp.path().join(format!("img_{i}.png"));
+        let mut img = RgbaImage::new(200, 200);
+        for (x, y, px) in img.enumerate_pixels_mut() {
+            *px = Rgba([
+                ((x * 7 + i * 40) % 255) as u8,
+                ((y * 11 + i * 30) % 255) as u8,
+                ((x ^ y) % 255) as u8,
+                255,
+            ]);
+        }
+        img.save(&p).unwrap();
+        paths.push(p);
+    }
+
+    let scan = knit_pdf::scan_image_files(&paths, AnimatedImagePolicy::FirstFrameOnly).unwrap();
+    let out_dir = tmp.path().join("out");
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let out_pdf = out_dir.join("split_mb.pdf");
+
+    let bookmarks = vec![
+        BookmarkNode {
+            title: "Part (1) \\ ASCII".into(),
+            target_page_index: 0,
+            children: vec![BookmarkNode {
+                title: "Mục con Tiếng Việt".into(),
+                target_page_index: 1,
+                children: vec![],
+            }],
+        },
+        BookmarkNode {
+            title: "Chương cuối".into(),
+            target_page_index: 3,
+            children: vec![],
+        },
+    ];
+
+    // Very small max_mb (~10 KB) forces streaming split across parts
+    let res = build_pdf_from_drafts(
+        &scan.pages,
+        &bookmarks,
+        &Image2PdfConfig {
+            output_path: out_pdf.clone(),
+            layout: PageLayoutPolicy::OriginalSize { dpi: 72.0 },
+            jpeg_quality: 85,
+            lossless_passthrough: true,
+            animated_policy: AnimatedImagePolicy::FirstFrameOnly,
+            export_mode: PdfExportMode::Balanced,
+            max_mb: Some(0.01),
+            max_pages_per_file: None,
+        },
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+
+    assert!(res.output_files.len() >= 2, "expected max_mb to split into multiple PDFs");
+    let total_pages_inspected: usize = res
+        .output_files
+        .iter()
+        .map(|p| inspect_pdf(p).unwrap().page_count)
+        .sum();
+    assert_eq!(total_pages_inspected, 4);
+
+    let first_info = inspect_pdf(&res.output_files[0]).unwrap();
+    assert_eq!(first_info.bookmarks[0].title, "Part (1) \\ ASCII");
+    let has_nested_vi = res.output_files.iter().any(|p| {
+        inspect_pdf(p)
+            .unwrap()
+            .bookmarks
+            .iter()
+            .any(|b| b.children.iter().any(|c| c.title == "Mục con Tiếng Việt"))
+    });
+    assert!(has_nested_vi, "expected nested Vietnamese bookmark in split part");
+    let last_info = inspect_pdf(res.output_files.last().unwrap()).unwrap();
+    assert!(
+        last_info.bookmarks.iter().any(|b| b.title == "Chương cuối"),
+        "expected last bookmark in final split part"
+    );
+
+    let thumb = render_pdf_thumbnail(&res.output_files[0], 0, 80).unwrap();
+    assert!(!thumb.is_empty());
+
+    // Ensure no leftover .knit_tmp files in out_dir
+    let leftover_tmp = std::fs::read_dir(&out_dir)
+        .unwrap()
+        .flatten()
+        .any(|e| e.file_name().to_string_lossy().contains(".knit_tmp."));
+    assert!(!leftover_tmp, "unexpected temporary files remained after export");
+
+    // Verify mid-stream cancellation cleans up open temp files cleanly
+    struct CancelOnFirstProgress(CancellationToken);
+    impl knit_core::JobReporter for CancelOnFirstProgress {
+        fn on_progress(&self, _p: knit_core::JobProgress) {
+            self.0.cancel();
+        }
+        fn on_log(&self, _level: knit_core::JobLogLevel, _msg: &str) {}
+    }
+
+    let cancel = CancellationToken::new();
+    let cancel_out = out_dir.join("cancelled.pdf");
+    let err = build_pdf_from_drafts(
+        &scan.pages,
+        &[],
+        &Image2PdfConfig {
+            output_path: cancel_out.clone(),
+            layout: PageLayoutPolicy::OriginalSize { dpi: 72.0 },
+            jpeg_quality: 85,
+            lossless_passthrough: true,
+            animated_policy: AnimatedImagePolicy::FirstFrameOnly,
+            export_mode: PdfExportMode::Balanced,
+            max_mb: None,
+            max_pages_per_file: None,
+        },
+        &cancel,
+        &CancelOnFirstProgress(cancel.clone()),
+    )
+    .unwrap_err();
+    assert!(matches!(err, knit_core::KnitError::Cancelled));
+    assert!(!cancel_out.exists());
+    let leftover_after_cancel = std::fs::read_dir(&out_dir)
+        .unwrap()
+        .flatten()
+        .any(|e| e.file_name().to_string_lossy().contains(".knit_tmp."));
+    assert!(!leftover_after_cancel, "temp files leaked after mid-stream cancel");
+}
+
+#[test]
+fn export_modes_fast_balanced_and_safe_behave_as_specified() {
+    let tmp = tempdir().unwrap();
+
+    // 1. Grayscale L8 JPEG
+    let gray_jpg = tmp.path().join("01_gray.jpg");
+    let gray_img = image::GrayImage::from_fn(80, 60, |x, y| image::Luma([((x + y) % 255) as u8]));
+    DynamicImage::ImageLuma8(gray_img)
+        .write_to(&mut std::fs::File::create(&gray_jpg).unwrap(), ImageFormat::Jpeg)
+        .unwrap();
+
+    // 2. Opaque RGB PNG (eligible for IDAT passthrough)
+    let rgb_png = tmp.path().join("02_opaque.png");
+    let rgb_img = image::RgbImage::from_fn(60, 80, |x, y| image::Rgb([x as u8 * 3, y as u8 * 2, 120]));
+    DynamicImage::ImageRgb8(rgb_img)
+        .write_to(&mut std::fs::File::create(&rgb_png).unwrap(), ImageFormat::Png)
+        .unwrap();
+
+    // 3. PNG disguised with .jpg extension (magic byte detection check)
+    let png_as_jpg = tmp.path().join("03_cover.jpg");
+    std::fs::copy(&rgb_png, &png_as_jpg).unwrap();
+
+    let scan = knit_pdf::scan_image_files(
+        &[gray_jpg.clone(), rgb_png.clone(), png_as_jpg.clone()],
+        AnimatedImagePolicy::FirstFrameOnly,
+    )
+    .unwrap();
+    assert_eq!(scan.pages.len(), 3);
+
+    // Mode 1: Fast — bypasses max_pages_per_file/max_mb split and writes 1 PDF file
+    let fast_out = tmp.path().join("fast.pdf");
+    let fast_res = build_pdf_from_drafts(
+        &scan.pages,
+        &[],
+        &Image2PdfConfig {
+            output_path: fast_out.clone(),
+            layout: PageLayoutPolicy::OriginalSize { dpi: 72.0 },
+            jpeg_quality: 85,
+            lossless_passthrough: false,
+            animated_policy: AnimatedImagePolicy::FirstFrameOnly,
+            export_mode: PdfExportMode::Fast,
+            max_mb: Some(0.001),
+            max_pages_per_file: Some(1),
+        },
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+    assert_eq!(fast_res.output_files.len(), 1);
+    assert_eq!(fast_res.total_pages, 3);
+    assert_eq!(fast_res.passthrough_pages, 3); // gray JPEG + both PNGs via IDAT
+    assert_eq!(inspect_pdf(&fast_out).unwrap().page_count, 3);
+    assert!(!render_pdf_thumbnail(&fast_out, 0, 60).unwrap().is_empty());
+    assert!(!render_pdf_thumbnail(&fast_out, 1, 60).unwrap().is_empty());
+    assert!(!render_pdf_thumbnail(&fast_out, 2, 60).unwrap().is_empty());
+
+    // Mode 2: Balanced — passthroughs Grayscale JPEG + IDAT PNG AND honors split rules
+    let bal_out = tmp.path().join("balanced.pdf");
+    let bal_res = build_pdf_from_drafts(
+        &scan.pages,
+        &[],
+        &Image2PdfConfig {
+            output_path: bal_out,
+            layout: PageLayoutPolicy::OriginalSize { dpi: 72.0 },
+            jpeg_quality: 85,
+            lossless_passthrough: true,
+            animated_policy: AnimatedImagePolicy::FirstFrameOnly,
+            export_mode: PdfExportMode::Balanced,
+            max_mb: None,
+            max_pages_per_file: Some(2),
+        },
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+    assert_eq!(bal_res.output_files.len(), 2);
+    assert_eq!(bal_res.passthrough_pages, 3);
+
+    // Mode 3: Safe — detects truncated/corrupted JPEG pixel stream that header-only check skips
+    let corrupt_jpg = tmp.path().join("04_corrupt.jpg");
+    let valid_bytes = std::fs::read(&gray_jpg).unwrap();
+    // Keep header intact, truncate scan payload mid-stream so pixel decode fails
+    let truncated_len = (valid_bytes.len() / 2).max(40);
+    std::fs::write(&corrupt_jpg, &valid_bytes[..truncated_len]).unwrap();
+
+    let corrupt_draft = PageDraft {
+        id: "corrupt".into(),
+        source: PageSource::ImageFile { path: corrupt_jpg },
+        rotation_deg: 0,
+        crop: None,
+        annotations: AnnotationLayer::default(),
+        duration_ms: None,
+        label: "04_corrupt.jpg".into(),
+        width_px: 80,
+        height_px: 60,
+        file_size_bytes: truncated_len as u64,
+    };
+
+    let safe_err = build_pdf_from_drafts(
+        &[corrupt_draft],
+        &[],
+        &Image2PdfConfig {
+            output_path: tmp.path().join("safe_fail.pdf"),
+            layout: PageLayoutPolicy::OriginalSize { dpi: 72.0 },
+            jpeg_quality: 85,
+            lossless_passthrough: true,
+            animated_policy: AnimatedImagePolicy::FirstFrameOnly,
+            export_mode: PdfExportMode::Safe,
+            max_mb: None,
+            max_pages_per_file: None,
+        },
+        &CancellationToken::new(),
+        &NoopReporter,
+    );
+    assert!(safe_err.is_err(), "Safe mode must reject truncated JPEG scan stream");
+}
+
+#[test]
+fn streaming_merge_duplicates_rotates_interleaves_and_splits_by_max_bytes() {
+    let tmp = tempdir().unwrap();
+    let img_a = tmp.path().join("wide.png");
+    let img_b = tmp.path().join("tall.png");
+    let noisy_wide = RgbaImage::from_fn(240, 120, |x, y| {
+        Rgba([((x * 13 + y * 7) % 255) as u8, ((x ^ y) % 255) as u8, 120, 255])
+    });
+    let noisy_tall = RgbaImage::from_fn(120, 240, |x, y| {
+        Rgba([50, ((x * 17 + y * 5) % 255) as u8, ((x ^ (y * 3)) % 255) as u8, 255])
+    });
+    noisy_wide.save(&img_a).unwrap();
+    noisy_tall.save(&img_b).unwrap();
+
+    let pdf_a = tmp.path().join("a.pdf");
+    let pdf_b = tmp.path().join("b.pdf");
+    let scan_a = knit_pdf::scan_image_files(&[img_a], AnimatedImagePolicy::FirstFrameOnly).unwrap();
+    let scan_b = knit_pdf::scan_image_files(&[img_b], AnimatedImagePolicy::FirstFrameOnly).unwrap();
+
+    let make_cfg = |out: std::path::PathBuf| Image2PdfConfig {
+        output_path: out,
+        layout: PageLayoutPolicy::OriginalSize { dpi: 72.0 },
+        jpeg_quality: 85,
+        lossless_passthrough: true,
+        animated_policy: AnimatedImagePolicy::FirstFrameOnly,
+        export_mode: PdfExportMode::Balanced,
+        max_mb: None,
+        max_pages_per_file: None,
+    };
+    build_pdf_from_drafts(&scan_a.pages, &[], &make_cfg(pdf_a.clone()), &CancellationToken::new(), &NoopReporter).unwrap();
+    build_pdf_from_drafts(&scan_b.pages, &[], &make_cfg(pdf_b.clone()), &CancellationToken::new(), &NoopReporter).unwrap();
+
+    // Interleave across files + duplicate same page with different rotations
+    let merged = tmp.path().join("interleaved_dup.pdf");
+    let res = merge_pdfs(
+        &PdfMergeConfig {
+            inputs: vec![pdf_a, pdf_b],
+            selected_pages: Some(vec![
+                PageSelection { file_index: 1, page_index: 0, rotation_deg: 0 },   // 60x120
+                PageSelection { file_index: 0, page_index: 0, rotation_deg: 90 },  // 120x60 rot 90 -> 60x120
+                PageSelection { file_index: 1, page_index: 0, rotation_deg: 90 },  // 60x120 rot 90 -> 120x60
+            ]),
+            output_path: merged.clone(),
+            preserve_bookmarks: false,
+            custom_bookmarks: None,
+        },
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+    assert_eq!(res.total_pages, 3);
+
+    let info = inspect_pdf(&merged).unwrap();
+    assert_eq!(info.page_count, 3);
+
+    // Render all 3 pages via mmap + hayro and verify dimensions/orientations
+    let t0 = image::load_from_memory(&knit_pdf::render_pdf_thumbnail_jpeg(&merged, 0, 120, 80).unwrap()).unwrap();
+    assert!(t0.height() > t0.width(), "page 0 should be portrait");
+    let t1 = image::load_from_memory(&knit_pdf::render_pdf_thumbnail_jpeg(&merged, 1, 120, 80).unwrap()).unwrap();
+    assert!(t1.height() > t1.width(), "page 1 (rotated 90) should be portrait");
+    let t2 = image::load_from_memory(&knit_pdf::render_pdf_thumbnail_jpeg(&merged, 2, 120, 80).unwrap()).unwrap();
+    assert!(t2.width() > t2.height(), "page 2 (dup rotated 90) should be landscape");
+
+    // Verify MaxBytes split uses streaming measurement cleanly
+    let split_dir = tmp.path().join("split_max_bytes");
+    let split_res = split_pdf(
+        &merged,
+        &split_dir,
+        "chunk",
+        &PdfSplitRule::MaxBytes { max_mb: 0.02 },
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+    assert!(split_res.output_files.len() >= 2);
+    let total_split_pages: usize = split_res
+        .output_files
+        .iter()
+        .map(|p| inspect_pdf(p).unwrap().page_count)
+        .sum();
+    assert_eq!(total_split_pages, 3);
 }

@@ -156,3 +156,39 @@ fn cancel_cleans_up_temp_file_and_rejects_tar_password() {
         .collect();
     assert!(leftover.is_empty());
 }
+
+#[test]
+fn estimate_archive_output_computes_raw_and_compressed_sizes() {
+    let dir = tempdir().unwrap();
+    let src = make_sample_tree(dir.path());
+    fs::write(src.join("photo.jpg"), vec![0xFFu8; 2000]).unwrap();
+
+    let store_est = knit_archive::estimate_archive_output(
+        &[src.clone()],
+        true,
+        true,
+        &ArchiveOptions {
+            format: ArchiveFormat::Zip,
+            compression: CompressionLevel::Store,
+            encryption: ZipEncryption::None,
+        },
+    )
+    .unwrap();
+    assert_eq!(store_est.files_count, 3);
+    assert!(store_est.input_bytes > 2000);
+    assert!(store_est.estimated_output_bytes >= store_est.input_bytes);
+
+    let best_est = knit_archive::estimate_archive_output(
+        &[src],
+        true,
+        true,
+        &ArchiveOptions {
+            format: ArchiveFormat::TarZst,
+            compression: CompressionLevel::Best,
+            encryption: ZipEncryption::None,
+        },
+    )
+    .unwrap();
+    assert_eq!(best_est.files_count, 3);
+    assert_eq!(best_est.input_bytes, store_est.input_bytes);
+}

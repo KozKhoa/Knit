@@ -93,6 +93,8 @@ pub struct Story {
     pub cover: Option<String>,
     pub chapters: Vec<Chapter>,
     pub warnings: Vec<String>,
+    #[serde(default)]
+    pub total_bytes: u64,
 }
 
 impl Story {

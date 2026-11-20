@@ -137,6 +137,18 @@ pub enum AnimatedImagePolicy {
     UnpackAllFrames,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PdfExportMode {
+    /// Mode 1: Ưu tiên tốc độ tối đa, bỏ qua kiểm tra sâu, xuất 1 file PDF duy nhất.
+    Fast,
+    /// Mode 2 (Mặc định): Cân bằng tốc độ và độ an toàn (đọc 1 lần, kiểm tra header an toàn, hỗ trợ chia file).
+    #[default]
+    Balanced,
+    /// Mode 3: Ưu tiên độ an toàn & chính xác, giải mã kiểm tra toàn vẹn mọi ảnh.
+    Safe,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Image2PdfConfig {
     pub output_path: PathBuf,
@@ -149,6 +161,8 @@ pub struct Image2PdfConfig {
     pub lossless_passthrough: bool,
     #[serde(default)]
     pub animated_policy: AnimatedImagePolicy,
+    #[serde(default)]
+    pub export_mode: PdfExportMode,
     #[serde(default)]
     pub max_mb: Option<f64>,
     #[serde(default)]

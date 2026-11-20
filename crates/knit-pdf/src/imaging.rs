@@ -1,6 +1,6 @@
 use crate::models::{
     AnimatedImagePolicy, AnnotationLayer, BookmarkNode, CropRect, ImageScanResult, PageDraft,
-    PageSource,
+    PageSource, PdfExportMode,
 };
 use ab_glyph::{Font, FontArc, PxScale, ScaleFont};
 use flate2::write::ZlibEncoder;
@@ -35,18 +35,28 @@ pub fn is_supported_image(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PdfColorSpace {
+    DeviceRgb,
+    DeviceGray,
+}
+
 #[derive(Debug)]
 pub enum PreparedImage {
     JpegStream {
         bytes: Vec<u8>,
         width: u32,
         height: u32,
+        color_space: PdfColorSpace,
         passthrough: bool,
     },
-    FlateRgbStream {
+    FlateStream {
         zlib_bytes: Vec<u8>,
         width: u32,
         height: u32,
+        color_space: PdfColorSpace,
+        png_predictor_colors: Option<u8>,
+        passthrough: bool,
     },
 }
 
@@ -168,7 +178,7 @@ fn read_exif_u32(buf: &[u8], off: usize, little: bool) -> Option<u32> {
     })
 }
 
-fn parse_exif_swaps_axes(payload: &[u8]) -> Option<bool> {
+fn parse_exif_orientation(payload: &[u8]) -> Option<u16> {
     let tiff = payload.strip_prefix(b"Exif\0\0")?;
     let little = match tiff.get(0..2)? {
         b"II" => true,
@@ -190,12 +200,15 @@ fn parse_exif_swaps_axes(payload: &[u8]) -> Option<bool> {
             let field_type = read_exif_u16(tiff, entry + 2, little)?;
             let val_count = read_exif_u32(tiff, entry + 4, little)?;
             if field_type == 3 && val_count >= 1 {
-                let orient = read_exif_u16(tiff, entry + 8, little)?;
-                return Some(matches!(orient, 5..=8));
+                return read_exif_u16(tiff, entry + 8, little);
             }
         }
     }
     None
+}
+
+fn parse_exif_swaps_axes(payload: &[u8]) -> Option<bool> {
+    parse_exif_orientation(payload).map(|orient| matches!(orient, 5..=8))
 }
 
 /// Đọc trực tiếp kích thước SOF và EXIF orientation từ phần header JPEG
@@ -323,7 +336,7 @@ fn scan_files_parallel_drafts(
             let outcome = match build_image_drafts(path, animated_policy) {
                 Ok(drafts) => (Some(drafts), None),
                 Err(err) => {
-                    let msg = format!("Bỏ qua ảnh lỗi {}: {err}", path.display());
+                    let msg = format!("Skipping invalid image {}: {err}", path.display());
                     reporter.on_log(JobLogLevel::Warn, &msg);
                     (None, Some(msg))
                 }
@@ -334,7 +347,7 @@ fn scan_files_parallel_drafts(
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_default();
             if outcome.0.is_some() {
-                reporter.detailed(format!("Đã quét ảnh ({done}/{total}): {name}"));
+                reporter.detailed(format!("Scanned image ({done}/{total}): {name}"));
             }
             reporter.on_progress(JobProgress {
                 phase: "scan_images".to_string(),
@@ -682,54 +695,188 @@ fn probe_animation_frames(path: &Path) -> Result<Option<Vec<(u32, u32, u32)>>> {
     }
 }
 
-/// Chuẩn bị dữ liệu ảnh để nhúng vào PDF:
-/// - Nếu `lossless_passthrough == true` và trang chưa bị sửa pixel (crop/rotate/draw/text):
-///   - JPEG chuẩn (EXIF Orientation == NoTransforms) -> nhúng thẳng `/DCTDecode` 0 re-encode.
-///   - PNG -> giải mã & nén thẳng RGB24 `/FlateDecode` lossless 100%.
-/// - Ngược lại: decode -> apply_edits -> JPEG hoặc FlateRGB.
+/// Chuẩn bị dữ liệu ảnh để nhúng vào PDF theo chế độ xử lý (mặc định `Balanced`).
 pub fn prepare_page_for_pdf(
     draft: &PageDraft,
     jpeg_quality: u8,
     lossless_passthrough: bool,
 ) -> Result<PreparedImage> {
-    if lossless_passthrough && !draft.has_pixel_edits() {
+    prepare_page_for_pdf_with_mode(
+        draft,
+        jpeg_quality,
+        lossless_passthrough,
+        PdfExportMode::Balanced,
+    )
+}
+
+/// Chuẩn bị dữ liệu ảnh theo 3 chế độ:
+/// - `Fast`: đọc 1 lần, passthrough JPEG (`RGB`/`Gray`) & PNG (`IDAT` không alpha), bỏ decode kiểm tra sâu, zlib `fast`.
+/// - `Balanced`: đọc 1 lần, kiểm tra header JPEG (`SOF`/`EXIF`/`APP14`) + PNG `IDAT` chuẩn, fallback decode an toàn.
+/// - `Safe`: giải mã kiểm tra toàn vẹn dữ liệu ảnh trước khi đóng gói vào PDF.
+pub fn prepare_page_for_pdf_with_mode(
+    draft: &PageDraft,
+    jpeg_quality: u8,
+    lossless_passthrough: bool,
+    mode: PdfExportMode,
+) -> Result<PreparedImage> {
+    let compression = match mode {
+        PdfExportMode::Fast => Compression::fast(),
+        PdfExportMode::Balanced | PdfExportMode::Safe => Compression::default(),
+    };
+
+    if !draft.has_pixel_edits() {
         if let PageSource::ImageFile { ref path } = draft.source {
-            let ext = ext_lower(path);
-            if matches!(ext.as_str(), "jpg" | "jpeg" | "jfif") {
-                if let Ok(Some(jpeg)) = try_passthrough_jpeg(path) {
-                    return Ok(jpeg);
+            let allow_passthrough = lossless_passthrough || mode == PdfExportMode::Fast;
+            if allow_passthrough {
+                let bytes = std::fs::read(path)?;
+                let is_jpeg = bytes.starts_with(&[0xFF, 0xD8]);
+                let is_png = bytes.starts_with(b"\x89PNG\r\n\x1a\n");
+
+                match mode {
+                    PdfExportMode::Fast | PdfExportMode::Balanced => {
+                        if is_jpeg {
+                            match try_passthrough_jpeg_owned(bytes, mode == PdfExportMode::Balanced)
+                            {
+                                Ok(prepared) => return Ok(prepared),
+                                Err(fallback_bytes) => {
+                                    let dyn_img =
+                                        load_image_from_bytes_with_exif(&fallback_bytes, path)?;
+                                    drop(fallback_bytes);
+                                    return encode_dynamic_for_pdf(
+                                        dyn_img,
+                                        draft,
+                                        jpeg_quality,
+                                        lossless_passthrough,
+                                        compression,
+                                    );
+                                }
+                            }
+                        } else if is_png {
+                            if let Some(prepared) = try_passthrough_png_from_bytes(&bytes) {
+                                return Ok(prepared);
+                            }
+                            let dyn_img = load_image_from_bytes_with_exif(&bytes, path)?;
+                            drop(bytes);
+                            return encode_dynamic_for_pdf(
+                                dyn_img,
+                                draft,
+                                jpeg_quality,
+                                lossless_passthrough,
+                                compression,
+                            );
+                        } else {
+                            let dyn_img = load_image_from_bytes_with_exif(&bytes, path)?;
+                            drop(bytes);
+                            return encode_dynamic_for_pdf(
+                                dyn_img,
+                                draft,
+                                jpeg_quality,
+                                lossless_passthrough,
+                                compression,
+                            );
+                        }
+                    }
+                    PdfExportMode::Safe => {
+                        if is_jpeg && lossless_passthrough {
+                            // Mode 3: phải giải mã toàn vẹn pixel để phát hiện file JPEG bị cụt/hỏng trước khi nhúng gốc.
+                            let decoded = load_image_from_bytes_with_exif(&bytes, path)?;
+                            let safe_hdr = parse_jpeg_header_from_slice(&bytes).filter(|hdr| {
+                                hdr.orientation == 1
+                                    && hdr.precision == 8
+                                    && matches!(hdr.sof_marker, 0xC0 | 0xC1 | 0xC2)
+                                    && matches!(hdr.components, 1 | 3)
+                                    && !(hdr.components == 3 && hdr.adobe_transform == Some(0))
+                            });
+                            if let Some(hdr) = safe_hdr {
+                                let color_space = if hdr.components == 1 {
+                                    PdfColorSpace::DeviceGray
+                                } else {
+                                    PdfColorSpace::DeviceRgb
+                                };
+                                drop(decoded);
+                                return Ok(PreparedImage::JpegStream {
+                                    bytes,
+                                    width: hdr.width,
+                                    height: hdr.height,
+                                    color_space,
+                                    passthrough: true,
+                                });
+                            }
+                            drop(bytes);
+                            return encode_dynamic_for_pdf(
+                                decoded,
+                                draft,
+                                jpeg_quality,
+                                lossless_passthrough,
+                                compression,
+                            );
+                        }
+                        let dyn_img = load_image_from_bytes_with_exif(&bytes, path)?;
+                        drop(bytes);
+                        return encode_dynamic_for_pdf(
+                            dyn_img,
+                            draft,
+                            jpeg_quality,
+                            lossless_passthrough,
+                            compression,
+                        );
+                    }
                 }
-            } else if ext == "png" {
-                let dyn_img = load_source_image(&draft.source)?;
-                let rgb = alpha_to_white_rgb(&dyn_img);
-                let (w, h) = (rgb.width(), rgb.height());
-                let zlib_bytes = compress_zlib(rgb.as_raw())?;
-                return Ok(PreparedImage::FlateRgbStream {
-                    zlib_bytes,
-                    width: w,
-                    height: h,
-                });
             }
         }
     }
 
     let dyn_img = load_source_image(&draft.source)?;
     let edited = apply_edits(dyn_img, draft)?;
-    let rgb = alpha_to_white_rgb(&edited);
-    let (w, h) = (rgb.width(), rgb.height());
+    encode_dynamic_for_pdf(
+        edited,
+        draft,
+        jpeg_quality,
+        lossless_passthrough,
+        compression,
+    )
+}
 
-    if lossless_passthrough && draft.has_pixel_edits() {
-        // Khi người dùng chỉnh sửa trên PNG, giữ nguyên lossless Flate nếu gốc là PNG
-        if matches!(&draft.source, PageSource::ImageFile { path } if ext_lower(path) == "png") {
-            let zlib_bytes = compress_zlib(rgb.as_raw())?;
-            return Ok(PreparedImage::FlateRgbStream {
+fn encode_dynamic_for_pdf(
+    img: DynamicImage,
+    draft: &PageDraft,
+    jpeg_quality: u8,
+    lossless_passthrough: bool,
+    compression: Compression,
+) -> Result<PreparedImage> {
+    if lossless_passthrough {
+        let is_png = matches!(&draft.source, PageSource::ImageFile { path } if ext_lower(path) == "png");
+        if is_png {
+            if let DynamicImage::ImageLuma8(gray) = img {
+                let (w, h) = (gray.width(), gray.height());
+                let zlib_bytes = compress_zlib_with_level(gray.as_raw(), compression)?;
+                drop(gray);
+                return Ok(PreparedImage::FlateStream {
+                    zlib_bytes,
+                    width: w,
+                    height: h,
+                    color_space: PdfColorSpace::DeviceGray,
+                    png_predictor_colors: None,
+                    passthrough: false,
+                });
+            }
+            let rgb = into_white_rgb(img);
+            let (w, h) = (rgb.width(), rgb.height());
+            let zlib_bytes = compress_zlib_with_level(rgb.as_raw(), compression)?;
+            drop(rgb);
+            return Ok(PreparedImage::FlateStream {
                 zlib_bytes,
                 width: w,
                 height: h,
+                color_space: PdfColorSpace::DeviceRgb,
+                png_predictor_colors: None,
+                passthrough: false,
             });
         }
     }
 
+    let rgb = into_white_rgb(img);
+    let (w, h) = (rgb.width(), rgb.height());
     let mut jpg_bytes = Vec::new();
     let mut encoder = JpegEncoder::new_with_quality(&mut jpg_bytes, jpeg_quality.clamp(10, 100));
     encoder
@@ -740,44 +887,206 @@ pub fn prepare_page_for_pdf(
         bytes: jpg_bytes,
         width: w,
         height: h,
+        color_space: PdfColorSpace::DeviceRgb,
         passthrough: false,
     })
 }
 
-fn try_passthrough_jpeg(path: &Path) -> Result<Option<PreparedImage>> {
-    let reader = ImageReader::open(path)?
-        .with_guessed_format()
-        .map_err(|e| KnitError::InvalidInput(e.to_string()))?;
-    if reader.format() != Some(ImageFormat::Jpeg) {
-        return Ok(None);
+struct JpegSliceHeader {
+    width: u32,
+    height: u32,
+    components: u8,
+    sof_marker: u8,
+    precision: u8,
+    orientation: u16,
+    adobe_transform: Option<u8>,
+}
+
+fn parse_jpeg_header_from_slice(bytes: &[u8]) -> Option<JpegSliceHeader> {
+    if bytes.get(0..2) != Some(&[0xFF, 0xD8]) {
+        return None;
     }
-    let mut decoder = reader
-        .into_decoder()
-        .map_err(|e| KnitError::InvalidInput(e.to_string()))?;
-    let orient = decoder.orientation().unwrap_or(Orientation::NoTransforms);
-    if orient != Orientation::NoTransforms {
-        return Ok(None);
+
+    let mut pos = 2usize;
+    let mut orientation: Option<u16> = None;
+    let mut adobe_transform: Option<u8> = None;
+
+    while pos < bytes.len() {
+        if bytes[pos] != 0xFF {
+            return None;
+        }
+        while pos < bytes.len() && bytes[pos] == 0xFF {
+            pos += 1;
+        }
+        if pos >= bytes.len() {
+            return None;
+        }
+        let marker = bytes[pos];
+        pos += 1;
+
+        if matches!(marker, 0x00 | 0xD9 | 0xDA) {
+            return None;
+        }
+        if marker == 0xD8 || marker == 0x01 || (0xD0..=0xD7).contains(&marker) {
+            continue;
+        }
+
+        let len_bytes = bytes.get(pos..pos + 2)?;
+        let seg_len = u16::from_be_bytes([len_bytes[0], len_bytes[1]]) as usize;
+        if seg_len < 2 {
+            return None;
+        }
+        let payload_start = pos + 2;
+        let payload_end = pos.checked_add(seg_len)?;
+        let payload = bytes.get(payload_start..payload_end)?;
+        pos = payload_end;
+
+        if marker == 0xE1 && orientation.is_none() {
+            orientation = parse_exif_orientation(payload);
+        } else if marker == 0xEE
+            && adobe_transform.is_none()
+            && payload.len() >= 12
+            && payload.starts_with(b"Adobe")
+        {
+            adobe_transform = Some(payload[11]);
+        } else if matches!(marker, 0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF)
+            && payload.len() >= 6
+        {
+            let precision = payload[0];
+            let height = u16::from_be_bytes([payload[1], payload[2]]) as u32;
+            let width = u16::from_be_bytes([payload[3], payload[4]]) as u32;
+            let components = payload[5];
+            if width == 0 || height == 0 {
+                return None;
+            }
+            return Some(JpegSliceHeader {
+                width,
+                height,
+                components,
+                sof_marker: marker,
+                precision,
+                orientation: orientation.unwrap_or(1),
+                adobe_transform,
+            });
+        }
     }
-    // PDF DeviceRGB không chấp nhận JPEG CMYK trực tiếp -> kiểm tra ColorType
-    let color = decoder.color_type();
-    if !matches!(
-        color,
-        image::ColorType::Rgb8 | image::ColorType::L8
-    ) {
-        return Ok(None);
+
+    None
+}
+
+fn try_passthrough_jpeg_owned(
+    bytes: Vec<u8>,
+    strict_adobe_check: bool,
+) -> std::result::Result<PreparedImage, Vec<u8>> {
+    let header = parse_jpeg_header_from_slice(&bytes).and_then(|hdr| {
+        if hdr.orientation != 1
+            || hdr.precision != 8
+            || !matches!(hdr.sof_marker, 0xC0 | 0xC1 | 0xC2)
+        {
+            return None;
+        }
+        let color_space = match hdr.components {
+            1 => PdfColorSpace::DeviceGray,
+            3 => PdfColorSpace::DeviceRgb,
+            _ => return None,
+        };
+        if strict_adobe_check && hdr.components == 3 && hdr.adobe_transform == Some(0) {
+            return None;
+        }
+        Some((hdr.width, hdr.height, color_space))
+    });
+
+    match header {
+        Some((width, height, color_space)) => Ok(PreparedImage::JpegStream {
+            bytes,
+            width,
+            height,
+            color_space,
+            passthrough: true,
+        }),
+        None => Err(bytes),
     }
-    // L8 là Grayscale; hiện chúng ta đặt ColorSpace DeviceRGB ở packer nên chỉ passthrough Rgb8
-    if color != image::ColorType::Rgb8 {
-        return Ok(None);
+}
+
+/// Nhúng thẳng dữ liệu nén `IDAT` của PNG 8-bit không alpha (`Gray8` hoặc `RGB8`, non-interlaced),
+/// không giải mã bitmap và không nén zlib lại.
+fn try_passthrough_png_from_bytes(bytes: &[u8]) -> Option<PreparedImage> {
+    const PNG_SIG: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    if bytes.get(0..8) != Some(PNG_SIG.as_slice()) {
+        return None;
     }
-    let (width, height) = decoder.dimensions();
-    let bytes = std::fs::read(path)?;
-    Ok(Some(PreparedImage::JpegStream {
-        bytes,
+
+    let mut pos = 8usize;
+    let mut ihdr: Option<(u32, u32, PdfColorSpace, u8)> = None;
+    let mut zlib_bytes = Vec::new();
+    let mut saw_iend = false;
+
+    while pos + 12 <= bytes.len() {
+        let len = u32::from_be_bytes(bytes[pos..pos + 4].try_into().ok()?) as usize;
+        let chunk_type: [u8; 4] = bytes[pos + 4..pos + 8].try_into().ok()?;
+        let data_start = pos + 8;
+        let data_end = data_start.checked_add(len)?;
+        let next_pos = data_end.checked_add(4)?;
+        if next_pos > bytes.len() {
+            return None;
+        }
+        let data = &bytes[data_start..data_end];
+        pos = next_pos;
+
+        if ihdr.is_none() {
+            if &chunk_type != b"IHDR" || data.len() != 13 {
+                return None;
+            }
+            let width = u32::from_be_bytes(data[0..4].try_into().ok()?);
+            let height = u32::from_be_bytes(data[4..8].try_into().ok()?);
+            let bit_depth = data[8];
+            let color_type = data[9];
+            let compression = data[10];
+            let filter = data[11];
+            let interlace = data[12];
+
+            if width == 0
+                || height == 0
+                || bit_depth != 8
+                || compression != 0
+                || filter != 0
+                || interlace != 0
+            {
+                return None;
+            }
+            let (color_space, colors) = match color_type {
+                0 => (PdfColorSpace::DeviceGray, 1),
+                2 => (PdfColorSpace::DeviceRgb, 3),
+                _ => return None,
+            };
+            ihdr = Some((width, height, color_space, colors));
+            continue;
+        }
+
+        match &chunk_type {
+            b"tRNS" => return None,
+            b"IDAT" => zlib_bytes.extend_from_slice(data),
+            b"IEND" => {
+                saw_iend = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    let (width, height, color_space, colors) = ihdr?;
+    if !saw_iend || zlib_bytes.is_empty() {
+        return None;
+    }
+
+    Some(PreparedImage::FlateStream {
+        zlib_bytes,
         width,
         height,
+        color_space,
+        png_predictor_colors: Some(colors),
         passthrough: true,
-    }))
+    })
 }
 
 pub fn load_source_image(source: &PageSource) -> Result<DynamicImage> {
@@ -792,11 +1101,9 @@ pub fn load_source_image(source: &PageSource) -> Result<DynamicImage> {
     }
 }
 
-fn load_image_with_exif(path: &Path) -> Result<DynamicImage> {
-    let ext = ext_lower(path);
-    if ext == "avif" {
-        let bytes = std::fs::read(path)?;
-        let decoded = oxideav_avif::decode(&bytes)
+fn load_image_from_bytes_with_exif(bytes: &[u8], path: &Path) -> Result<DynamicImage> {
+    if ext_lower(path) == "avif" || bytes.get(4..12) == Some(b"ftypavif") {
+        let decoded = oxideav_avif::decode(bytes)
             .map_err(|e| KnitError::InvalidInput(format!("AVIF decode loi {}: {e}", path.display())))?;
         let rgba = decoded
             .try_to_rgba8()
@@ -805,6 +1112,26 @@ fn load_image_with_exif(path: &Path) -> Result<DynamicImage> {
             KnitError::InvalidInput(format!("AVIF buffer kich thuoc khong khop: {}", path.display()))
         })?;
         return Ok(DynamicImage::ImageRgba8(img));
+    }
+
+    let reader = ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| KnitError::InvalidInput(format!("Khong doan duoc format {}: {e}", path.display())))?;
+    let mut decoder = reader
+        .into_decoder()
+        .map_err(|e| KnitError::InvalidInput(format!("Loi tao decoder {}: {e}", path.display())))?;
+    let orient = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+    let mut img = DynamicImage::from_decoder(decoder)
+        .map_err(|e| KnitError::InvalidInput(format!("Loi giai ma anh {}: {e}", path.display())))?;
+    img.apply_orientation(orient);
+    Ok(img)
+}
+
+fn load_image_with_exif(path: &Path) -> Result<DynamicImage> {
+    let ext = ext_lower(path);
+    if ext == "avif" {
+        let bytes = std::fs::read(path)?;
+        return load_image_from_bytes_with_exif(&bytes, path);
     }
 
     let reader = ImageReader::open(path)?
@@ -966,10 +1293,7 @@ pub fn render_image_thumbnail(path: &Path, max_width: u32) -> Result<Vec<u8>> {
 /// Render thumbnail JPEG nhẹ & nhanh hơn nhiều so với PNG cho ảnh dung lượng lớn.
 pub fn render_image_thumbnail_jpeg(path: &Path, max_width: u32, quality: u8) -> Result<Vec<u8>> {
     let resized = load_resized_thumbnail(path, max_width)?;
-    let rgb = match resized {
-        DynamicImage::ImageRgb8(rgb) => rgb,
-        other => alpha_to_white_rgb(&other),
-    };
+    let rgb = into_white_rgb(resized);
     let mut out = Vec::new();
     let mut encoder = JpegEncoder::new_with_quality(&mut out, quality.clamp(40, 95));
     encoder
@@ -991,10 +1315,7 @@ pub fn render_page_draft_preview_jpeg(
     } else {
         edited
     };
-    let rgb = match resized {
-        DynamicImage::ImageRgb8(rgb) => rgb,
-        other => alpha_to_white_rgb(&other),
-    };
+    let rgb = into_white_rgb(resized);
     let mut out = Vec::new();
     let mut encoder = JpegEncoder::new_with_quality(&mut out, quality.clamp(40, 95));
     encoder
@@ -1003,11 +1324,11 @@ pub fn render_page_draft_preview_jpeg(
     Ok(out)
 }
 
-fn alpha_to_white_rgb(img: &DynamicImage) -> image::RgbImage {
+fn into_white_rgb(img: DynamicImage) -> image::RgbImage {
     match img {
-        DynamicImage::ImageRgb8(rgb) => rgb.clone(),
+        DynamicImage::ImageRgb8(rgb) => rgb,
         other => {
-            let rgba = other.to_rgba8();
+            let rgba = other.into_rgba8();
             let (w, h) = (rgba.width(), rgba.height());
             let mut rgb = image::RgbImage::new(w, h);
             for (x, y, pixel) in rgba.enumerate_pixels() {
@@ -1023,8 +1344,8 @@ fn alpha_to_white_rgb(img: &DynamicImage) -> image::RgbImage {
     }
 }
 
-fn compress_zlib(raw: &[u8]) -> Result<Vec<u8>> {
-    let mut enc = ZlibEncoder::new(Vec::new(), Compression::default());
+fn compress_zlib_with_level(raw: &[u8], level: Compression) -> Result<Vec<u8>> {
+    let mut enc = ZlibEncoder::new(Vec::new(), level);
     enc.write_all(raw)?;
     Ok(enc.finish()?)
 }

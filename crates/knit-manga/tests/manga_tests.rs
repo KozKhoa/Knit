@@ -148,3 +148,26 @@ fn group_by_size_never_splits_single_story() {
     assert_eq!(group_by_size(&[600, 300, 200], 500), vec![vec![0], vec![1, 2]]);
     assert_eq!(group_by_size(&[100, 200], 0), vec![vec![0, 1]]);
 }
+
+#[test]
+fn scan_stories_populates_total_bytes() {
+    let dir = tempdir().unwrap();
+    let story_dir = dir.path().join("MangaA");
+    fs::create_dir_all(story_dir.join("Chapter 1")).unwrap();
+    fs::write(story_dir.join("cover.jpg"), vec![1u8; 120]).unwrap();
+    fs::write(story_dir.join("Chapter 1/01.jpg"), vec![2u8; 340]).unwrap();
+    fs::write(story_dir.join("Chapter 1/02.jpg"), vec![3u8; 240]).unwrap();
+
+    let stories = knit_manga::scan_stories(
+        dir.path(),
+        knit_manga::MangaScanMode::Auto,
+        None,
+        0,
+        None,
+        false,
+        &NoopReporter,
+    )
+    .unwrap();
+    assert_eq!(stories.len(), 1);
+    assert_eq!(stories[0].total_bytes, 120 + 340 + 240);
+}

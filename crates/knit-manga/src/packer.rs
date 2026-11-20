@@ -14,7 +14,7 @@ use crate::models::{MangaPackOptions, MangaPackSummary, Story};
 
 fn story_entries(story: &Story, reporter: &dyn JobReporter) -> Vec<ArchiveEntrySpec> {
     reporter.normal(format!(
-        "Chuẩn bị truyện: {} ({} chapter)",
+        "Preparing story: {} ({} chapters)",
         story.effective_title(),
         story.chapters.len()
     ));
@@ -27,7 +27,7 @@ fn story_entries(story: &Story, reporter: &dyn JobReporter) -> Vec<ArchiveEntryS
                 size_bytes: meta.len(),
                 compression_override,
             }),
-            Err(e) => reporter.warn(format!("Bỏ qua {arc}: {e}")),
+            Err(e) => reporter.warn(format!("Skipping {arc}: {e}")),
         }
     };
 
