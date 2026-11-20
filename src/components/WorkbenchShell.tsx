@@ -85,22 +85,36 @@ export const WorkbenchShell: React.FC<WorkbenchShellProps> = ({
   const shellRef = React.useRef<HTMLDivElement | null>(null);
   const logsContainerRef = React.useRef<HTMLDivElement | null>(null);
   const logsPinnedToBottomRef = React.useRef(true);
+  const [logsPinned, setLogsPinned] = React.useState(true);
+  const lastLogScrollTopRef = React.useRef(0);
+  const programmaticLogScrollRef = React.useRef(false);
+
+  const scrollLogsToBottom = React.useCallback(() => {
+    const el = logsContainerRef.current;
+    if (!el) return;
+    programmaticLogScrollRef.current = true;
+    el.scrollTop = el.scrollHeight;
+    lastLogScrollTopRef.current = el.scrollTop;
+    window.requestAnimationFrame(() => {
+      if (logsContainerRef.current) {
+        logsContainerRef.current.scrollTop = logsContainerRef.current.scrollHeight;
+        lastLogScrollTopRef.current = logsContainerRef.current.scrollTop;
+      }
+      programmaticLogScrollRef.current = false;
+    });
+  }, []);
 
   React.useEffect(() => {
     if (drawerOpen && drawerTab === "logs") {
       logsPinnedToBottomRef.current = true;
+      setLogsPinned(true);
     }
   }, [drawerOpen, drawerTab]);
 
-  React.useEffect(() => {
+  React.useLayoutEffect(() => {
     if (!drawerOpen || drawerTab !== "logs" || !logsPinnedToBottomRef.current) return;
-    const el = logsContainerRef.current;
-    if (!el) return;
-    const raf = window.requestAnimationFrame(() => {
-      el.scrollTop = el.scrollHeight;
-    });
-    return () => window.cancelAnimationFrame(raf);
-  }, [logs, drawerOpen, drawerTab]);
+    scrollLogsToBottom();
+  }, [logs, drawerOpen, drawerTab, scrollLogsToBottom]);
 
   React.useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -394,6 +408,19 @@ export const WorkbenchShell: React.FC<WorkbenchShellProps> = ({
                   </button>
                 </div>
                 <div className="flex items-center gap-3">
+                  {drawerTab === "logs" && !logsPinned && logs.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        logsPinnedToBottomRef.current = true;
+                        setLogsPinned(true);
+                        scrollLogsToBottom();
+                      }}
+                      className="rounded-[4px] bg-[#E7F1FF] px-2 py-0.5 text-xs font-semibold text-[#007BFF] hover:bg-[#D0E3FF]"
+                    >
+                      ↓ Latest
+                    </button>
+                  )}
                   {drawerTab === "logs" && logs.length > 0 && (
                     <button
                       type="button"
@@ -416,10 +443,18 @@ export const WorkbenchShell: React.FC<WorkbenchShellProps> = ({
               <div
                 ref={logsContainerRef}
                 onScroll={(e) => {
-                  if (drawerTab !== "logs") return;
+                  if (drawerTab !== "logs" || programmaticLogScrollRef.current) return;
                   const el = e.currentTarget;
-                  logsPinnedToBottomRef.current =
-                    el.scrollHeight - el.scrollTop - el.clientHeight < 36;
+                  const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+                  if (distFromBottom < 24) {
+                    logsPinnedToBottomRef.current = true;
+                    setLogsPinned(true);
+                  } else if (el.scrollTop < lastLogScrollTopRef.current - 2) {
+                    // Chỉ tắt auto-follow khi người dùng thực sự cuộn lên trên
+                    logsPinnedToBottomRef.current = false;
+                    setLogsPinned(false);
+                  }
+                  lastLogScrollTopRef.current = el.scrollTop;
                 }}
                 className="flex-1 overflow-y-auto p-3"
               >

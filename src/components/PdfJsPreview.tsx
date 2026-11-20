@@ -29,6 +29,7 @@ interface PdfJsPreviewProps {
   onGoToInEditor?: (selectedText: string, occurrenceIndex: number) => void;
   onScrollRatioChange?: (ratio: number) => void;
   onOpenFind?: () => void;
+  onDoubleClickPage?: (pageNumber: number, dataUrl: string) => void;
 }
 
 interface PageSearchSpan {
@@ -185,17 +186,15 @@ const PdfPageCanvas: React.FC<PdfPageCanvasProps> = ({
     const observer = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
-          if (entry.isIntersecting) {
-            setInView(true);
-            if (entry.intersectionRatio >= 0.35) {
-              onVisible?.(pageNumber);
-            }
+          setInView(entry.isIntersecting);
+          if (entry.isIntersecting && entry.intersectionRatio >= 0.35) {
+            onVisible?.(pageNumber);
           }
         }
       },
       {
         root: containerEl,
-        rootMargin: "450px 0px",
+        rootMargin: "750px 0px",
         threshold: [0, 0.35],
       },
     );
@@ -217,7 +216,15 @@ const PdfPageCanvas: React.FC<PdfPageCanvasProps> = ({
         const viewport = pageObj.getViewport({ scale });
         setDims({ width: viewport.width, height: viewport.height });
 
-        if (!inView) return;
+        if (!inView) {
+          const canvas = canvasRef.current;
+          if (canvas && (canvas.width > 0 || canvas.height > 0)) {
+            canvas.width = 0;
+            canvas.height = 0;
+          }
+          textLayerRef.current?.replaceChildren();
+          return;
+        }
 
         const canvas = canvasRef.current;
         const textDiv = textLayerRef.current;
@@ -273,6 +280,11 @@ const PdfPageCanvas: React.FC<PdfPageCanvasProps> = ({
       }
       try {
         textLayer?.cancel();
+      } catch {
+        // ignore
+      }
+      try {
+        pageObj?.cleanup();
       } catch {
         // ignore
       }
@@ -337,11 +349,13 @@ export const PdfJsPreview = React.forwardRef<PdfJsPreviewHandle, PdfJsPreviewPro
       onGoToInEditor,
       onScrollRatioChange,
       onOpenFind,
+      onDoubleClickPage,
     },
     ref,
   ) => {
     const scrollRef = React.useRef<HTMLDivElement | null>(null);
     const pageWrapperRefs = React.useRef<Map<number, HTMLDivElement>>(new Map());
+    const activeDocRef = React.useRef<PDFDocumentProxy | null>(null);
     const [pdfDoc, setPdfDoc] = React.useState<PDFDocumentProxy | null>(null);
     const [numPages, setNumPages] = React.useState(0);
     const [currentPage, setCurrentPage] = React.useState(1);
@@ -367,13 +381,42 @@ export const PdfJsPreview = React.forwardRef<PdfJsPreviewHandle, PdfJsPreviewPro
       }
     }, []);
 
+    const destroyPdfDoc = React.useCallback((doc: PDFDocumentProxy | null) => {
+      if (!doc) return;
+      try {
+        void doc.cleanup();
+      } catch {
+        // ignore
+      }
+      try {
+        const withDestroy = doc as PDFDocumentProxy & { destroy?: () => Promise<void> };
+        if (typeof withDestroy.destroy === "function") {
+          void withDestroy.destroy();
+        } else if (doc.loadingTask) {
+          void doc.loadingTask.destroy();
+        }
+      } catch {
+        // ignore
+      }
+    }, []);
+
+    React.useEffect(() => {
+      return () => {
+        if (activeDocRef.current) {
+          destroyPdfDoc(activeDocRef.current);
+          activeDocRef.current = null;
+        }
+      };
+    }, [destroyPdfDoc]);
+
     // Load PDFDocumentProxy whenever pdfBytes changes
     React.useEffect(() => {
       if (!pdfBytes || pdfBytes.byteLength === 0) {
-        setPdfDoc((prev) => {
-          if (prev) void prev.cleanup();
-          return null;
-        });
+        if (activeDocRef.current) {
+          destroyPdfDoc(activeDocRef.current);
+          activeDocRef.current = null;
+        }
+        setPdfDoc(null);
         setNumPages(0);
         setCurrentPage(1);
         onPageCountChange?.(0);
@@ -387,7 +430,7 @@ export const PdfJsPreview = React.forwardRef<PdfJsPreviewHandle, PdfJsPreviewPro
       loadingTask.promise
         .then(async (doc) => {
           if (cancelled) {
-            void doc.cleanup();
+            destroyPdfDoc(doc);
             return;
           }
           try {
@@ -396,17 +439,19 @@ export const PdfJsPreview = React.forwardRef<PdfJsPreviewHandle, PdfJsPreviewPro
             if (!cancelled && vp.width > 0) {
               setBasePageWidth(vp.width);
             }
+            firstPage.cleanup();
           } catch {
             // keep default basePageWidth
           }
           if (cancelled) {
-            void doc.cleanup();
+            destroyPdfDoc(doc);
             return;
           }
-          setPdfDoc((prev) => {
-            if (prev && prev !== doc) void prev.cleanup();
-            return doc;
-          });
+          if (activeDocRef.current && activeDocRef.current !== doc) {
+            destroyPdfDoc(activeDocRef.current);
+          }
+          activeDocRef.current = doc;
+          setPdfDoc(doc);
           setNumPages(doc.numPages);
           setCurrentPage((p) => Math.min(Math.max(1, p), doc.numPages));
           onPageCountChange?.(doc.numPages);
@@ -421,7 +466,7 @@ export const PdfJsPreview = React.forwardRef<PdfJsPreviewHandle, PdfJsPreviewPro
         cancelled = true;
         void loadingTask.destroy();
       };
-    }, [pdfBytes, onPageCountChange]);
+    }, [pdfBytes, onPageCountChange, destroyPdfDoc]);
 
     // Count matches across all pages whenever pdfDoc or searchQuery changes
     React.useEffect(() => {
@@ -556,6 +601,26 @@ export const PdfJsPreview = React.forwardRef<PdfJsPreviewHandle, PdfJsPreviewPro
     const handleFitWidth = () => {
       setZoomMode("fit");
     };
+
+    const handlePageDoubleClick = React.useCallback(
+      async (pageNum: number) => {
+        if (!pdfDoc || !onDoubleClickPage) return;
+        try {
+          const page = await pdfDoc.getPage(pageNum);
+          const vp = page.getViewport({ scale: 2.2 });
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.floor(vp.width));
+          canvas.height = Math.max(1, Math.floor(vp.height));
+          const ctx = canvas.getContext("2d");
+          if (!ctx) return;
+          await page.render({ canvasContext: ctx, viewport: vp, canvas }).promise;
+          onDoubleClickPage(pageNum, canvas.toDataURL("image/png"));
+        } catch {
+          // ignore render interruption
+        }
+      },
+      [pdfDoc, onDoubleClickPage],
+    );
 
     const handlePreviewContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
       const sel = window.getSelection();
@@ -705,7 +770,11 @@ export const PdfJsPreview = React.forwardRef<PdfJsPreviewHandle, PdfJsPreviewPro
                     ? activeMatchIndex - hit.startGlobalIndex
                     : null;
                 return (
-                  <div key={`${numPages}-${pageNum}`} data-page-number={pageNum}>
+                  <div
+                    key={`${numPages}-${pageNum}`}
+                    data-page-number={pageNum}
+                    onDoubleClick={() => void handlePageDoubleClick(pageNum)}
+                  >
                     <PdfPageCanvas
                       pdfDoc={pdfDoc}
                       pageNumber={pageNum}

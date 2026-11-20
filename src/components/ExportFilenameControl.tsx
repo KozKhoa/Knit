@@ -9,6 +9,8 @@ interface ExportFilenameControlProps {
   placeholder?: string;
   defaultExportDir: string;
   existsAtDefaultDir: boolean;
+  estimateText?: string | null;
+  estimating?: boolean;
   className?: string;
 }
 
@@ -19,6 +21,8 @@ export const ExportFilenameControl: React.FC<ExportFilenameControlProps> = ({
   placeholder,
   defaultExportDir,
   existsAtDefaultDir,
+  estimateText,
+  estimating = false,
   className = "",
 }) => {
   const { t } = useI18n();
@@ -40,6 +44,14 @@ export const ExportFilenameControl: React.FC<ExportFilenameControlProps> = ({
           placeholder={placeholder ?? t.common.exportFilenamePlaceholder}
           className="knit-control-sm min-w-[180px] flex-1 max-w-xs rounded-[4px] border border-[#CED4DA] bg-white px-2.5 font-mono-code text-xs text-[#212529] focus:border-[#007BFF] focus:outline-none"
         />
+        {(estimateText || estimating) && (
+          <span
+            data-testid="export-size-estimate"
+            className="font-mono-code text-xs font-medium text-[#6C757D]"
+          >
+            {estimateText ?? t.common.estimatedOutputPending}
+          </span>
+        )}
         {existsAtDefaultDir && (
           <span className="inline-flex items-center gap-1 rounded-[4px] border border-[#FFEEBA] bg-[#FFF3CD] px-2 py-0.5 font-medium text-[#856404]">
             <AlertTriangle className="h-3.5 w-3.5 shrink-0" />

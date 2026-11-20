@@ -1,30 +1,12 @@
 import React from "react";
-import { Select } from "../components/Select";
-import {
-  AlertTriangle,
-  ArrowDown,
-  ArrowUp,
-  ArrowUpDown,
-  Bookmark,
-  CheckSquare,
-  ChevronDown,
-  ChevronRight,
-  Folder,
-  FolderKanban,
-  FolderOpen,
-  GripHorizontal,
-  List,
-  ListTree,
-  Play,
-  RotateCcw,
-  SearchX,
-  Trash2,
-} from "lucide-react";
+import { AlertTriangle, Folder, Play, RotateCcw, SearchX, Trash2 } from "lucide-react";
 import { Dropzone } from "../components/Dropzone";
+import { ErrorBanner } from "../components/ErrorBanner";
 import {
   ImportFeedbackToast,
   useImportFeedback,
 } from "../components/ImportFeedbackToast";
+import { ViewHeader } from "../components/ViewHeader";
 import { useVerticalResize } from "../hooks/useVerticalResize";
 import { useI18n } from "../i18n";
 import {
@@ -58,6 +40,9 @@ import type {
   UserPreset,
 } from "../types/ipc";
 import type { DroppedBatch } from "./Image2PdfView";
+import { RenamerFilterCard } from "./renamer/RenamerFilterCard";
+import { RenamerPreviewTable } from "./renamer/RenamerPreviewTable";
+import { RenamerRuleCard } from "./renamer/RenamerRuleCard";
 
 interface RenamerViewProps {
   onStartJob: (jobId: string, label: string) => void;
@@ -72,19 +57,6 @@ interface RenamerViewProps {
   busy: boolean;
   droppedBatch?: DroppedBatch | null;
 }
-
-const FIXED_PRESET_KEYS: FixedPresetKind[] = [
-  "manga_chapter",
-  "manga_volume",
-  "pad2",
-  "pad3",
-  "clean_tags",
-  "clean_whitespace",
-  "normalize_extensions",
-  "lowercase",
-  "uppercase",
-  "titlecase",
-];
 
 export const RenamerView: React.FC<RenamerViewProps> = ({
   onStartJob,
@@ -162,12 +134,8 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
   }, [plan.items.length]);
 
   React.useEffect(() => {
-    void listRenamePresets()
-      .then(setPresets)
-      .catch(() => {});
-    void hasRenameUndo()
-      .then(setUndoReady)
-      .catch(() => {});
+    void listRenamePresets().then(setPresets).catch(() => {});
+    void hasRenameUndo().then(setUndoReady).catch(() => {});
   }, []);
 
   React.useEffect(() => {
@@ -281,7 +249,6 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
       return;
     }
 
-    // Adaptive debounce: instant for <= 500 items, 150ms debounce for > 500 items
     if (itemCountRef.current <= 500) {
       void refreshPreview(roots, false);
       return;
@@ -323,15 +290,10 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
     };
     setPlan(next);
     try {
-      const checked = await recomputeRenameCollisions(next);
-      setPlan(checked);
+      setPlan(await recomputeRenameCollisions(next));
     } catch (e) {
       setErrorMsg(String(e));
     }
-  };
-
-  const toggleItemSelected = async (idx: number, selected: boolean) => {
-    await applySelectionIndices([idx], selected);
   };
 
   const toggleAllSelected = async (selected: boolean) => {
@@ -340,8 +302,7 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
     };
     setPlan(next);
     try {
-      const checked = await recomputeRenameCollisions(next);
-      setPlan(checked);
+      setPlan(await recomputeRenameCollisions(next));
     } catch (e) {
       setErrorMsg(String(e));
     }
@@ -353,14 +314,10 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
   );
 
   const sortedFlatItems = React.useMemo(
-    () =>
-      viewMode === "flat"
-        ? sortFlatRenameItems(plan.items, sortField, sortDir)
-        : [],
+    () => (viewMode === "flat" ? sortFlatRenameItems(plan.items, sortField, sortDir) : []),
     [viewMode, plan.items, sortField, sortDir],
   );
 
-  // Auto-expand small trees on initial scan so small folders are immediately visible
   React.useEffect(() => {
     if (plan.items.length > 0 && plan.items.length <= 200) {
       setExpandedKeys((prev) => {
@@ -406,10 +363,6 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
     };
     collect(treeRoots);
     setExpandedKeys(next);
-  };
-
-  const collapseAllFolders = () => {
-    setExpandedKeys(new Set());
   };
 
   const selectedPending = plan.items.filter((i) => i.selected && i.status === "pending").length;
@@ -488,250 +441,80 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-bold text-[#212529]">{t.renamer.title}</h1>
-          <p className="text-sm text-[#6C757D]">{t.renamer.subtitle}</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            disabled={!undoReady || busy}
-            onClick={() => void handleUndo()}
-            className="flex items-center gap-1.5 rounded-[4px] border border-[#CED4DA] bg-white px-3.5 py-2 text-sm font-semibold text-[#343A40] hover:bg-[#E9ECEF] disabled:opacity-40"
-          >
-            <RotateCcw className="h-4 w-4" />
-            {t.renamer.undoBtn}
-          </button>
-          <button
-            type="button"
-            disabled={selectedPending === 0 || conflicts > 0 || busy}
-            onClick={() => void handleApply()}
-            className="flex items-center gap-1.5 rounded-[4px] bg-[#007BFF] px-4 py-2 text-sm font-semibold text-white hover:bg-[#0069D9] disabled:opacity-50"
-          >
-            <Play className="h-4 w-4" />
-            {t.renamer.applyBtn(selectedPending)}
-          </button>
-        </div>
-      </div>
-
-      {errorMsg && (
-        <div className="rounded-[4px] border border-[#F5C6CB] bg-[#F8D7DA] px-3.5 py-2.5 text-sm text-[#721C24]">
-          {errorMsg}
-        </div>
-      )}
-
-      {conflicts > 0 && (
-        <div className="flex items-center gap-2 rounded-[4px] border border-[#F5C6CB] bg-[#F8D7DA] px-3.5 py-2.5 text-sm text-[#721C24]">
-          <AlertTriangle className="h-4 w-4 shrink-0" />
-          {t.renamer.conflictBanner(conflicts)}
-        </div>
-      )}
-
-      {/* Layer 1: Filter Bar + Rule Builder */}
-      <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-2">
-        <div className="space-y-3 rounded-[4px] border border-[#DEE2E6] bg-white p-4">
-          <div className="text-xs font-bold uppercase tracking-wide text-[#343A40]">
-            {t.renamer.layer1Heading}
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <Select
-              ariaLabel="Target type"
-              value={targetType}
-              onChange={(val) => setTargetType(val as TargetType)}
-              className="w-full"
-              options={[
-                { value: "both", label: t.renamer.targetBoth },
-                { value: "files", label: t.renamer.targetFiles },
-                { value: "folders", label: t.renamer.targetFolders },
-              ]}
-            />
-            <Select
-              ariaLabel="Pattern kind"
-              value={patternKind}
-              onChange={(val) => setPatternKind(val as PatternKind)}
-              className="w-full"
-              options={[
-                { value: "glob", label: t.renamer.patternGlob },
-                { value: "regex", label: t.renamer.patternRegex },
-              ]}
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-2 text-sm">
-            <label className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={recursive}
-                onChange={(e) => setRecursive(e.target.checked)}
-              />
-              {t.renamer.recursiveLabel}
-            </label>
-            <label className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={ignoreHidden}
-                onChange={(e) => setIgnoreHidden(e.target.checked)}
-              />
-              {t.renamer.ignoreHiddenLabel}
-            </label>
-          </div>
-          <input
-            type="text"
-            placeholder={t.renamer.extensionsPlaceholder}
-            value={extFilterText}
-            onChange={(e) => setExtFilterText(e.target.value)}
-            className="knit-control w-full rounded-[4px] border border-[#CED4DA] px-2.5 font-mono-code text-xs"
-          />
-          <div className="grid grid-cols-2 gap-2">
-            <input
-              type="text"
-              placeholder={t.renamer.includePlaceholder}
-              value={includeText}
-              onChange={(e) => setIncludeText(e.target.value)}
-              className="knit-control w-full rounded-[4px] border border-[#CED4DA] px-2.5 font-mono-code text-xs"
-            />
-            <input
-              type="text"
-              placeholder={t.renamer.excludePlaceholder}
-              value={excludeText}
-              onChange={(e) => setExcludeText(e.target.value)}
-              className="knit-control w-full rounded-[4px] border border-[#CED4DA] px-2.5 font-mono-code text-xs"
-            />
-          </div>
-        </div>
-
-        <div className="space-y-3 rounded-[4px] border border-[#DEE2E6] bg-white p-4">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold uppercase tracking-wide text-[#343A40]">
-              {t.renamer.ruleHeading}
-            </span>
-            <div className="flex gap-1">
-              {(["find_replace", "perl_prename", "fixed_preset"] as const).map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => setRuleMode(m)}
-                  className={`rounded-[4px] px-2.5 py-1 text-xs font-semibold ${
-                    ruleMode === m
-                      ? "bg-[#007BFF] text-white"
-                      : "border border-[#CED4DA] bg-[#F8F9FA] text-[#495057]"
-                  }`}
-                >
-                  {m === "find_replace"
-                    ? "Find/Replace"
-                    : m === "perl_prename"
-                      ? "Prename"
-                      : "Presets"}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {ruleMode === "find_replace" && (
-            <div className="space-y-2.5">
-              <div className="grid grid-cols-2 gap-2">
-                <input
-                  type="text"
-                  placeholder={t.renamer.findPlaceholder}
-                  value={findStr}
-                  onChange={(e) => setFindStr(e.target.value)}
-                  className="knit-control rounded-[4px] border border-[#CED4DA] px-2.5 font-mono-code text-xs"
-                />
-                <input
-                  type="text"
-                  placeholder={t.renamer.replacePlaceholder}
-                  value={replaceStr}
-                  onChange={(e) => setReplaceStr(e.target.value)}
-                  className="knit-control rounded-[4px] border border-[#CED4DA] px-2.5 font-mono-code text-xs"
-                />
-              </div>
-              <div className="flex gap-4 text-sm">
-                <label className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={matchCase}
-                    onChange={(e) => setMatchCase(e.target.checked)}
-                  />
-                  {t.renamer.matchCaseLabel}
-                </label>
-                <label className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={useRegex}
-                    onChange={(e) => setUseRegex(e.target.checked)}
-                  />
-                  {t.renamer.useRegexLabel}
-                </label>
-              </div>
-            </div>
-          )}
-
-          {ruleMode === "perl_prename" && (
-            <div>
-              <input
-                type="text"
-                value={perlExpr}
-                onChange={(e) => setPerlExpr(e.target.value)}
-                placeholder={t.renamer.prenamePlaceholder}
-                className="knit-control w-full rounded-[4px] border border-[#CED4DA] px-2.5 font-mono-code text-xs"
-              />
-              <div className="mt-1.5 text-xs text-[#6C757D]">{t.renamer.prenameHint}</div>
-            </div>
-          )}
-
-          {ruleMode === "fixed_preset" && (
-            <Select
-              ariaLabel="Fixed preset"
-              value={fixedPreset}
-              onChange={(val) => setFixedPreset(val as FixedPresetKind)}
-              className="w-full"
-              options={FIXED_PRESET_KEYS.map((key) => ({
-                value: key,
-                label: t.renamer.fixedPresets[key],
-              }))}
-            />
-          )}
-
-          {/* User Presets */}
-          <div className="flex flex-wrap items-center gap-1.5 border-t border-[#E9ECEF] pt-2.5">
-            <Bookmark className="h-4 w-4 text-[#6C757D]" />
-            <input
-              type="text"
-              placeholder={t.renamer.savePresetPlaceholder}
-              value={newPresetTitle}
-              onChange={(e) => setNewPresetTitle(e.target.value)}
-              className="knit-control-sm w-40 rounded-[4px] border border-[#CED4DA] px-2.5 text-xs"
-            />
+      <ViewHeader
+        title={t.renamer.title}
+        subtitle={t.renamer.subtitle}
+        actions={
+          <>
             <button
               type="button"
-              onClick={() => void handleSavePreset()}
-              className="knit-control-sm rounded-[4px] border border-[#CED4DA] bg-[#F8F9FA] px-3 text-xs font-semibold hover:bg-[#E9ECEF]"
+              disabled={!undoReady || busy}
+              onClick={() => void handleUndo()}
+              className="flex items-center gap-1.5 rounded-[4px] border border-[#CED4DA] bg-white px-3.5 py-2 text-sm font-semibold text-[#343A40] hover:bg-[#E9ECEF] disabled:opacity-40"
             >
-              {t.renamer.savePresetBtn}
+              <RotateCcw className="h-4 w-4" />
+              {t.renamer.undoBtn}
             </button>
-            {presets.map((p) => (
-              <span
-                key={p.id}
-                className="inline-flex items-center gap-1 rounded-[4px] border border-[#CED4DA] bg-[#F8F9FA] px-2 py-0.5 text-xs"
-              >
-                <button
-                  type="button"
-                  onClick={() => applyPreset(p)}
-                  className="font-semibold text-[#007BFF] hover:underline"
-                >
-                  {p.title}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void deleteRenamePreset(p.id).then(setPresets)}
-                  className="text-[#DC3545]"
-                >
-                  <Trash2 className="h-3 w-3" />
-                </button>
-              </span>
-            ))}
-          </div>
-        </div>
+            <button
+              type="button"
+              disabled={selectedPending === 0 || conflicts > 0 || busy}
+              onClick={() => void handleApply()}
+              className="knit-btn-primary flex items-center gap-1.5 px-4 py-2 text-sm disabled:opacity-50"
+            >
+              <Play className="h-4 w-4" />
+              {t.renamer.applyBtn(selectedPending)}
+            </button>
+          </>
+        }
+      />
+
+      <ErrorBanner message={errorMsg} />
+
+      <ErrorBanner
+        message={conflicts > 0 ? t.renamer.conflictBanner(conflicts) : null}
+        icon={<AlertTriangle className="h-4 w-4 shrink-0" />}
+      />
+
+      <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-2">
+        <RenamerFilterCard
+          targetType={targetType}
+          patternKind={patternKind}
+          recursive={recursive}
+          ignoreHidden={ignoreHidden}
+          extFilterText={extFilterText}
+          includeText={includeText}
+          excludeText={excludeText}
+          onChangeTargetType={setTargetType}
+          onChangePatternKind={setPatternKind}
+          onChangeRecursive={setRecursive}
+          onChangeIgnoreHidden={setIgnoreHidden}
+          onChangeExtFilterText={setExtFilterText}
+          onChangeIncludeText={setIncludeText}
+          onChangeExcludeText={setExcludeText}
+        />
+
+        <RenamerRuleCard
+          ruleMode={ruleMode}
+          findStr={findStr}
+          replaceStr={replaceStr}
+          matchCase={matchCase}
+          useRegex={useRegex}
+          perlExpr={perlExpr}
+          fixedPreset={fixedPreset}
+          presets={presets}
+          newPresetTitle={newPresetTitle}
+          onChangeRuleMode={setRuleMode}
+          onChangeFindStr={setFindStr}
+          onChangeReplaceStr={setReplaceStr}
+          onChangeMatchCase={setMatchCase}
+          onChangeUseRegex={setUseRegex}
+          onChangePerlExpr={setPerlExpr}
+          onChangeFixedPreset={setFixedPreset}
+          onChangeNewPresetTitle={setNewPresetTitle}
+          onSavePreset={() => void handleSavePreset()}
+          onApplyPreset={applyPreset}
+          onDeletePreset={(id) => void deleteRenamePreset(id).then(setPresets)}
+        />
       </div>
 
       <Dropzone
@@ -793,365 +576,38 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
       )}
 
       {roots.length > 0 && !scanningFolder && plan.items.length === 0 && (
-        <div className="flex flex-col items-center justify-center rounded-[4px] border border-[#DEE2E6] bg-white px-6 py-10 text-center">
+        <div className="knit-card flex flex-col items-center justify-center px-6 py-10 text-center">
           <SearchX className="h-8 w-8 text-[#6C757D]" />
           <div className="mt-2.5 text-base font-bold text-[#343A40]">
             {t.renamer.emptyMatchTitle}
           </div>
-          <p className="mt-1 max-w-xl text-sm text-[#6C757D]">
-            {t.renamer.emptyMatchDesc}
-          </p>
+          <p className="mt-1 max-w-xl text-sm text-[#6C757D]">{t.renamer.emptyMatchDesc}</p>
         </div>
       )}
 
-      {/* Layer 2: Dry-Run Preview Table */}
-      {plan.items.length > 0 && (() => {
-        const selectedCount = plan.items.filter((i) => i.selected).length;
-        const allSelected = selectedCount === plan.items.length;
-        const someSelected = selectedCount > 0 && selectedCount < plan.items.length;
-
-        const ROW_HEIGHT = 38;
-        const totalRows = viewMode === "tree" ? visibleTreeRows.length : sortedFlatItems.length;
-        const overscan = 8;
-        const visibleCount = Math.ceil(livePreviewHeightPx / ROW_HEIGHT) + overscan * 2;
-        const startIdx = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - overscan);
-        const endIdx = Math.min(totalRows, startIdx + visibleCount);
-        const topPadPx = startIdx * ROW_HEIGHT;
-        const bottomPadPx = Math.max(0, (totalRows - endIdx) * ROW_HEIGHT);
-
-        const renderSortIcon = (field: Exclude<RenamerSortField, "none">) => {
-          if (sortField !== field) {
-            return <ArrowUpDown className="h-3.5 w-3.5 opacity-45" />;
-          }
-          return sortDir === "asc" ? (
-            <ArrowUp className="h-3.5 w-3.5 text-[#007BFF]" />
-          ) : (
-            <ArrowDown className="h-3.5 w-3.5 text-[#007BFF]" />
-          );
-        };
-
-        return (
-          <div className="space-y-1.5">
-            <div className="overflow-hidden rounded-[4px] border border-[#DEE2E6] bg-white">
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#DEE2E6] bg-[#F8F9FA] px-3.5 py-2.5 text-sm">
-                <div className="flex items-center gap-2 font-semibold text-[#343A40]">
-                  <FolderKanban className="h-4 w-4 text-[#007BFF]" />
-                  {t.renamer.previewHeading(plan.items.length, selectedPending)}
-                </div>
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <div className="inline-flex overflow-hidden rounded-[4px] border border-[#CED4DA] bg-white">
-                    <button
-                      type="button"
-                      onClick={() => setViewMode("tree")}
-                      className={`inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold ${
-                        viewMode === "tree"
-                          ? "bg-[#007BFF] text-white"
-                          : "text-[#343A40] hover:bg-[#E9ECEF]"
-                      }`}
-                    >
-                      <ListTree className="h-3.5 w-3.5" />
-                      {t.renamer.viewTreeBtn}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setViewMode("flat")}
-                      className={`inline-flex items-center gap-1 border-l border-[#CED4DA] px-2.5 py-1 text-xs font-semibold ${
-                        viewMode === "flat"
-                          ? "bg-[#007BFF] text-white"
-                          : "text-[#343A40] hover:bg-[#E9ECEF]"
-                      }`}
-                    >
-                      <List className="h-3.5 w-3.5" />
-                      {t.renamer.viewFlatBtn}
-                    </button>
-                  </div>
-                  {viewMode === "tree" && (
-                    <>
-                      <button
-                        type="button"
-                        onClick={expandAllFolders}
-                        className="rounded-[4px] border border-[#CED4DA] bg-white px-2 py-1 text-xs hover:bg-[#E9ECEF]"
-                      >
-                        {t.renamer.expandAllBtn}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={collapseAllFolders}
-                        className="rounded-[4px] border border-[#CED4DA] bg-white px-2 py-1 text-xs hover:bg-[#E9ECEF]"
-                      >
-                        {t.renamer.collapseAllBtn}
-                      </button>
-                    </>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => void toggleAllSelected(true)}
-                    className="flex items-center gap-1 rounded-[4px] border border-[#CED4DA] bg-white px-2.5 py-1 text-xs hover:bg-[#E9ECEF]"
-                  >
-                    <CheckSquare className="h-3.5 w-3.5" />
-                    {t.renamer.selectAllBtn}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void toggleAllSelected(false)}
-                    className="rounded-[4px] border border-[#CED4DA] bg-white px-2.5 py-1 text-xs hover:bg-[#E9ECEF]"
-                  >
-                    {t.renamer.deselectAllBtn}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setRoots([])}
-                    className="rounded-[4px] border border-[#CED4DA] bg-white px-2.5 py-1 text-xs text-[#DC3545] hover:bg-[#F8D7DA]"
-                  >
-                    {t.renamer.clearFoldersBtn}
-                  </button>
-                </div>
-              </div>
-
-              <div
-                ref={scrollContainerRef}
-                onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
-                style={{ height: `${livePreviewHeightPx}px` }}
-                className="overflow-auto"
-              >
-                <table className="w-full table-fixed border-separate border-spacing-0 text-left text-sm">
-                  <colgroup>
-                    <col className="w-24" />
-                    <col className="w-20" />
-                    <col className="w-[34%]" />
-                    <col className="w-[34%]" />
-                    <col className="w-28" />
-                  </colgroup>
-                  <thead className="text-xs uppercase text-[#6C757D]">
-                    <tr>
-                      <th className="sticky top-0 z-20 bg-[#F8F9FA] px-3 py-2.5 shadow-[inset_0_-1px_0_#DEE2E6]">
-                        <label className="inline-flex cursor-pointer items-center gap-1.5">
-                          <input
-                            type="checkbox"
-                            aria-label={t.renamer.selectAllBtn}
-                            checked={allSelected}
-                            ref={(el) => {
-                              if (el) el.indeterminate = someSelected;
-                            }}
-                            onChange={(e) => void toggleAllSelected(e.target.checked)}
-                          />
-                          <span>{t.renamer.colSelect}</span>
-                        </label>
-                      </th>
-                      <th className="sticky top-0 z-20 bg-[#F8F9FA] px-2 py-2.5 shadow-[inset_0_-1px_0_#DEE2E6]">
-                        <button
-                          type="button"
-                          onClick={() => handleToggleSort("type")}
-                          className="inline-flex items-center gap-1 uppercase hover:text-[#212529]"
-                        >
-                          <span>{t.renamer.colType}</span>
-                          {renderSortIcon("type")}
-                        </button>
-                      </th>
-                      <th className="sticky top-0 z-20 bg-[#F8F9FA] px-3 py-2.5 shadow-[inset_0_-1px_0_#DEE2E6]">
-                        <button
-                          type="button"
-                          onClick={() => handleToggleSort("original")}
-                          className="inline-flex items-center gap-1 uppercase hover:text-[#212529]"
-                        >
-                          <span>{t.renamer.colOriginal}</span>
-                          {renderSortIcon("original")}
-                        </button>
-                      </th>
-                      <th className="sticky top-0 z-20 bg-[#F8F9FA] px-3 py-2.5 shadow-[inset_0_-1px_0_#DEE2E6]">
-                        <button
-                          type="button"
-                          onClick={() => handleToggleSort("new")}
-                          className="inline-flex items-center gap-1 uppercase hover:text-[#212529]"
-                        >
-                          <span>{t.renamer.colNew}</span>
-                          {renderSortIcon("new")}
-                        </button>
-                      </th>
-                      <th className="sticky top-0 z-20 bg-[#F8F9FA] px-3 py-2.5 shadow-[inset_0_-1px_0_#DEE2E6]">
-                        <button
-                          type="button"
-                          onClick={() => handleToggleSort("status")}
-                          className="inline-flex items-center gap-1 uppercase hover:text-[#212529]"
-                        >
-                          <span>{t.renamer.colStatus}</span>
-                          {renderSortIcon("status")}
-                        </button>
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#E9ECEF]">
-                    {topPadPx > 0 && (
-                      <tr aria-hidden="true">
-                        <td colSpan={5} style={{ height: `${topPadPx}px`, padding: 0 }} />
-                      </tr>
-                    )}
-
-                    {viewMode === "tree"
-                      ? visibleTreeRows.slice(startIdx, endIdx).map((row) => {
-                          const { node, treeDepth, hasChildren, isExpanded } = row;
-                          const item = node.item;
-                          const isChecked = item ? item.selected : row.allSelected;
-                          const isIndeterminate = node.isDir && row.someSelected;
-                          const status = item?.status ?? null;
-
-                          return (
-                            <tr
-                              key={row.key}
-                              style={{ height: `${ROW_HEIGHT}px` }}
-                              className={
-                                isChecked || row.someSelected
-                                  ? "bg-white"
-                                  : "bg-[#F8F9FA] opacity-60"
-                              }
-                            >
-                              <td className="border-b border-[#E9ECEF] px-3 py-1.5">
-                                <input
-                                  type="checkbox"
-                                  checked={isChecked}
-                                  ref={(el) => {
-                                    if (el) el.indeterminate = isIndeterminate;
-                                  }}
-                                  onChange={(e) => {
-                                    if (node.isDir) {
-                                      void applySelectionIndices(
-                                        node.subtreePlanIndices,
-                                        e.target.checked,
-                                      );
-                                    } else if (node.planIndex !== null) {
-                                      void toggleItemSelected(node.planIndex, e.target.checked);
-                                    }
-                                  }}
-                                />
-                              </td>
-                              <td className="border-b border-[#E9ECEF] px-2 py-1.5 text-xs font-medium text-[#6C757D]">
-                                {node.isDir ? "DIR" : "FILE"}
-                              </td>
-                              <td className="overflow-hidden border-b border-[#E9ECEF] px-3 py-1.5 text-[#495057]">
-                                <div
-                                  className="flex min-w-0 items-center gap-1"
-                                  style={{ paddingLeft: `${treeDepth * 16}px` }}
-                                >
-                                  {hasChildren ? (
-                                    <button
-                                      type="button"
-                                      onClick={() => toggleFolderExpanded(row.key)}
-                                      className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-[#6C757D] hover:bg-[#E9ECEF]"
-                                    >
-                                      {isExpanded ? (
-                                        <ChevronDown className="h-3.5 w-3.5" />
-                                      ) : (
-                                        <ChevronRight className="h-3.5 w-3.5" />
-                                      )}
-                                    </button>
-                                  ) : (
-                                    <span className="inline-block w-4 shrink-0" />
-                                  )}
-                                  {node.isDir &&
-                                    (isExpanded ? (
-                                      <FolderOpen className="h-4 w-4 shrink-0 text-[#007BFF]" />
-                                    ) : (
-                                      <Folder className="h-4 w-4 shrink-0 text-[#F59E0B]" />
-                                    ))}
-                                  <span className="truncate" title={item?.original_path ?? row.key}>
-                                    {node.name}
-                                  </span>
-                                </div>
-                              </td>
-                              <td className="overflow-hidden border-b border-[#E9ECEF] px-3 py-1.5 font-semibold text-[#212529]">
-                                <span
-                                  className="block truncate"
-                                  title={item ? item.new_name : node.name}
-                                >
-                                  {item ? item.new_name : node.name}
-                                </span>
-                              </td>
-                              <td className="border-b border-[#E9ECEF] px-3 py-1.5">
-                                {status && (
-                                  <span
-                                    className={`inline-block rounded-[4px] px-1.5 py-0.5 text-xs font-semibold uppercase ${
-                                      status === "conflict"
-                                        ? "bg-[#F8D7DA] text-[#721C24]"
-                                        : status === "pending"
-                                          ? "bg-[#D1ECF1] text-[#0C5460]"
-                                          : "bg-[#E9ECEF] text-[#6C757D]"
-                                    }`}
-                                    title={item?.error_message || undefined}
-                                  >
-                                    {status}
-                                  </span>
-                                )}
-                              </td>
-                            </tr>
-                          );
-                        })
-                      : sortedFlatItems.slice(startIdx, endIdx).map(({ item, planIndex }) => (
-                          <tr
-                            key={item.id}
-                            style={{ height: `${ROW_HEIGHT}px` }}
-                            className={item.selected ? "bg-white" : "bg-[#F8F9FA] opacity-60"}
-                          >
-                            <td className="border-b border-[#E9ECEF] px-3 py-1.5">
-                              <input
-                                type="checkbox"
-                                checked={item.selected}
-                                onChange={(e) => void toggleItemSelected(planIndex, e.target.checked)}
-                              />
-                            </td>
-                            <td className="border-b border-[#E9ECEF] px-2 py-1.5 text-xs font-medium text-[#6C757D]">
-                              {item.is_dir ? "DIR" : "FILE"}
-                            </td>
-                            <td className="overflow-hidden border-b border-[#E9ECEF] px-3 py-1.5 text-[#495057]">
-                              <span className="block truncate" title={item.original_path}>
-                                {item.original_name}
-                              </span>
-                            </td>
-                            <td className="overflow-hidden border-b border-[#E9ECEF] px-3 py-1.5 font-semibold text-[#212529]">
-                              <span className="block truncate" title={item.new_name}>
-                                {item.new_name}
-                              </span>
-                            </td>
-                            <td className="border-b border-[#E9ECEF] px-3 py-1.5">
-                              <span
-                                className={`inline-block rounded-[4px] px-1.5 py-0.5 text-xs font-semibold uppercase ${
-                                  item.status === "conflict"
-                                    ? "bg-[#F8D7DA] text-[#721C24]"
-                                    : item.status === "pending"
-                                      ? "bg-[#D1ECF1] text-[#0C5460]"
-                                      : "bg-[#E9ECEF] text-[#6C757D]"
-                                }`}
-                                title={item.error_message || undefined}
-                              >
-                                {item.status}
-                              </span>
-                            </td>
-                          </tr>
-                        ))}
-
-                    {bottomPadPx > 0 && (
-                      <tr aria-hidden="true">
-                        <td colSpan={5} style={{ height: `${bottomPadPx}px`, padding: 0 }} />
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            <div
-              role="separator"
-              aria-orientation="horizontal"
-              aria-label="Resize rename preview height"
-              onPointerDown={handlePreviewResizeStart}
-              title={`${livePreviewHeightPx}px`}
-              className="flex h-4 cursor-ns-resize select-none items-center justify-center rounded-[4px] border border-dashed border-[#CED4DA] bg-[#F8F9FA] text-[#6C757D] hover:border-[#007BFF] hover:bg-[#E7F1FF] hover:text-[#007BFF]"
-            >
-              <GripHorizontal className="h-3.5 w-3.5" />
-              <span className="ml-2 font-mono-code text-[11px]">{livePreviewHeightPx}px</span>
-            </div>
-          </div>
-        );
-      })()}
+      <RenamerPreviewTable
+        items={plan.items}
+        selectedPending={selectedPending}
+        viewMode={viewMode}
+        livePreviewHeightPx={livePreviewHeightPx}
+        scrollTop={scrollTop}
+        scrollContainerRef={scrollContainerRef}
+        visibleTreeRows={visibleTreeRows}
+        sortedFlatItems={sortedFlatItems}
+        sortField={sortField}
+        sortDir={sortDir}
+        onChangeViewMode={setViewMode}
+        onExpandAll={expandAllFolders}
+        onCollapseAll={() => setExpandedKeys(new Set())}
+        onToggleAllSelected={(sel) => void toggleAllSelected(sel)}
+        onToggleItemSelected={(idx, sel) => void applySelectionIndices([idx], sel)}
+        onApplySelectionIndices={(indices, sel) => void applySelectionIndices(indices, sel)}
+        onToggleFolderExpanded={toggleFolderExpanded}
+        onClearRoots={() => setRoots([])}
+        onScrollTopChange={setScrollTop}
+        onToggleSort={handleToggleSort}
+        onPreviewResizeStart={handlePreviewResizeStart}
+      />
 
       <ImportFeedbackToast toast={importToast} />
     </div>

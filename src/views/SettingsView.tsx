@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { NumberInput } from "../components/NumberInput";
 import { Slider } from "../components/Slider";
+import { ViewHeader } from "../components/ViewHeader";
 import { useI18n } from "../i18n";
 import { isTauriRuntime, pickDirectory, validateExportDirectory } from "../lib/ipc";
 import type { AppFontFamily, LogVerbosity } from "../types/ipc";
@@ -137,10 +138,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   return (
     <div className="mx-auto max-w-4xl space-y-5">
-      <div>
-        <h1 className="text-xl font-bold text-[#212529]">{t.settings.title}</h1>
-        <p className="text-sm text-[#6C757D]">{t.settings.subtitle}</p>
-      </div>
+      <ViewHeader title={t.settings.title} subtitle={t.settings.subtitle} />
 
       {/* Language Setting */}
       <section className="rounded-[4px] border border-[#DEE2E6] bg-white p-4 space-y-3">

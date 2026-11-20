@@ -3,6 +3,7 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import type {
   AnimatedImagePolicy,
   AppMetrics,
+  ArchiveEstimate,
   ArchiveOptions,
   ArchiveSummary,
   BookmarkNode,
@@ -200,6 +201,16 @@ export async function checkExportConflicts(paths: string[]): Promise<string[]> {
   return await invoke("check_export_conflicts", { paths });
 }
 
+export async function checkMissingFiles(paths: string[]): Promise<string[]> {
+  if (!isTauriRuntime()) return [];
+  return await invoke("check_missing_files", { paths });
+}
+
+export function isJobCancelledError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return lower.includes("cancel") || lower.includes("hủy") || lower.includes("huy");
+}
+
 export async function resolveUniqueExportPath(path: string): Promise<string> {
   if (!isTauriRuntime()) return path;
   return await invoke("resolve_unique_export_path", { path });
@@ -385,6 +396,24 @@ export async function convertDocContentToPdf(
 }
 
 // --- Archive ---
+export async function estimateArchiveSize(
+  inputs: string[],
+  includeRootDir: boolean,
+  ignoreHidden: boolean,
+  options: ArchiveOptions,
+): Promise<ArchiveEstimate> {
+  return await invoke("archive_estimate_size", {
+    inputs,
+    includeRootDir,
+    ignoreHidden,
+    options,
+  });
+}
+
+export async function getFileSizeBytes(path: string): Promise<number> {
+  return await invoke("get_file_size_bytes", { path });
+}
+
 export async function createArchive(
   jobId: string,
   inputs: string[],

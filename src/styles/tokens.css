@@ -101,6 +101,19 @@ textarea {
   font-family: inherit;
 }
 
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  summary {
+    cursor: pointer;
+  }
+
+  button:disabled,
+  [role="button"][aria-disabled="true"] {
+    cursor: not-allowed;
+  }
+}
+
 .font-mono-code {
   font-family: var(--knit-font-mono);
 }
@@ -116,6 +129,67 @@ textarea {
   height: 2rem;
   min-height: 2rem;
   line-height: 1.2;
+}
+
+@layer components {
+  .knit-card {
+    border: 1px solid var(--knit-border);
+    border-radius: var(--knit-radius);
+    background-color: var(--knit-bg-surface);
+  }
+
+  .knit-input {
+    border: 1px solid var(--knit-border-strong);
+    border-radius: var(--knit-radius);
+    background-color: var(--knit-bg-surface);
+    color: var(--knit-text);
+  }
+
+  .knit-input:focus {
+    border-color: var(--knit-primary);
+    outline: none;
+  }
+
+  .knit-btn-primary {
+    border-radius: var(--knit-radius);
+    background-color: var(--knit-primary);
+    color: #ffffff;
+    font-weight: 600;
+  }
+
+  .knit-btn-primary:hover:not(:disabled) {
+    background-color: var(--knit-primary-hover);
+  }
+
+  .knit-btn-secondary {
+    border: 1px solid var(--knit-border-strong);
+    border-radius: var(--knit-radius);
+    background-color: var(--knit-bg-app);
+    color: var(--knit-secondary);
+    font-weight: 600;
+  }
+
+  .knit-btn-secondary:hover:not(:disabled) {
+    background-color: #e9ecef;
+  }
+
+  .knit-btn-danger {
+    border-radius: var(--knit-radius);
+    background-color: var(--knit-danger);
+    color: #ffffff;
+    font-weight: 600;
+  }
+
+  .knit-btn-danger:hover:not(:disabled) {
+    background-color: #c82333;
+  }
+
+  .knit-alert-error {
+    border: 1px solid #f5c6cb;
+    border-radius: var(--knit-radius);
+    background-color: #f8d7da;
+    color: #721c24;
+  }
 }
 
 /* Accessible custom checkbox with mathematically centered check glyph */

@@ -5,8 +5,8 @@ export interface UseVerticalResizeOptions {
   value: number;
   /** Minimum allowed height in pixels. */
   min: number;
-  /** Maximum allowed height in pixels. */
-  max: number;
+  /** Optional maximum allowed height in pixels (omit for unlimited height). */
+  max?: number;
   /** Called once when the drag finishes (pointerup / pointercancel) with the clamped height. */
   onCommit: (nextHeight: number) => void;
 }
@@ -20,14 +20,34 @@ export interface UseVerticalResizeResult {
   handlePointerDown: (e: React.PointerEvent<HTMLElement>) => void;
 }
 
-function clampHeight(height: number, min: number, max: number): number {
+function clampHeight(height: number, min: number, max?: number): number {
   if (!Number.isFinite(height)) return min;
-  return Math.min(max, Math.max(min, Math.round(height)));
+  const rounded = Math.round(height);
+  const aboveMin = Math.max(min, rounded);
+  return max !== undefined && Number.isFinite(max) ? Math.min(max, aboveMin) : aboveMin;
+}
+
+/** Finds the nearest vertically scrollable ancestor element. */
+export function findScrollableAncestor(startEl: HTMLElement | null): HTMLElement | null {
+  let cur = startEl?.parentElement ?? null;
+  while (cur) {
+    const style = window.getComputedStyle(cur);
+    const overflowY = style.overflowY;
+    if (
+      (overflowY === "auto" || overflowY === "scroll" || cur.tagName === "MAIN") &&
+      cur.scrollHeight >= cur.clientHeight
+    ) {
+      return cur;
+    }
+    cur = cur.parentElement;
+  }
+  return null;
 }
 
 /**
- * Manages pointer-drag vertical resizing with clamped bounds, deferred commit on
- * release, and automatic window listener cleanup on unmount or pointercancel.
+ * Manages pointer-drag vertical resizing with clamped bounds, edge auto-scroll
+ * when dragging to the viewport/container boundary, deferred commit on release,
+ * and automatic window listener cleanup on unmount or pointercancel.
  */
 export function useVerticalResize({
   value,
@@ -64,20 +84,69 @@ export function useVerticalResize({
 
       cleanupDragRef.current?.();
 
+      const scrollEl = findScrollableAncestor(e.currentTarget as HTMLElement);
+      const startScrollTop = scrollEl ? scrollEl.scrollTop : 0;
       const startY = e.clientY;
       const startH = heightRef.current;
+      let latestClientY = startY;
       let latestH = startH;
+      let scrollRafId: number | null = null;
       setIsResizing(true);
 
-      const onMove = (ev: PointerEvent) => {
-        latestH = clampHeight(startH + (ev.clientY - startY), min, max);
+      const updateHeightFromPointer = () => {
+        const scrollDelta = scrollEl ? scrollEl.scrollTop - startScrollTop : 0;
+        latestH = clampHeight(startH + (latestClientY - startY) + scrollDelta, min, max);
         setHeight(latestH);
+      };
+
+      const computeEdgeScrollStep = (): number => {
+        if (!scrollEl) return 0;
+        const rect = scrollEl.getBoundingClientRect();
+        const topEdge = Math.max(0, rect.top);
+        const bottomEdge = Math.min(window.innerHeight, rect.bottom);
+        const zone = 36;
+        if (bottomEdge > topEdge + zone * 2) {
+          if (latestClientY >= bottomEdge - zone) {
+            const ratio = Math.min(1.5, Math.max(0.25, (latestClientY - (bottomEdge - zone)) / zone));
+            return Math.round(6 + ratio * 12);
+          }
+          if (latestClientY <= topEdge + zone) {
+            const ratio = Math.min(1.5, Math.max(0.25, (topEdge + zone - latestClientY) / zone));
+            return -Math.round(6 + ratio * 12);
+          }
+        }
+        return 0;
+      };
+
+      const tickAutoScroll = () => {
+        scrollRafId = null;
+        if (!scrollEl) return;
+        const dy = computeEdgeScrollStep();
+        if (dy === 0) return;
+        const prevTop = scrollEl.scrollTop;
+        scrollEl.scrollTop += dy;
+        if (scrollEl.scrollTop !== prevTop) {
+          updateHeightFromPointer();
+          scrollRafId = window.requestAnimationFrame(tickAutoScroll);
+        }
+      };
+
+      const onMove = (ev: PointerEvent) => {
+        latestClientY = ev.clientY;
+        updateHeightFromPointer();
+        if (scrollEl && computeEdgeScrollStep() !== 0 && scrollRafId === null) {
+          scrollRafId = window.requestAnimationFrame(tickAutoScroll);
+        }
       };
 
       const cleanup = () => {
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", finish);
         window.removeEventListener("pointercancel", finish);
+        if (scrollRafId !== null) {
+          window.cancelAnimationFrame(scrollRafId);
+          scrollRafId = null;
+        }
         cleanupDragRef.current = null;
       };
 

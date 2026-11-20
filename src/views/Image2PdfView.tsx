@@ -1,33 +1,65 @@
 import React from "react";
-import { NumberInput } from "../components/NumberInput";
-import { Select } from "../components/Select";
-import { Slider } from "../components/Slider";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   AlertTriangle,
-  Edit3,
+  ArrowDownAZ,
+  ArrowUpAZ,
+  CheckSquare,
   FileOutput,
   GripVertical,
-  Layers,
   PanelRightClose,
   PanelRightOpen,
   RotateCw,
   Trash2,
+  Undo2,
   X,
 } from "lucide-react";
-import { convertFileSrc } from "@tauri-apps/api/core";
 import { BookmarkTreeEditor } from "../components/BookmarkTreeEditor";
+import { CardSizeSelector } from "../components/CardSizeSelector";
 import { Dropzone } from "../components/Dropzone";
-import { ImageCanvasEditorModal } from "../components/ImageCanvasEditorModal";
-import { useI18n } from "../i18n";
+import { ErrorBanner } from "../components/ErrorBanner";
 import {
-  computeVisibleRowRange,
+  ExportConflictModal,
+  type ConflictResolution,
+} from "../components/ExportConflictModal";
+import { ExportFilenameControl } from "../components/ExportFilenameControl";
+import { GridColumnSelector } from "../components/GridColumnSelector";
+import { ImageCanvasEditorModal } from "../components/ImageCanvasEditorModal";
+import {
+  ImportFeedbackToast,
+  useImportFeedback,
+} from "../components/ImportFeedbackToast";
+import { PaneResizeHandle } from "../components/PaneResizeHandle";
+import { Select } from "../components/Select";
+import { ViewHeader } from "../components/ViewHeader";
+import { useHorizontalRatioResize } from "../hooks/useHorizontalRatioResize";
+import { useThumbnailQueue } from "../hooks/useThumbnailQueue";
+import { useVirtualizedGrid } from "../hooks/useVirtualizedGrid";
+import { useI18n } from "../i18n";
+import { buildPageBookmarkMap, remapBookmarksAfterPageRemoval } from "../lib/bookmarks";
+import { useExportFilenameCheck } from "../lib/exportPath";
+import { estimateImage2PdfOutput } from "../lib/sizeEstimate";
+import {
   hitTestGridInsertIndex,
   IMAGE_GRID_GAP_PX,
-  mergeThumbCacheLru,
   THUMB_CACHE_MAX_ENTRIES,
+  type CardSizePreset,
 } from "../lib/imageGrid";
 import {
+  hasPageEdits,
+  pageEditSignature,
+  reorderSelectedPages,
+  sortPageDrafts,
+  type ImageSortMode,
+  type SortDirection,
+} from "../lib/imageSort";
+import {
   buildImage2Pdf,
+  checkExportConflicts,
+  checkMissingFiles,
+  clearImagePreviewCache,
+  formatBytes,
+  isJobCancelledError,
   isTauriRuntime,
   pickDirectory,
   pickFiles,
@@ -35,33 +67,9 @@ import {
   renderImageThumbBase64,
   renderImageThumbFile,
   renderPageDraftPreviewFile,
-  scanImagesForPdf,
-  clearImagePreviewCache,
-  checkExportConflicts,
   resolveUniqueExportPath,
+  scanImagesForPdf,
 } from "../lib/ipc";
-import { ExportFilenameControl } from "../components/ExportFilenameControl";
-import {
-  ExportConflictModal,
-  type ConflictResolution,
-} from "../components/ExportConflictModal";
-import {
-  ImportFeedbackToast,
-  useImportFeedback,
-} from "../components/ImportFeedbackToast";
-import { useExportFilenameCheck } from "../lib/exportPath";
-import {
-  ArrowDownAZ,
-  ArrowUpAZ,
-  Undo2,
-} from "lucide-react";
-import {
-  hasPageEdits,
-  pageEditSignature,
-  sortPageDrafts,
-  type ImageSortMode,
-  type SortDirection,
-} from "../lib/imageSort";
 import { usePersistentState } from "../lib/storage";
 import type {
   AnimatedImagePolicy,
@@ -71,7 +79,16 @@ import type {
   PageBackground,
   PageDraft,
   PageLayoutPolicy,
+  PdfExportMode,
 } from "../types/ipc";
+import {
+  Image2PdfSettingsCard,
+  type BgMode,
+  type MarginUnit,
+} from "./image2pdf/Image2PdfSettingsCard";
+import { ImageContextMenu } from "./image2pdf/ImageContextMenu";
+import { ImagePageCard } from "./image2pdf/ImagePageCard";
+import { ImagePreviewModal } from "./image2pdf/ImagePreviewModal";
 
 export interface DroppedBatch {
   seq: number;
@@ -92,203 +109,8 @@ interface Image2PdfViewProps {
   defaultExportDir?: string;
 }
 
-type BgMode = "transparent" | "white" | "black" | "custom";
-type MarginUnit = "pt" | "mm";
-
 const PT_PER_MM = 72 / 25.4;
 const GRID_COL_OPTIONS = [2, 3, 4, 5, 6, 8] as const;
-
-interface PageCardProps {
-  page: PageDraft;
-  idx: number;
-  thumbUrl: string | undefined;
-  thumbBakedSig: string | undefined;
-  thumbBakedRot: number;
-  loadThumbs: boolean;
-  isDragged: boolean;
-  isDraggingAny: boolean;
-  showBarLeft: boolean;
-  showBarEnd: boolean;
-  editedBadgeLabel: string;
-  rotateTitle: string;
-  editBtnLabel: string;
-  editBtnTitle: string;
-  deletePageTitle: string;
-  onRegisterRef: (id: string, el: HTMLDivElement | null) => void;
-  onPointerDownCard: (e: React.PointerEvent<HTMLDivElement>, idx: number) => void;
-  onDoubleClickCard: (e: React.MouseEvent<HTMLDivElement>, pageId: string) => void;
-  onRotate: (id: string) => void;
-  onEdit: (id: string) => void;
-  onRemove: (id: string) => void;
-}
-
-const PageCard: React.FC<PageCardProps> = React.memo(
-  ({
-    page,
-    idx,
-    thumbUrl,
-    thumbBakedSig,
-    thumbBakedRot,
-    loadThumbs,
-    isDragged,
-    isDraggingAny,
-    showBarLeft,
-    showBarEnd,
-    editedBadgeLabel,
-    rotateTitle,
-    editBtnLabel,
-    editBtnTitle,
-    deletePageTitle,
-    onRegisterRef,
-    onPointerDownCard,
-    onDoubleClickCard,
-    onRotate,
-    onEdit,
-    onRemove,
-  }) => {
-    const hasEdits = hasPageEdits(page);
-    const sigMatches = thumbBakedSig === pageEditSignature(page);
-    const displayRotDeg = sigMatches
-      ? 0
-      : (((page.rotation_deg - thumbBakedRot) % 360) + 360) % 360;
-    const isQuarterRotated = Math.abs(displayRotDeg % 180) === 90;
-
-    const cardRefCb = React.useCallback(
-      (el: HTMLDivElement | null) => {
-        onRegisterRef(page.id, el);
-      },
-      [page.id, onRegisterRef],
-    );
-
-    const handlePointerDown = React.useCallback(
-      (e: React.PointerEvent<HTMLDivElement>) => {
-        onPointerDownCard(e, idx);
-      },
-      [onPointerDownCard, idx],
-    );
-
-    const handleDoubleClick = React.useCallback(
-      (e: React.MouseEvent<HTMLDivElement>) => {
-        if ((e.target as HTMLElement).closest("button")) return;
-        onDoubleClickCard(e, page.id);
-      },
-      [onDoubleClickCard, page.id],
-    );
-
-    return (
-      <div
-        data-page-id={page.id}
-        ref={cardRefCb}
-        onPointerDown={handlePointerDown}
-        onDoubleClick={handleDoubleClick}
-        className="relative"
-      >
-        {showBarLeft && (
-          <div
-            aria-hidden="true"
-            className="pointer-events-none absolute -left-[9px] bottom-0 top-0 z-30 w-1.5 rounded-full bg-[#007BFF] shadow-[0_0_8px_rgba(0,123,255,0.75)]"
-          />
-        )}
-        {showBarEnd && (
-          <div
-            aria-hidden="true"
-            className="pointer-events-none absolute -right-[9px] bottom-0 top-0 z-30 w-1.5 rounded-full bg-[#007BFF] shadow-[0_0_8px_rgba(0,123,255,0.75)]"
-          />
-        )}
-
-        <div
-          className={`flex flex-col overflow-hidden rounded-[4px] border border-[#DEE2E6] bg-white ${
-            isDraggingAny ? "cursor-grabbing" : "cursor-grab"
-          } ${isDragged ? "opacity-40 ring-2 ring-[#007BFF]" : "opacity-100"}`}
-        >
-          {loadThumbs && (
-            <div className="relative flex h-36 items-center justify-center overflow-hidden bg-[#F1F3F5] p-2">
-              {thumbUrl ? (
-                <img
-                  src={thumbUrl}
-                  alt={page.label}
-                  loading="lazy"
-                  decoding="async"
-                  draggable={false}
-                  className={`pointer-events-none object-contain ${
-                    isQuarterRotated
-                      ? "max-h-[112px] max-w-[112px]"
-                      : "max-h-full max-w-full"
-                  }`}
-                  style={displayRotDeg !== 0 ? { transform: `rotate(${displayRotDeg}deg)` } : undefined}
-                />
-              ) : (
-                <Layers className="h-6 w-6 text-[#ADB5BD]" />
-              )}
-              <span className="absolute left-1.5 top-1.5 flex items-center gap-0.5 rounded-[4px] bg-[#343A40] px-1.5 py-0.5 font-mono-code text-[11px] text-white">
-                <GripVertical className="h-3 w-3 opacity-80" />#{idx + 1}
-              </span>
-              {hasEdits && (
-                <span className="absolute right-1.5 top-1.5 rounded-[4px] bg-[#17A2B8] px-1.5 py-0.5 text-[11px] font-semibold text-white">
-                  {editedBadgeLabel}
-                </span>
-              )}
-            </div>
-          )}
-          <div className="border-t border-[#DEE2E6] p-2">
-            <div
-              className="truncate text-sm font-semibold text-[#212529]"
-              title={page.label}
-            >
-              {page.label}
-            </div>
-            <div className="font-mono-code text-xs text-[#6C757D]">
-              {page.width_px}x{page.height_px}
-              {page.duration_ms ? ` · ${page.duration_ms}ms` : ""}
-            </div>
-            <div className="mt-2 flex items-center justify-between gap-1">
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onRotate(page.id);
-                }}
-                onDoubleClick={(e) => e.stopPropagation()}
-                className="rounded-[4px] border border-[#DEE2E6] p-1 text-[#495057] hover:bg-[#F8F9FA]"
-                title={rotateTitle}
-              >
-                <RotateCw className="h-3.5 w-3.5" />
-              </button>
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  disabled={!loadThumbs}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onEdit(page.id);
-                  }}
-                  onDoubleClick={(e) => e.stopPropagation()}
-                  className="rounded-[4px] border border-[#007BFF] px-2 py-0.5 text-xs font-semibold text-[#007BFF] hover:bg-[#007BFF] hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                  title={editBtnTitle}
-                >
-                  <Edit3 className="mr-0.5 inline h-3 w-3" />
-                  {editBtnLabel}
-                </button>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onRemove(page.id);
-                  }}
-                  onDoubleClick={(e) => e.stopPropagation()}
-                  className="rounded-[4px] p-1 text-[#DC3545] hover:bg-[#F8D7DA]"
-                  title={deletePageTitle}
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  },
-);
 
 export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
   onStartJob,
@@ -313,10 +135,6 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
 
   const [pages, setPages] = React.useState<PageDraft[]>([]);
   const [bookmarks, setBookmarks] = React.useState<BookmarkNode[]>([]);
-  const [thumbCache, setThumbCache] = React.useState<Record<string, string>>({});
-  const [thumbMetaCache, setThumbMetaCache] = React.useState<
-    Record<string, { sig: string; bakedRot: number }>
-  >({});
   const [hiResCache, setHiResCache] = React.useState<Record<string, string>>({});
   const [editedPreviewCache, setEditedPreviewCache] = React.useState<Record<string, string>>({});
   const [previewPageId, setPreviewPageId] = React.useState<string | null>(null);
@@ -325,6 +143,16 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
     "knit.img2pdf.showBookmarks",
     true,
   );
+  const [leftPaneRatio, setLeftPaneRatio] = usePersistentState<number>(
+    "knit.img2pdf.leftRatio",
+    0.66,
+  );
+  const [contextMenu, setContextMenu] = React.useState<{
+    pageId: string;
+    pageIndex: number;
+    x: number;
+    y: number;
+  } | null>(null);
   const [loadThumbs, setLoadThumbs] = usePersistentState<boolean>(
     "knit.img2pdf.loadThumbs",
     true,
@@ -341,6 +169,10 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
   const [bgCustomHex, setBgCustomHex] = usePersistentState<string>(
     "knit.img2pdf.bgCustomHex",
     "#F8F9FA",
+  );
+  const [exportMode, setExportMode] = usePersistentState<PdfExportMode>(
+    "knit.img2pdf.exportMode",
+    "balanced",
   );
   const [jpegQuality, setJpegQuality] = usePersistentState<number>("knit.img2pdf.jpegQuality", 88);
   const [losslessPassthrough, setLosslessPassthrough] = usePersistentState<boolean>(
@@ -369,6 +201,14 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
     "asc",
   );
   const [gridCols, setGridCols] = usePersistentState<number>("knit.img2pdf.gridCols", 4);
+  const [cardSize, setCardSize] = usePersistentState<CardSizePreset>(
+    "knit.img2pdf.cardSize",
+    "small",
+  );
+  const [autoUpdateBookmarksOnDelete, setAutoUpdateBookmarksOnDelete] =
+    usePersistentState<boolean>("knit.img2pdf.autoUpdateBookmarksOnDelete", true);
+  const [selectionMode, setSelectionMode] = React.useState(false);
+  const [selectedPageIds, setSelectedPageIds] = React.useState<Set<string>>(() => new Set());
 
   const importOrderMapRef = React.useRef<Record<string, number>>({});
   const nextImportOrderRef = React.useRef<number>(1);
@@ -384,6 +224,13 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
   sortModeRef.current = sortMode;
   const sortDirRef = React.useRef<SortDirection>(sortDir);
   sortDirRef.current = sortDir;
+  const autoUpdateBookmarksRef = React.useRef<boolean>(autoUpdateBookmarksOnDelete);
+  autoUpdateBookmarksRef.current = autoUpdateBookmarksOnDelete;
+  const selectionModeRef = React.useRef<boolean>(selectionMode);
+  selectionModeRef.current = selectionMode;
+  const selectedPageIdsRef = React.useRef<Set<string>>(selectedPageIds);
+  selectedPageIdsRef.current = selectedPageIds;
+  const lastSelectedAnchorIdRef = React.useRef<string | null>(null);
 
   const pushUndoSnapshot = React.useCallback(() => {
     const stack = undoStackRef.current;
@@ -408,7 +255,9 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
   }, [setSortMode, setSortDir]);
 
   const [dragIndex, setDragIndex] = React.useState<number | null>(null);
+  const [draggingPageIds, setDraggingPageIds] = React.useState<Set<string>>(() => new Set());
   const [insertAt, setInsertAt] = React.useState<number | null>(null);
+  const [missingSourcePaths, setMissingSourcePaths] = React.useState<Set<string>>(() => new Set());
   const [scanningPaths, setScanningPaths] = React.useState(false);
   const [scanProgress, setScanProgress] = React.useState<{
     done: number;
@@ -419,339 +268,134 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
   const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
   const lastHandledDropSeq = React.useRef<number>(0);
 
-  const [cardHeight, setCardHeight] = React.useState<number>(() => (loadThumbs ? 236 : 92));
-  const [visibleRange, setVisibleRange] = React.useState<{ startRow: number; endRow: number }>({
-    startRow: 0,
-    endRow: 15,
+  const splitContainerRef = React.useRef<HTMLDivElement | null>(null);
+  const {
+    ratio: liveLeftRatio,
+    isResizing: isResizingWidth,
+    handlePointerDown: handleSplitWidthResize,
+  } = useHorizontalRatioResize({
+    value: leftPaneRatio,
+    min: 0.35,
+    max: 0.82,
+    containerRef: splitContainerRef,
+    cssVar: "--img-left",
+    onCommit: setLeftPaneRatio,
   });
 
   const gridOuterRef = React.useRef<HTMLDivElement | null>(null);
+  const gridInnerRef = React.useRef<HTMLDivElement | null>(null);
   const dragGhostRef = React.useRef<HTMLDivElement | null>(null);
   const initialGhostPosRef = React.useRef<{ x: number; y: number }>({ x: 0, y: 0 });
-  const cardRefs = React.useRef<Map<string, HTMLDivElement>>(new Map());
   const insertAtRef = React.useRef<number | null>(null);
-  const pagesRef = React.useRef<PageDraft[]>(pages);
   const pagesByIdRef = React.useRef<Map<string, PageDraft>>(new Map());
-  const gridColsRef = React.useRef<number>(gridCols);
-  const rowStrideRef = React.useRef<number>(cardHeight + IMAGE_GRID_GAP_PX);
+  const pageIndexByIdRef = React.useRef<Map<string, number>>(new Map());
   const suppressClickUntilRef = React.useRef<number>(0);
-
-  const thumbCacheRef = React.useRef<Record<string, string>>(thumbCache);
-  const loadThumbsRef = React.useRef<boolean>(loadThumbs);
-  const visibleIdsRef = React.useRef<Set<string>>(new Set());
-  const inFlightIdsRef = React.useRef<Set<string>>(new Set());
-  const queuedSetRef = React.useRef<Set<string>>(new Set());
-  const queuedOrderRef = React.useRef<string[]>([]);
-  const failedThumbIdsRef = React.useRef<Set<string>>(new Set());
-  const pendingThumbBatchRef = React.useRef<Record<string, string>>({});
-  const thumbFlushTimerRef = React.useRef<number | null>(null);
-  const activeWorkersRef = React.useRef<number>(0);
-  const thumbGenRef = React.useRef<number>(0);
-  const observerRef = React.useRef<IntersectionObserver | null>(null);
-
-  const rowStride = cardHeight + IMAGE_GRID_GAP_PX;
-  gridColsRef.current = gridCols;
-  rowStrideRef.current = rowStride;
+  const lastPointerDownRef = React.useRef<{ pageId: string; timeStamp: number }>({
+    pageId: "",
+    timeStamp: 0,
+  });
 
   React.useEffect(() => {
-    pagesRef.current = pages;
     const map = new Map<string, PageDraft>();
-    for (const p of pages) {
+    const idxMap = new Map<string, number>();
+    for (let i = 0; i < pages.length; i++) {
+      const p = pages[i];
       map.set(p.id, p);
+      idxMap.set(p.id, i);
     }
     pagesByIdRef.current = map;
+    pageIndexByIdRef.current = idxMap;
   }, [pages]);
 
-  React.useEffect(() => {
-    thumbCacheRef.current = thumbCache;
-  }, [thumbCache]);
-
-  React.useEffect(() => {
-    loadThumbsRef.current = loadThumbs;
-    setCardHeight(loadThumbs ? 236 : 92);
-    if (!loadThumbs) {
-      thumbGenRef.current += 1;
-      queuedSetRef.current.clear();
-      queuedOrderRef.current = [];
-      inFlightIdsRef.current.clear();
-      pendingThumbBatchRef.current = {};
-      if (thumbFlushTimerRef.current !== null) {
-        window.clearTimeout(thumbFlushTimerRef.current);
-        thumbFlushTimerRef.current = null;
-      }
-    }
-  }, [loadThumbs]);
-
-  React.useEffect(() => {
-    return () => {
-      if (thumbFlushTimerRef.current !== null) {
-        window.clearTimeout(thumbFlushTimerRef.current);
-        thumbFlushTimerRef.current = null;
-      }
-    };
-  }, []);
-
-  const flushPendingThumbs = React.useCallback(() => {
-    thumbFlushTimerRef.current = null;
-    const batch = pendingThumbBatchRef.current;
-    const metaBatch = pendingMetaBatchRef.current;
-    const keys = Object.keys(batch);
-    if (keys.length === 0) return;
-    pendingThumbBatchRef.current = {};
-    pendingMetaBatchRef.current = {};
-    const { nextCache } = mergeThumbCacheLru(
-      thumbCacheRef.current,
-      batch,
-      THUMB_CACHE_MAX_ENTRIES,
-      visibleIdsRef.current,
-    );
-    thumbCacheRef.current = nextCache;
-    setThumbCache(nextCache);
-    setThumbMetaCache((prev) => ({ ...prev, ...metaBatch }));
-  }, []);
-
-  const thumbSigRef = React.useRef<Record<string, string>>({});
-  const pendingMetaBatchRef = React.useRef<
-    Record<string, { sig: string; bakedRot: number }>
-  >({});
-
-  const scheduleThumbFlush = React.useCallback(() => {
-    if (thumbFlushTimerRef.current !== null) return;
-    thumbFlushTimerRef.current = window.setTimeout(flushPendingThumbs, 40);
-  }, [flushPendingThumbs]);
-
-  const pumpThumbQueue = React.useCallback(() => {
-    if (!isTauriRuntime() || !loadThumbsRef.current) return;
-    const CONCURRENCY = 3;
-
-    while (activeWorkersRef.current < CONCURRENCY && queuedOrderRef.current.length > 0) {
-      // Pop từ cuối (LIFO) để ưu tiên các ảnh người dùng vừa cuộn tới trong viewport
-      const pageId = queuedOrderRef.current.pop();
-      if (!pageId) break;
-      if (!queuedSetRef.current.delete(pageId)) continue;
-      if (!visibleIdsRef.current.has(pageId)) continue;
-
+  const thumbQueue = useThumbnailQueue<{ sig: string; bakedRot: number }>({
+    enabled: isTauriRuntime() && loadThumbs,
+    concurrency: 3,
+    maxCacheEntries: THUMB_CACHE_MAX_ENTRIES,
+    flushIntervalMs: 40,
+    getKeySignature: (pageId) => {
       const page = pagesByIdRef.current.get(pageId);
-      if (!page) continue;
-
-      const sig = pageEditSignature(page);
-      if (
-        (thumbCacheRef.current[pageId] && thumbSigRef.current[pageId] === sig) ||
-        inFlightIdsRef.current.has(pageId) ||
-        failedThumbIdsRef.current.has(pageId)
-      ) {
-        continue;
-      }
-
-      inFlightIdsRef.current.add(pageId);
-      activeWorkersRef.current += 1;
-      const gen = thumbGenRef.current;
-
-      void (async () => {
-        try {
-          const edited = hasPageEdits(page);
-          const thumbPath = edited
-            ? await renderPageDraftPreviewFile(page, 360)
-            : await renderImageThumbFile(page.source.path, 360);
-          if (thumbGenRef.current !== gen || !loadThumbsRef.current) return;
-
-          const latestPage = pagesByIdRef.current.get(pageId);
-          if (latestPage && pageEditSignature(latestPage) !== sig) {
-            return;
-          }
-
-          const url = convertFileSrc(thumbPath);
-          thumbCacheRef.current[pageId] = url;
-          thumbSigRef.current[pageId] = sig;
-          pendingThumbBatchRef.current[pageId] = url;
-          pendingMetaBatchRef.current[pageId] = {
-            sig,
-            bakedRot: edited ? ((page.rotation_deg % 360) + 360) % 360 : 0,
-          };
-          scheduleThumbFlush();
-        } catch {
-          if (thumbGenRef.current !== gen || !loadThumbsRef.current) return;
-          // Không fallback nạp trực tiếp file ảnh gốc nhiều MB lên Grid để tránh nghẽn WebView
-          failedThumbIdsRef.current.add(pageId);
-        } finally {
-          inFlightIdsRef.current.delete(pageId);
-          activeWorkersRef.current = Math.max(0, activeWorkersRef.current - 1);
-          const latestPage = pagesByIdRef.current.get(pageId);
-          if (
-            latestPage &&
-            pageEditSignature(latestPage) !== sig &&
-            visibleIdsRef.current.has(pageId)
-          ) {
-            queuedSetRef.current.add(pageId);
-            queuedOrderRef.current.push(pageId);
-          }
-          if (thumbGenRef.current === gen && loadThumbsRef.current) {
-            pumpThumbQueue();
-          }
-        }
-      })();
-    }
-  }, [scheduleThumbFlush]);
-
-  const enqueueThumbnail = React.useCallback(
-    (pageId: string) => {
-      if (!isTauriRuntime() || !loadThumbsRef.current) return;
-      const page = pagesByIdRef.current.get(pageId);
-      const sig = page ? pageEditSignature(page) : "";
-      if (
-        (thumbCacheRef.current[pageId] && thumbSigRef.current[pageId] === sig) ||
-        inFlightIdsRef.current.has(pageId) ||
-        failedThumbIdsRef.current.has(pageId)
-      ) {
-        return;
-      }
-      if (!queuedSetRef.current.has(pageId)) {
-        queuedSetRef.current.add(pageId);
-      }
-      queuedOrderRef.current.push(pageId);
-      pumpThumbQueue();
+      return page ? pageEditSignature(page) : null;
     },
-    [pumpThumbQueue],
+    renderKey: async (pageId) => {
+      const page = pagesByIdRef.current.get(pageId);
+      if (!page) return null;
+      const sig = pageEditSignature(page);
+      const edited = hasPageEdits(page);
+      const thumbPath = edited
+        ? await renderPageDraftPreviewFile(page, 360)
+        : await renderImageThumbFile(page.source.path, 360);
+      return {
+        url: convertFileSrc(thumbPath),
+        meta: {
+          sig,
+          bakedRot: edited ? ((page.rotation_deg % 360) + 360) % 360 : 0,
+        },
+      };
+    },
+  });
+
+  const thumbThumbHeightPx = cardSize === "large" ? 288 : cardSize === "medium" ? 208 : 144;
+  const grid = useVirtualizedGrid({
+    outerRef: gridOuterRef,
+    innerRef: gridInnerRef,
+    getScrollEl: () => gridOuterRef.current?.closest("main") as HTMLElement | null,
+    totalItems: pages.length,
+    cols: gridCols,
+    gapPx: IMAGE_GRID_GAP_PX,
+    initialRowStridePx: (loadThumbs ? thumbThumbHeightPx + 92 : 92) + IMAGE_GRID_GAP_PX,
+    overscanRows: 3,
+    enabled: pages.length > 0 && !isResizingWidth,
+    extraDeps: [loadThumbs, showBookmarks, cardSize],
+    onVisibleWindowChange: (startIdx, endExcl) => {
+      const keys: string[] = [];
+      for (let i = startIdx; i < endExcl; i++) {
+        const p = pagesStateRef.current[i];
+        if (p) keys.push(p.id);
+      }
+      thumbQueue.enqueueWindow(keys);
+    },
+  });
+
+  const {
+    enqueueKey: thumbEnqueueKey,
+    visibleKeysRef: thumbVisibleKeysRef,
+    thumbSigsRef,
+    clearFailedKey: thumbClearFailedKey,
+  } = thumbQueue;
+
+  const mountedCardIdsRef = React.useRef<Set<string>>(new Set());
+  const registerCardRef = React.useCallback(
+    (id: string, el: HTMLDivElement | null) => {
+      if (el) {
+        mountedCardIdsRef.current.add(id);
+        thumbVisibleKeysRef.current.add(id);
+        thumbEnqueueKey(id);
+      } else {
+        mountedCardIdsRef.current.delete(id);
+        thumbVisibleKeysRef.current.delete(id);
+      }
+    },
+    [thumbEnqueueKey, thumbVisibleKeysRef],
   );
 
-  // Re-render visible thumbnails automatically whenever a page's edits change
   React.useEffect(() => {
     if (!loadThumbs || !isTauriRuntime()) return;
-    for (const p of pages) {
-      if (!visibleIdsRef.current.has(p.id)) continue;
+    // Chỉ duyệt các card đang hiển thị trong viewport thay vì quét O(N) toàn bộ mảng pages.
+    thumbVisibleKeysRef.current.forEach((id) => {
+      const p = pagesByIdRef.current.get(id);
+      if (!p) return;
       const sig = pageEditSignature(p);
-      if (thumbSigRef.current[p.id] && thumbSigRef.current[p.id] !== sig) {
-        failedThumbIdsRef.current.delete(p.id);
-        enqueueThumbnail(p.id);
+      if (thumbSigsRef.current[id] && thumbSigsRef.current[id] !== sig) {
+        thumbClearFailedKey(id);
+        thumbEnqueueKey(id);
       }
-    }
-  }, [pages, loadThumbs, enqueueThumbnail]);
-
-  React.useEffect(() => {
-    if (!loadThumbs || !isTauriRuntime() || typeof IntersectionObserver === "undefined") {
-      observerRef.current?.disconnect();
-      observerRef.current = null;
-      return;
-    }
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          const id = (entry.target as HTMLElement).dataset.pageId;
-          if (!id) continue;
-          if (entry.isIntersecting) {
-            visibleIdsRef.current.add(id);
-            enqueueThumbnail(id);
-          } else {
-            visibleIdsRef.current.delete(id);
-            queuedSetRef.current.delete(id);
-          }
-        }
-      },
-      { rootMargin: "320px 0px" },
-    );
-
-    observerRef.current = observer;
-    for (const el of cardRefs.current.values()) {
-      observer.observe(el);
-    }
-
-    return () => {
-      observer.disconnect();
-      if (observerRef.current === observer) {
-        observerRef.current = null;
-      }
-    };
-  }, [loadThumbs, enqueueThumbnail]);
-
-  const registerCardRef = React.useCallback((id: string, el: HTMLDivElement | null) => {
-    const prevEl = cardRefs.current.get(id);
-    if (prevEl && prevEl !== el) {
-      observerRef.current?.unobserve(prevEl);
-    }
-    if (el) {
-      cardRefs.current.set(id, el);
-      observerRef.current?.observe(el);
-    } else {
-      cardRefs.current.delete(id);
-      visibleIdsRef.current.delete(id);
-      queuedSetRef.current.delete(id);
-    }
-  }, []);
-
-  const updateVisibleRange = React.useCallback(() => {
-    const gridEl = gridOuterRef.current;
-    if (!gridEl) return;
-    const scrollEl = gridEl.closest("main");
-    const gridRect = gridEl.getBoundingClientRect();
-    const scrollRectTop = scrollEl ? scrollEl.getBoundingClientRect().top : 0;
-    const viewportHeight = scrollEl ? scrollEl.clientHeight : window.innerHeight || 0;
-
-    const next = computeVisibleRowRange({
-      totalItems: pagesRef.current.length,
-      gridCols: gridColsRef.current,
-      rowStride: rowStrideRef.current,
-      gridRectTop: gridRect.top,
-      scrollRectTop,
-      viewportHeight,
-      overscanRows: 3,
     });
-
-    setVisibleRange((prev) =>
-      prev.startRow === next.startRow && prev.endRow === next.endRow
-        ? prev
-        : { startRow: next.startRow, endRow: next.endRow },
-    );
-  }, []);
-
-  React.useLayoutEffect(() => {
-    if (pages.length === 0) return;
-    const firstCard = cardRefs.current.values().next().value as HTMLDivElement | undefined;
-    if (firstCard && firstCard.offsetHeight > 0) {
-      const measured = firstCard.offsetHeight;
-      if (Math.abs(measured - cardHeight) >= 1) {
-        setCardHeight(measured);
-      }
-    }
-    updateVisibleRange();
-  }, [pages.length, gridCols, loadThumbs, showBookmarks, cardHeight, updateVisibleRange]);
-
-  React.useEffect(() => {
-    const gridEl = gridOuterRef.current;
-    if (!gridEl) return;
-    const scrollEl = gridEl.closest("main");
-    let rafId: number | null = null;
-
-    const onScrollOrResize = () => {
-      if (rafId !== null) return;
-      rafId = window.requestAnimationFrame(() => {
-        rafId = null;
-        updateVisibleRange();
-      });
-    };
-
-    scrollEl?.addEventListener("scroll", onScrollOrResize, { passive: true });
-    window.addEventListener("resize", onScrollOrResize);
-
-    let ro: ResizeObserver | null = null;
-    if (typeof ResizeObserver !== "undefined" && scrollEl) {
-      ro = new ResizeObserver(onScrollOrResize);
-      ro.observe(scrollEl);
-    }
-
-    return () => {
-      if (rafId !== null) window.cancelAnimationFrame(rafId);
-      scrollEl?.removeEventListener("scroll", onScrollOrResize);
-      window.removeEventListener("resize", onScrollOrResize);
-      ro?.disconnect();
-    };
-  }, [pages.length, updateVisibleRange]);
+  }, [pages, loadThumbs, thumbVisibleKeysRef, thumbSigsRef, thumbClearFailedKey, thumbEnqueueKey]);
 
   const resolveFullResSrc = React.useCallback(
     (page: PageDraft | null): string => {
       if (!page) return "";
       const lower = page.source.path.toLowerCase();
-      // Animated images (GIF / WebP / APNG) must use native file URL so WebView plays animation
       if (
         page.source.kind === "animated_frame" ||
         lower.endsWith(".gif") ||
@@ -766,16 +410,15 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
           if (isTauriRuntime()) return convertFileSrc(page.source.path);
         }
       }
-      return thumbCache[page.id] || "";
+      return thumbQueue.thumbs[page.id] || "";
     },
-    [hiResCache, thumbCache],
+    [hiResCache, thumbQueue.thumbs],
   );
 
-  // Lazy-decode higher-res (1600px) when opening modal for formats WebView can't load natively (AVIF/TIFF/Animated)
   React.useEffect(() => {
     const activeId = editingPageId || previewPageId;
     if (!activeId || !isTauriRuntime()) return;
-    const page = pages.find((p) => p.id === activeId);
+    const page = pagesByIdRef.current.get(activeId) ?? pages.find((p) => p.id === activeId);
     if (!page || hiResCache[page.id]) return;
     const lower = page.source.path.toLowerCase();
     const needsRustDecode =
@@ -792,9 +435,7 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
           setHiResCache((prev) => ({ ...prev, [page.id]: `data:image/png;base64,${b64}` }));
         }
       })
-      .catch(() => {
-        // fallback to 360px thumb
-      });
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
@@ -809,10 +450,9 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
     return () => window.removeEventListener("keydown", onKey);
   }, [previewPageId]);
 
-  // Render full-resolution baked preview whenever user opens an edited page in the modal
   React.useEffect(() => {
     if (!previewPageId || !isTauriRuntime()) return;
-    const page = pages.find((p) => p.id === previewPageId);
+    const page = pagesByIdRef.current.get(previewPageId) ?? pages.find((p) => p.id === previewPageId);
     if (!page || !hasPageEdits(page)) return;
     const sig = pageEditSignature(page);
     const cacheKey = `${page.id}:${sig}`;
@@ -821,25 +461,20 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
     let cancelled = false;
     void renderPageDraftPreviewFile(page, 1800)
       .then((filePath) => {
-        if (cancelled) return;
-        const url = convertFileSrc(filePath);
-        setEditedPreviewCache((prev) => ({ ...prev, [cacheKey]: url }));
+        if (!cancelled) {
+          setEditedPreviewCache((prev) => ({ ...prev, [cacheKey]: convertFileSrc(filePath) }));
+        }
       })
-      .catch(() => {
-        // Ignore transient preview errors; falls back to thumb/source
-      });
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
   }, [previewPageId, pages, editedPreviewCache]);
 
-  // Global Ctrl+Z undo for page operations when not editing inside canvas or inputs
   React.useEffect(() => {
     const onUndoKey = (e: KeyboardEvent) => {
       if (editingPageId) return;
-      if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.key.toLowerCase() !== "z") {
-        return;
-      }
+      if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.key.toLowerCase() !== "z") return;
       const target = e.target as HTMLElement | null;
       if (
         target &&
@@ -908,7 +543,7 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
         setScanProgress(null);
       }
     },
-    [animatedPolicy],
+    [animatedPolicy, notifyImported, t.common],
   );
 
   React.useEffect(() => {
@@ -917,7 +552,7 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
     void appendScanPaths(droppedBatch.paths, false);
   }, [droppedBatch, appendScanPaths]);
 
-  const handlePickFiles = async () => {
+  const handlePickFiles = React.useCallback(async () => {
     setErrorMsg(null);
     try {
       const selected = await pickFiles({
@@ -935,9 +570,9 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
     } catch (e) {
       setErrorMsg(String(e));
     }
-  };
+  }, [appendScanPaths, t.image2pdf.pickFilesDialog]);
 
-  const handlePickFolder = async () => {
+  const handlePickFolder = React.useCallback(async () => {
     setErrorMsg(null);
     try {
       const dir = await pickDirectory(t.image2pdf.pickFolderDialog);
@@ -946,64 +581,124 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
     } catch (e) {
       setErrorMsg(String(e));
     }
-  };
+  }, [appendScanPaths, t.image2pdf.pickFolderDialog]);
 
-  const reorderPage = React.useCallback(
-    (fromIdx: number, toIdx: number) => {
+  const reorderGroupPages = React.useCallback(
+    (draggedId: string, insertAtIndex: number) => {
       const current = pagesStateRef.current;
-      if (
-        fromIdx === toIdx ||
-        fromIdx < 0 ||
-        toIdx < 0 ||
-        fromIdx >= current.length ||
-        toIdx >= current.length
-      ) {
-        return;
-      }
+      const next = reorderSelectedPages(
+        current,
+        selectedPageIdsRef.current,
+        draggedId,
+        insertAtIndex,
+      );
+      if (next === current) return;
       pushUndoSnapshot();
       setSortMode("manual");
-      setPages((prev) => {
-        if (
-          fromIdx === toIdx ||
-          fromIdx < 0 ||
-          toIdx < 0 ||
-          fromIdx >= prev.length ||
-          toIdx >= prev.length
-        ) {
-          return prev;
-        }
-        const next = [...prev];
-        const [item] = next.splice(fromIdx, 1);
-        next.splice(toIdx, 0, item);
-        return next;
-      });
+      setPages(next);
     },
     [pushUndoSnapshot, setSortMode],
   );
 
-  const rotatePage = React.useCallback(
-    (id: string) => {
+  const rotatePageBy = React.useCallback(
+    (id: string, deltaDeg: number) => {
       pushUndoSnapshot();
       setPages((prev) =>
-        prev.map((p) => (p.id === id ? { ...p, rotation_deg: (p.rotation_deg + 90) % 360 } : p)),
+        prev.map((p) =>
+          p.id === id ? { ...p, rotation_deg: (((p.rotation_deg + deltaDeg) % 360) + 360) % 360 } : p,
+        ),
       );
     },
     [pushUndoSnapshot],
   );
 
+  const rotatePage = React.useCallback(
+    (id: string) => {
+      rotatePageBy(id, 90);
+    },
+    [rotatePageBy],
+  );
+
+  const copyTextWithToast = React.useCallback(
+    async (text: string) => {
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(text);
+        }
+        notifyImported(t.common.copiedToClipboard(text));
+      } catch (e) {
+        setErrorMsg(String(e));
+      }
+    },
+    [notifyImported, t.common],
+  );
+
+  const handleCopyImagePath = React.useCallback(
+    (path: string) => {
+      void copyTextWithToast(path);
+    },
+    [copyTextWithToast],
+  );
+
+  const handleCopyFolderPath = React.useCallback(
+    (path: string) => {
+      const idx = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+      const folder = idx > 0 ? path.slice(0, idx) : path;
+      void copyTextWithToast(folder);
+    },
+    [copyTextWithToast],
+  );
+
+  const handleAttachBookmarkAtPage = React.useCallback(
+    (page: PageDraft, pageIndex: number) => {
+      const cleanTitle = page.label.replace(/\.[^.]+$/, "").trim() || t.bookmarks.defaultRootTitle(bookmarksStateRef.current.length + 1);
+      pushUndoSnapshot();
+      setBookmarks((prev) => [
+        ...prev,
+        {
+          title: cleanTitle,
+          target_page_index: pageIndex,
+          children: [],
+        },
+      ]);
+      setShowBookmarks(true);
+    },
+    [pushUndoSnapshot, setShowBookmarks, t.bookmarks],
+  );
+
+  const handleSelectSingleFromContext = React.useCallback((pageId: string) => {
+    setSelectionMode(true);
+    setSelectedPageIds((prev) => {
+      const next = new Set(prev);
+      next.add(pageId);
+      return next;
+    });
+    lastSelectedAnchorIdRef.current = pageId;
+  }, []);
+
+  const handleCardContextMenu = React.useCallback(
+    (_e: React.MouseEvent<HTMLDivElement>, pageId: string, idx: number) => {
+      setContextMenu({ pageId, pageIndex: idx, x: _e.clientX, y: _e.clientY });
+    },
+    [],
+  );
+
   const removePage = React.useCallback(
     (id: string) => {
+      const currentPages = pagesStateRef.current;
+      const removedIdx = pageIndexByIdRef.current.get(id) ?? currentPages.findIndex((p) => p.id === id);
       pushUndoSnapshot();
-      visibleIdsRef.current.delete(id);
-      queuedSetRef.current.delete(id);
-      failedThumbIdsRef.current.delete(id);
-      delete thumbCacheRef.current[id];
-      delete thumbSigRef.current[id];
+      thumbQueue.remapCache((k) => (k === id ? null : k));
       setPages((prev) => prev.filter((p) => p.id !== id));
-      setThumbCache((prev) => {
-        if (!(id in prev)) return prev;
-        const next = { ...prev };
-        delete next[id];
+      if (autoUpdateBookmarksRef.current && removedIdx !== -1) {
+        setBookmarks((prev) =>
+          remapBookmarksAfterPageRemoval(prev, currentPages.length, new Set([removedIdx])),
+        );
+      }
+      setSelectedPageIds((prev) => {
+        if (!prev.has(id)) return prev;
+        const next = new Set(prev);
+        next.delete(id);
         return next;
       });
       setHiResCache((prev) => {
@@ -1013,8 +708,109 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
         return next;
       });
     },
-    [pushUndoSnapshot],
+    [pushUndoSnapshot, thumbQueue],
   );
+
+  const exitSelectionMode = React.useCallback(() => {
+    setSelectionMode(false);
+    setSelectedPageIds(new Set());
+    setMissingSourcePaths(new Set());
+    setDraggingPageIds(new Set());
+    lastSelectedAnchorIdRef.current = null;
+  }, []);
+
+  const toggleSelectionPage = React.useCallback((id: string) => {
+    setSelectionMode(true);
+    setSelectedPageIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+    lastSelectedAnchorIdRef.current = id;
+  }, []);
+
+  const selectRangeToIndex = React.useCallback((targetIdx: number) => {
+    const list = pagesStateRef.current;
+    const targetPage = list[targetIdx];
+    if (!targetPage) return;
+    const anchorId = lastSelectedAnchorIdRef.current;
+    const anchorIdx = anchorId
+      ? (pageIndexByIdRef.current.get(anchorId) ?? list.findIndex((p) => p.id === anchorId))
+      : -1;
+    const start = anchorIdx >= 0 ? Math.min(anchorIdx, targetIdx) : targetIdx;
+    const end = anchorIdx >= 0 ? Math.max(anchorIdx, targetIdx) : targetIdx;
+    setSelectionMode(true);
+    setSelectedPageIds((prev) => {
+      const next = new Set(prev);
+      for (let i = start; i <= end; i++) {
+        if (list[i]) next.add(list[i].id);
+      }
+      return next;
+    });
+    lastSelectedAnchorIdRef.current = targetPage.id;
+  }, []);
+
+  const rotateSelectedPages = React.useCallback(() => {
+    const selected = selectedPageIdsRef.current;
+    if (selected.size === 0) return;
+    pushUndoSnapshot();
+    setPages((prev) =>
+      prev.map((p) =>
+        selected.has(p.id) ? { ...p, rotation_deg: (p.rotation_deg + 90) % 360 } : p,
+      ),
+    );
+  }, [pushUndoSnapshot]);
+
+  const deleteSelectedPages = React.useCallback(() => {
+    const selected = selectedPageIdsRef.current;
+    if (selected.size === 0) return;
+    const currentPages = pagesStateRef.current;
+    const removedIndices = new Set<number>();
+    currentPages.forEach((p, idx) => {
+      if (selected.has(p.id)) removedIndices.add(idx);
+    });
+    if (removedIndices.size === 0) return;
+
+    pushUndoSnapshot();
+    thumbQueue.remapCache((k) => (selected.has(k) ? null : k));
+    setPages((prev) => prev.filter((p) => !selected.has(p.id)));
+    if (autoUpdateBookmarksRef.current) {
+      setBookmarks((prev) =>
+        remapBookmarksAfterPageRemoval(prev, currentPages.length, removedIndices),
+      );
+    }
+    setHiResCache((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      selected.forEach((id) => {
+        if (id in next) {
+          delete next[id];
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+    setSelectionMode(false);
+    setSelectedPageIds(new Set());
+    setMissingSourcePaths(new Set());
+    setDraggingPageIds(new Set());
+    lastSelectedAnchorIdRef.current = null;
+  }, [pushUndoSnapshot, thumbQueue]);
+
+  React.useEffect(() => {
+    if (!selectionMode || previewPageId || editingPageId) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        exitSelectionMode();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectionMode, previewPageId, editingPageId, exitSelectionMode]);
 
   const handleSortModeChange = React.useCallback(
     (nextMode: ImageSortMode) => {
@@ -1045,13 +841,24 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
     setEditingPageId(id);
   }, []);
 
-  const switchMarginUnit = (nextUnit: MarginUnit) => {
-    if (nextUnit === marginUnit) return;
-    const converted =
-      nextUnit === "mm" ? marginValue / PT_PER_MM : marginValue * PT_PER_MM;
-    setMarginValue(Math.round(converted * 10) / 10);
-    setMarginUnit(nextUnit);
-  };
+  const switchMarginUnit = React.useCallback(
+    (nextUnit: MarginUnit) => {
+      if (nextUnit === marginUnit) return;
+      const converted = nextUnit === "mm" ? marginValue / PT_PER_MM : marginValue * PT_PER_MM;
+      setMarginValue(Math.round(converted * 10) / 10);
+      setMarginUnit(nextUnit);
+    },
+    [marginUnit, marginValue, setMarginUnit, setMarginValue],
+  );
+
+  const { resetAll: resetThumbQueue } = thumbQueue;
+  const handleChangeLoadThumbs = React.useCallback(
+    (checked: boolean) => {
+      setLoadThumbs(checked);
+      if (!checked) resetThumbQueue();
+    },
+    [resetThumbQueue, setLoadThumbs],
+  );
 
   const buildPageBackground = (): PageBackground => {
     switch (bgMode) {
@@ -1061,10 +868,8 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
         return { kind: "white" };
       case "black":
         return { kind: "black" };
-      case "custom": {
-        const rgb = parseHexRgb(bgCustomHex);
-        return { kind: "custom", ...rgb };
-      }
+      case "custom":
+        return { kind: "custom", ...parseHexRgb(bgCustomHex) };
     }
   };
 
@@ -1073,7 +878,6 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
       const marginPt =
         marginUnit === "mm" ? Math.max(0, marginValue) * PT_PER_MM : Math.max(0, marginValue);
       const background = buildPageBackground();
-
       const layout: PageLayoutPolicy =
         layoutMode === "original_size"
           ? { mode: "original_size", dpi }
@@ -1087,9 +891,11 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
         output_path: outPath,
         layout,
         jpeg_quality: jpegQuality,
-        lossless_passthrough: losslessPassthrough,
+        lossless_passthrough: exportMode === "fast" ? true : losslessPassthrough,
         animated_policy: animatedPolicy,
+        export_mode: exportMode,
         max_mb:
+          exportMode !== "fast" &&
           splitMode === "max_mb" &&
           maxMb.trim() !== "" &&
           !Number.isNaN(parsedMax) &&
@@ -1097,6 +903,7 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
             ? parsedMax
             : null,
         max_pages_per_file:
+          exportMode !== "fast" &&
           splitMode === "max_pages_per_file" &&
           Number.isFinite(parsedMaxPages) &&
           parsedMaxPages > 0
@@ -1114,13 +921,15 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
         "success",
       );
     } catch (e) {
-      const msg = String(e);
+      const rawMsg = String(e);
+      const cancelled = isJobCancelledError(rawMsg);
+      const msg = cancelled ? t.common.jobCancelledMsg : rawMsg;
       setErrorMsg(msg);
       onFinishJob(
         t.shell.nav.image2pdf.label,
         [],
         msg,
-        msg.toLowerCase().includes("cancel") || msg.includes("huy") ? "cancelled" : "error",
+        cancelled ? "cancelled" : "error",
       );
     }
   };
@@ -1129,6 +938,20 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
     if (pages.length === 0 || busy) return;
     setErrorMsg(null);
     try {
+      const uniquePaths = Array.from(new Set(pages.map((p) => p.source.path)));
+      const missing = await checkMissingFiles(uniquePaths);
+      if (missing.length > 0) {
+        setMissingSourcePaths(new Set(missing));
+        const samples = missing
+          .slice(0, 3)
+          .map((p) => p.split(/[\\/]/).pop() ?? p);
+        setErrorMsg(t.image2pdf.missingFilesError(missing.length, samples));
+        return;
+      }
+      if (missingSourcePaths.size > 0) {
+        setMissingSourcePaths(new Set());
+      }
+
       let outPath: string | null = defaultTargetPath;
       if (!outPath) {
         outPath = await pickSaveFile({
@@ -1160,24 +983,53 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
       await executeExportPdf(pending.outPath);
       return;
     }
-    const uniquePath = await resolveUniqueExportPath(pending.outPath);
-    await executeExportPdf(uniquePath);
+    await executeExportPdf(await resolveUniqueExportPath(pending.outPath));
   };
-
-  const previewPage = pages.find((p) => p.id === previewPageId) ?? null;
-  const editingPage = pages.find((p) => p.id === editingPageId) ?? null;
 
   const handleCardPointerDown = React.useCallback(
     (e: React.PointerEvent<HTMLDivElement>, idx: number) => {
       if (e.button !== 0) return;
       if ((e.target as HTMLElement).closest("button")) return;
 
+      const targetPage = pagesStateRef.current[idx];
+      if (!targetPage) return;
+
+      const hasModifier = e.ctrlKey || e.metaKey || e.shiftKey;
+      const inSelectionMode = selectionModeRef.current;
+      const downEventTs = e.timeStamp;
+      const prevDown = lastPointerDownRef.current;
+      const isLikelyDoubleClick =
+        e.detail >= 2 ||
+        (prevDown.pageId === targetPage.id &&
+          downEventTs >= prevDown.timeStamp &&
+          downEventTs - prevDown.timeStamp < 420);
+      lastPointerDownRef.current = { pageId: targetPage.id, timeStamp: downEventTs };
+
       const startX = e.clientX;
       const startY = e.clientY;
       let dragging = false;
+      let holdTriggered = false;
+      let movedTooFar = false;
       let latestX = startX;
       let latestY = startY;
       let rafId: number | null = null;
+      let holdTimerId: number | null = null;
+
+      if (!hasModifier && !inSelectionMode && !isLikelyDoubleClick) {
+        holdTimerId = window.setTimeout(() => {
+          holdTimerId = null;
+          if (movedTooFar || dragging) return;
+          holdTriggered = true;
+          suppressClickUntilRef.current = performance.now() + 300;
+          setSelectionMode(true);
+          setSelectedPageIds((prev) => {
+            const next = new Set(prev);
+            next.add(targetPage.id);
+            return next;
+          });
+          lastSelectedAnchorIdRef.current = targetPage.id;
+        }, 400);
+      }
 
       const computeInsert = (clientX: number, clientY: number): number | null => {
         const gridEl = gridOuterRef.current;
@@ -1189,10 +1041,10 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
           gridLeft: rect.left,
           gridTop: rect.top,
           gridWidth: rect.width,
-          gridCols: gridColsRef.current,
+          gridCols: grid.colsRef.current,
           gapPx: IMAGE_GRID_GAP_PX,
-          rowStride: rowStrideRef.current,
-          totalItems: pagesRef.current.length,
+          rowStride: grid.rowStrideRef.current,
+          totalItems: pagesStateRef.current.length,
         });
       };
 
@@ -1233,22 +1085,39 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
       const onMove = (ev: PointerEvent) => {
         latestX = ev.clientX;
         latestY = ev.clientY;
+        if (Math.hypot(latestX - startX, latestY - startY) < 5) return;
+        movedTooFar = true;
+        if (holdTimerId !== null) {
+          window.clearTimeout(holdTimerId);
+          holdTimerId = null;
+        }
+        // Khi giữ phím bổ trợ hoặc đang bật hold-menu thì không kích hoạt kéo thả.
+        if (hasModifier || holdTriggered) return;
         if (!dragging) {
-          if (Math.hypot(latestX - startX, latestY - startY) < 5) return;
           dragging = true;
           suppressClickUntilRef.current = performance.now() + 300;
           initialGhostPosRef.current = { x: latestX + 14, y: latestY + 14 };
+          const selectedSet = selectedPageIdsRef.current;
+          const movingIds =
+            inSelectionMode && selectedSet.has(targetPage.id) && selectedSet.size > 1
+              ? new Set(selectedSet)
+              : new Set([targetPage.id]);
           setDragIndex(idx);
+          setDraggingPageIds(movingIds);
         }
         if (rafId === null) {
           rafId = window.requestAnimationFrame(tickDrag);
         }
       };
 
-      const onUp = () => {
+      const onUp = (ev: PointerEvent) => {
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
         window.removeEventListener("pointercancel", onUp);
+        if (holdTimerId !== null) {
+          window.clearTimeout(holdTimerId);
+          holdTimerId = null;
+        }
         if (rafId !== null) {
           window.cancelAnimationFrame(rafId);
           rafId = null;
@@ -1257,13 +1126,38 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
         if (dragging) {
           suppressClickUntilRef.current = performance.now() + 250;
           const targetInsert = computeInsert(latestX, latestY) ?? insertAtRef.current;
-          if (targetInsert !== null && targetInsert !== idx && targetInsert !== idx + 1) {
-            const toIdx = targetInsert > idx ? targetInsert - 1 : targetInsert;
-            reorderPage(idx, toIdx);
+          if (targetInsert !== null) {
+            reorderGroupPages(targetPage.id, targetInsert);
           }
           insertAtRef.current = null;
           setDragIndex(null);
+          setDraggingPageIds(new Set());
           setInsertAt(null);
+          return;
+        }
+
+        if (holdTriggered) {
+          // Chống nhận nhầm click/double-click thành hold khi main thread bị lag >= 400ms.
+          const physicalHoldMs = ev.timeStamp - downEventTs;
+          if (physicalHoldMs > 0 && physicalHoldMs < 350) {
+            suppressClickUntilRef.current = 0;
+            setSelectionMode(false);
+            setSelectedPageIds((prev) => {
+              if (!prev.has(targetPage.id)) return prev;
+              const next = new Set(prev);
+              next.delete(targetPage.id);
+              return next;
+            });
+            lastSelectedAnchorIdRef.current = null;
+          }
+          return;
+        }
+        if (movedTooFar) return;
+
+        if (ev.shiftKey) {
+          selectRangeToIndex(idx);
+        } else if (ev.ctrlKey || ev.metaKey || inSelectionMode) {
+          toggleSelectionPage(targetPage.id);
         }
       };
 
@@ -1271,7 +1165,7 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
       window.addEventListener("pointerup", onUp);
       window.addEventListener("pointercancel", onUp);
     },
-    [reorderPage],
+    [grid.colsRef, grid.rowStrideRef, reorderGroupPages, selectRangeToIndex, toggleSelectionPage],
   );
 
   const handleCardDoubleClick = React.useCallback(
@@ -1283,70 +1177,93 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
     [],
   );
 
+  const handleClearList = () => {
+    thumbQueue.resetAll();
+    undoStackRef.current = [];
+    setUndoCount(0);
+    importOrderMapRef.current = {};
+    nextImportOrderRef.current = 1;
+    pagesByIdRef.current.clear();
+    pageIndexByIdRef.current.clear();
+    setPages([]);
+    setBookmarks([]);
+    setSelectionMode(false);
+    setSelectedPageIds(new Set());
+    setMissingSourcePaths(new Set());
+    setDraggingPageIds(new Set());
+    lastSelectedAnchorIdRef.current = null;
+    setHiResCache({});
+    setEditedPreviewCache({});
+    setPreviewPageId(null);
+    setEditingPageId(null);
+    void clearImagePreviewCache();
+  };
+
+  const pageBookmarkMap = React.useMemo(() => buildPageBookmarkMap(bookmarks), [bookmarks]);
+  const previewPage = previewPageId
+    ? (pagesByIdRef.current.get(previewPageId) ?? pages.find((p) => p.id === previewPageId) ?? null)
+    : null;
+  const editingPage = editingPageId
+    ? (pagesByIdRef.current.get(editingPageId) ?? pages.find((p) => p.id === editingPageId) ?? null)
+    : null;
+  const visiblePages = pages.slice(grid.startIdx, grid.endIdxExclusive);
+  const isNoOpInsert =
+    dragIndex !== null &&
+    draggingPageIds.size <= 1 &&
+    insertAt !== null &&
+    (insertAt === dragIndex || insertAt === dragIndex + 1);
+
+  const pdfEstimateText = React.useMemo(() => {
+    if (pages.length === 0) return null;
+    const est = estimateImage2PdfOutput({
+      pages,
+      exportMode,
+      losslessPassthrough,
+      jpegQuality,
+      splitMode,
+      maxMb,
+      maxPagesPerFile,
+    });
+    if (est.estimatedBytes <= 0) return null;
+    return t.common.estimatedOutputSummary(formatBytes(est.estimatedBytes), est.estimatedFiles);
+  }, [pages, exportMode, losslessPassthrough, jpegQuality, splitMode, maxMb, maxPagesPerFile, t.common]);
+
+  const contextMenuPage = contextMenu
+    ? (pagesByIdRef.current.get(contextMenu.pageId) ??
+        pages.find((p) => p.id === contextMenu.pageId) ??
+        null)
+    : null;
+
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-bold text-[#212529]">{t.image2pdf.title}</h1>
-          <p className="text-sm text-[#6C757D]">{t.image2pdf.subtitle}</p>
-        </div>
-        <div className="flex items-center gap-2">
-          {pages.length > 0 && (
+      <ViewHeader
+        title={t.image2pdf.title}
+        subtitle={t.image2pdf.subtitle}
+        actions={
+          <>
+            {pages.length > 0 && (
+              <button
+                type="button"
+                onClick={handleClearList}
+                className="rounded-[4px] border border-[#CED4DA] bg-white px-3.5 py-2 text-sm font-semibold text-[#DC3545] hover:bg-[#F8D7DA]"
+              >
+                {t.image2pdf.clearList}
+              </button>
+            )}
             <button
               type="button"
-              onClick={() => {
-                thumbGenRef.current += 1;
-                undoStackRef.current = [];
-                setUndoCount(0);
-                importOrderMapRef.current = {};
-                nextImportOrderRef.current = 1;
-                pagesByIdRef.current.clear();
-                cardRefs.current.clear();
-                visibleIdsRef.current.clear();
-                queuedSetRef.current.clear();
-                queuedOrderRef.current = [];
-                failedThumbIdsRef.current.clear();
-                inFlightIdsRef.current.clear();
-                pendingThumbBatchRef.current = {};
-                pendingMetaBatchRef.current = {};
-                if (thumbFlushTimerRef.current !== null) {
-                  window.clearTimeout(thumbFlushTimerRef.current);
-                  thumbFlushTimerRef.current = null;
-                }
-                thumbCacheRef.current = {};
-                thumbSigRef.current = {};
-                setPages([]);
-                setBookmarks([]);
-                setThumbCache({});
-                setThumbMetaCache({});
-                setHiResCache({});
-                setEditedPreviewCache({});
-                setPreviewPageId(null);
-                setEditingPageId(null);
-                void clearImagePreviewCache();
-              }}
-              className="rounded-[4px] border border-[#CED4DA] bg-white px-3.5 py-2 text-sm font-semibold text-[#DC3545] hover:bg-[#F8D7DA]"
+              disabled={pages.length === 0 || busy}
+              onClick={() => void handleExportPdf()}
+              className="knit-btn-primary flex items-center gap-1.5 px-4 py-2 text-sm disabled:opacity-50"
             >
-              {t.image2pdf.clearList}
+              <FileOutput className="h-4 w-4" />
+              {t.image2pdf.exportBtn(pages.length)}
             </button>
-          )}
-          <button
-            type="button"
-            disabled={pages.length === 0 || busy}
-            onClick={() => void handleExportPdf()}
-            className="flex items-center gap-1.5 rounded-[4px] bg-[#007BFF] px-4 py-2 text-sm font-semibold text-white hover:bg-[#0069D9] disabled:opacity-50"
-          >
-            <FileOutput className="h-4 w-4" />
-            {t.image2pdf.exportBtn(pages.length)}
-          </button>
-        </div>
-      </div>
+          </>
+        }
+      />
 
-      {errorMsg && (
-        <div className="rounded-[4px] border border-[#F5C6CB] bg-[#F8D7DA] px-3.5 py-2.5 text-sm text-[#721C24]">
-          {errorMsg}
-        </div>
-      )}
+      <ErrorBanner message={errorMsg} />
 
       <ExportFilenameControl
         value={exportFilename}
@@ -1354,6 +1271,7 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
         placeholder="output.pdf"
         defaultExportDir={defaultExportDir}
         existsAtDefaultDir={existsAtDefaultDir}
+        estimateText={pdfEstimateText}
       />
 
       {scanWarnings.length > 0 && (
@@ -1379,197 +1297,42 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
         </div>
       )}
 
-      {/* Configuration Bar */}
-      <div className="grid grid-cols-1 gap-3.5 rounded-[4px] border border-[#DEE2E6] bg-white p-4 md:grid-cols-2 xl:grid-cols-4">
-        <div className="space-y-2">
-          <label className="block text-xs font-semibold uppercase text-[#6C757D]">
-            {t.image2pdf.layoutHeading}
-          </label>
-          <Select
-            ariaLabel={t.image2pdf.layoutHeading}
-            value={layoutMode}
-            onChange={(val) => setLayoutMode(val as typeof layoutMode)}
-            className="w-full"
-            options={[
-              { value: "original_size", label: t.image2pdf.layoutOriginal },
-              { value: "fit_a4", label: t.image2pdf.layoutA4 },
-              { value: "fit_letter", label: t.image2pdf.layoutLetter },
-            ]}
-          />
-
-          {layoutMode === "original_size" ? (
-            <label className="flex items-center justify-between gap-2 text-xs text-[#6C757D]">
-              <span>{t.image2pdf.dpiLabel}</span>
-              <NumberInput
-                ariaLabel={t.image2pdf.dpiLabel}
-                size="sm"
-                min={36}
-                max={600}
-                value={dpi}
-                onChange={setDpi}
-                className="w-24"
-              />
-            </label>
-          ) : (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-2 text-xs text-[#6C757D]">
-                <span>{t.image2pdf.paddingLabel}</span>
-                <div className="flex items-center gap-1">
-                  <NumberInput
-                    ariaLabel={t.image2pdf.paddingLabel}
-                    size="sm"
-                    min={0}
-                    max={marginUnit === "mm" ? 60 : 170}
-                    step={marginUnit === "mm" ? 1 : 2}
-                    value={marginValue}
-                    onChange={setMarginValue}
-                    className="w-20"
-                  />
-                  <Select
-                    ariaLabel="Padding unit"
-                    size="sm"
-                    value={marginUnit}
-                    onChange={(val) => switchMarginUnit(val as MarginUnit)}
-                    className="font-mono-code"
-                    options={[
-                      { value: "mm", label: "mm" },
-                      { value: "pt", label: "pt" },
-                    ]}
-                  />
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between gap-2 text-xs text-[#6C757D]">
-                <span>{t.image2pdf.bgColorLabel}</span>
-                <div className="flex items-center gap-1.5">
-                  <Select
-                    ariaLabel={t.image2pdf.bgColorLabel}
-                    size="sm"
-                    value={bgMode}
-                    onChange={(val) => setBgMode(val as BgMode)}
-                    options={[
-                      { value: "white", label: t.image2pdf.bgWhite },
-                      { value: "black", label: t.image2pdf.bgBlack },
-                      { value: "transparent", label: t.image2pdf.bgTransparent },
-                      { value: "custom", label: t.image2pdf.bgCustom },
-                    ]}
-                  />
-                  {bgMode === "custom" && (
-                    <input
-                      type="color"
-                      value={bgCustomHex}
-                      onChange={(e) => setBgCustomHex(e.target.value)}
-                      className="knit-control-sm w-9 cursor-pointer rounded-[4px] border border-[#CED4DA] bg-white p-0.5"
-                      title={bgCustomHex}
-                    />
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="space-y-2">
-          <label className="block text-xs font-semibold uppercase text-[#6C757D]">
-            {t.image2pdf.qualityHeading}
-          </label>
-          <label className="flex items-center gap-2 text-sm text-[#212529]">
-            <input
-              type="checkbox"
-              checked={losslessPassthrough}
-              onChange={(e) => setLosslessPassthrough(e.target.checked)}
-            />
-            {t.image2pdf.losslessLabel}
-          </label>
-          <label className="flex items-center justify-between gap-2 text-xs text-[#6C757D]">
-            <span>{t.image2pdf.jpegQualityLabel(jpegQuality)}</span>
-            <Slider
-              ariaLabel="JPEG Quality"
-              min={40}
-              max={100}
-              step={1}
-              value={jpegQuality}
-              onChange={setJpegQuality}
-              className="w-28"
-            />
-          </label>
-        </div>
-
-        <div className="space-y-2">
-          <label className="block text-xs font-semibold uppercase text-[#6C757D]">
-            {t.image2pdf.animatedHeading}
-          </label>
-          <Select
-            ariaLabel={t.image2pdf.animatedHeading}
-            value={animatedPolicy}
-            onChange={(val) => setAnimatedPolicy(val as AnimatedImagePolicy)}
-            className="w-full"
-            options={[
-              { value: "first_frame_only", label: t.image2pdf.animatedFirstFrame },
-              { value: "unpack_all_frames", label: t.image2pdf.animatedUnpackAll },
-            ]}
-          />
-        </div>
-
-        <div className="space-y-2">
-          <label className="block text-xs font-semibold uppercase text-[#6C757D]">
-            {t.image2pdf.splitMbHeading}
-          </label>
-          <Select
-            ariaLabel={t.image2pdf.splitMbHeading}
-            value={splitMode}
-            onChange={(val) =>
-              setSplitMode(val as "none" | "max_mb" | "max_pages_per_file")
-            }
-            className="w-full"
-            options={[
-              { value: "none", label: t.image2pdf.splitModeNone },
-              { value: "max_mb", label: t.image2pdf.splitModeMb },
-              { value: "max_pages_per_file", label: t.image2pdf.splitModePages },
-            ]}
-          />
-          {splitMode === "max_mb" && (
-            <>
-              <NumberInput
-                ariaLabel={t.image2pdf.splitModeMb}
-                min={0}
-                step={1}
-                value={maxMb.trim() !== "" && !Number.isNaN(Number(maxMb)) ? Number(maxMb) : 0}
-                onChange={(val) => setMaxMb(val > 0 ? String(val) : "")}
-                className="w-full"
-              />
-              <p className="text-[11px] text-[#6C757D]">{t.image2pdf.splitMbPlaceholder}</p>
-            </>
-          )}
-          {splitMode === "max_pages_per_file" && (
-            <>
-              <NumberInput
-                ariaLabel={t.image2pdf.splitModePages}
-                min={1}
-                step={1}
-                value={maxPagesPerFile}
-                onChange={(val) => setMaxPagesPerFile(Math.max(1, Math.round(val)))}
-                className="w-full"
-              />
-              <p className="text-[11px] text-[#6C757D]">{t.image2pdf.splitPagesPlaceholder}</p>
-            </>
-          )}
-          <label className="flex cursor-pointer items-center gap-2 pt-1 text-sm font-medium text-[#212529]">
-            <input
-              type="checkbox"
-              checked={loadThumbs}
-              onChange={(e) => setLoadThumbs(e.target.checked)}
-            />
-            <span>{t.image2pdf.loadThumbsLabel}</span>
-          </label>
-        </div>
-      </div>
+      <Image2PdfSettingsCard
+        layoutMode={layoutMode}
+        dpi={dpi}
+        marginValue={marginValue}
+        marginUnit={marginUnit}
+        bgMode={bgMode}
+        bgCustomHex={bgCustomHex}
+        exportMode={exportMode}
+        jpegQuality={jpegQuality}
+        losslessPassthrough={losslessPassthrough}
+        animatedPolicy={animatedPolicy}
+        splitMode={splitMode}
+        maxMb={maxMb}
+        maxPagesPerFile={maxPagesPerFile}
+        loadThumbs={loadThumbs}
+        onChangeLayoutMode={setLayoutMode}
+        onChangeDpi={setDpi}
+        onChangeMarginValue={setMarginValue}
+        onSwitchMarginUnit={switchMarginUnit}
+        onChangeBgMode={setBgMode}
+        onChangeBgCustomHex={setBgCustomHex}
+        onChangeExportMode={setExportMode}
+        onChangeJpegQuality={setJpegQuality}
+        onChangeLosslessPassthrough={setLosslessPassthrough}
+        onChangeAnimatedPolicy={setAnimatedPolicy}
+        onChangeSplitMode={setSplitMode}
+        onChangeMaxMb={setMaxMb}
+        onChangeMaxPagesPerFile={setMaxPagesPerFile}
+        onChangeLoadThumbs={handleChangeLoadThumbs}
+      />
 
       <Dropzone
         title={t.image2pdf.dropzoneTitle}
         description={t.image2pdf.dropzoneDesc}
-        onPickFiles={() => void handlePickFiles()}
-        onPickFolder={() => void handlePickFolder()}
+        onPickFiles={handlePickFiles}
+        onPickFolder={handlePickFolder}
         filesLabel={t.image2pdf.pickFilesLabel}
         folderLabel={t.image2pdf.pickFolderLabel}
         loading={scanningPaths}
@@ -1606,8 +1369,7 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
 
       {pages.length > 0 && (
         <div className="space-y-3">
-          {/* Grid Density, Auto Sort, Undo & Bookmark Toggle Toolbar (fixed full width) */}
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-[4px] border border-[#DEE2E6] bg-white px-3.5 py-2">
+          <div className="knit-card flex flex-wrap items-center justify-between gap-2 px-3.5 py-2">
             <div className="flex flex-wrap items-center gap-2 text-xs text-[#495057]">
               <GripVertical className="h-4 w-4 text-[#007BFF]" />
               <span className="text-[#6C757D]">{t.image2pdf.dragHint}</span>
@@ -1632,7 +1394,7 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
                     type="button"
                     onClick={handleToggleSortDir}
                     title={sortDir === "asc" ? t.image2pdf.sortAsc : t.image2pdf.sortDesc}
-                    className="knit-control-sm inline-flex items-center gap-1 rounded-[4px] border border-[#CED4DA] bg-[#F8F9FA] px-2 text-xs font-semibold text-[#343A40] hover:bg-[#E9ECEF]"
+                    className="knit-control-sm knit-btn-secondary inline-flex items-center gap-1 px-2 text-xs"
                   >
                     {sortDir === "asc" ? (
                       <ArrowUpAZ className="h-3.5 w-3.5 text-[#007BFF]" />
@@ -1647,33 +1409,53 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
                   disabled={undoCount === 0}
                   onClick={handleUndo}
                   title={t.image2pdf.undoTooltip}
-                  className="knit-control-sm inline-flex items-center gap-1 rounded-[4px] border border-[#CED4DA] bg-[#F8F9FA] px-2 text-xs font-semibold text-[#343A40] hover:bg-[#E9ECEF] disabled:cursor-not-allowed disabled:opacity-45"
+                  className="knit-control-sm knit-btn-secondary inline-flex items-center gap-1 px-2 text-xs disabled:cursor-not-allowed disabled:opacity-45"
                 >
                   <Undo2 className="h-3.5 w-3.5" />
                   <span>{t.image2pdf.undoBtn}</span>
                 </button>
               </div>
             </div>
-            <div className="flex flex-wrap items-center gap-2 text-xs text-[#495057]">
-              <span className="font-semibold">{t.image2pdf.gridColumnsLabel}</span>
-              {GRID_COL_OPTIONS.map((cols) => (
-                <button
-                  key={cols}
-                  type="button"
-                  onClick={() => setGridCols(cols)}
-                  className={`knit-control-sm rounded-[4px] border px-2.5 font-mono-code text-xs font-semibold ${
-                    gridCols === cols
-                      ? "border-[#007BFF] bg-[#007BFF] text-white"
-                      : "border-[#CED4DA] bg-[#F8F9FA] text-[#343A40] hover:bg-[#E9ECEF]"
-                  }`}
-                >
-                  {cols}
-                </button>
-              ))}
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (selectionMode) {
+                    exitSelectionMode();
+                  } else {
+                    setSelectionMode(true);
+                  }
+                }}
+                className={`knit-control-sm inline-flex items-center gap-1.5 rounded-[4px] border px-2.5 text-xs font-semibold ${
+                  selectionMode
+                    ? "border-[#007BFF] bg-[#007BFF] text-white"
+                    : "border-[#CED4DA] bg-white text-[#212529] hover:bg-[#F8F9FA]"
+                }`}
+              >
+                <CheckSquare className="h-3.5 w-3.5" />
+                <span>{t.image2pdf.selectModeBtn}</span>
+              </button>
+              <GridColumnSelector
+                label={t.image2pdf.gridColumnsLabel}
+                options={GRID_COL_OPTIONS}
+                value={gridCols}
+                onChange={setGridCols}
+              />
+              <CardSizeSelector value={cardSize} onChange={setCardSize} />
+              {bookmarks.length > 0 && (
+                <label className="flex cursor-pointer items-center gap-1.5 rounded-[4px] border border-[#DEE2E6] bg-[#F8F9FA] px-2 py-1 text-xs font-medium text-[#212529]">
+                  <input
+                    type="checkbox"
+                    checked={autoUpdateBookmarksOnDelete}
+                    onChange={(e) => setAutoUpdateBookmarksOnDelete(e.target.checked)}
+                  />
+                  <span>{t.image2pdf.autoUpdateBookmarksLabel}</span>
+                </label>
+              )}
               <button
                 type="button"
                 onClick={() => setShowBookmarks((v) => !v)}
-                className="knit-control-sm ml-1 inline-flex items-center gap-1.5 rounded-[4px] border border-[#CED4DA] bg-[#F8F9FA] px-2.5 text-xs font-semibold text-[#343A40] hover:bg-[#E9ECEF]"
+                className="knit-control-sm knit-btn-secondary ml-1 inline-flex items-center gap-1.5 px-2.5 text-xs"
               >
                 {showBookmarks ? (
                   <PanelRightClose className="h-3.5 w-3.5 text-[#007BFF]" />
@@ -1685,93 +1467,166 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
             </div>
           </div>
 
-          <div className={`grid grid-cols-1 gap-4 ${showBookmarks ? "lg:grid-cols-3" : ""}`}>
-            <div className={`space-y-3 ${showBookmarks ? "lg:col-span-2" : ""}`}>
-
-            {(() => {
-              const isNoOpInsert =
-                dragIndex !== null &&
-                insertAt !== null &&
-                (insertAt === dragIndex || insertAt === dragIndex + 1);
-              const rowCount = Math.ceil(pages.length / gridCols);
-              const safeStartRow = Math.max(
-                0,
-                Math.min(visibleRange.startRow, Math.max(0, rowCount - 1)),
-              );
-              const safeEndRow =
-                rowCount === 0
-                  ? -1
-                  : Math.max(safeStartRow, Math.min(visibleRange.endRow, rowCount - 1));
-              const startIdx = safeStartRow * gridCols;
-              const endIdxExclusive =
-                safeEndRow >= 0 ? Math.min(pages.length, (safeEndRow + 1) * gridCols) : 0;
-              const visiblePages = pages.slice(startIdx, endIdxExclusive);
-              const topPadPx = safeStartRow * rowStride;
-              const bottomPadPx =
-                rowCount > 0 && safeEndRow >= 0
-                  ? Math.max(0, (rowCount - 1 - safeEndRow) * rowStride)
-                  : 0;
-
-              return (
-                <div
-                  ref={gridOuterRef}
-                  style={{
-                    paddingTop: `${topPadPx}px`,
-                    paddingBottom: `${bottomPadPx}px`,
+          {selectionMode && (
+            <div className="knit-card flex flex-wrap items-center justify-between gap-2 border-[#007BFF] bg-[#EDF6FF] px-3.5 py-2 text-xs">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="rounded-[4px] bg-[#007BFF] px-2 py-0.5 font-semibold text-white">
+                  {t.image2pdf.selectionSelectedCount(selectedPageIds.size)}
+                </span>
+                <span className="text-[#495057]">{t.image2pdf.selectionHint}</span>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedPageIds(new Set(pages.map((p) => p.id)));
+                    lastSelectedAnchorIdRef.current = pages[pages.length - 1]?.id ?? null;
                   }}
+                  className="knit-control-sm knit-btn-secondary px-2 text-xs"
                 >
-                  <div
-                    className="grid gap-3 select-none"
-                    style={{ gridTemplateColumns: `repeat(${gridCols}, minmax(0, 1fr))` }}
-                  >
-                    {visiblePages.map((page, localIdx) => {
-                      const idx = startIdx + localIdx;
-                      const showBarLeft = !isNoOpInsert && insertAt === idx;
-                      const showBarEnd =
-                        !isNoOpInsert && insertAt === pages.length && idx === pages.length - 1;
-
-                      return (
-                        <PageCard
-                          key={page.id}
-                          page={page}
-                          idx={idx}
-                          thumbUrl={thumbCache[page.id]}
-                          thumbBakedSig={thumbMetaCache[page.id]?.sig}
-                          thumbBakedRot={thumbMetaCache[page.id]?.bakedRot ?? 0}
-                          loadThumbs={loadThumbs}
-                          isDragged={dragIndex === idx}
-                          isDraggingAny={dragIndex !== null}
-                          showBarLeft={showBarLeft}
-                          showBarEnd={showBarEnd}
-                          editedBadgeLabel={t.image2pdf.editedBadge}
-                          rotateTitle={t.image2pdf.rotateTitle}
-                          editBtnLabel={t.image2pdf.editBtn}
-                          editBtnTitle={t.image2pdf.editBtnTitle}
-                          deletePageTitle={t.image2pdf.deletePageTitle}
-                          onRegisterRef={registerCardRef}
-                          onPointerDownCard={handleCardPointerDown}
-                          onDoubleClickCard={handleCardDoubleClick}
-                          onRotate={rotatePage}
-                          onEdit={handleEditPage}
-                          onRemove={removePage}
-                        />
-                      );
-                    })}
-                  </div>
-                </div>
-              );
-            })()}
-          </div>
-
-          {showBookmarks && (
-            <div>
-              <BookmarkTreeEditor
-                nodes={bookmarks}
-                totalPages={pages.length}
-                onChange={setBookmarks}
-              />
+                  {t.image2pdf.selectionSelectAll}
+                </button>
+                <button
+                  type="button"
+                  disabled={selectedPageIds.size === 0}
+                  onClick={() => {
+                    setSelectedPageIds(new Set());
+                    lastSelectedAnchorIdRef.current = null;
+                  }}
+                  className="knit-control-sm knit-btn-secondary px-2 text-xs disabled:opacity-45"
+                >
+                  {t.image2pdf.selectionClear}
+                </button>
+                <button
+                  type="button"
+                  disabled={selectedPageIds.size === 0}
+                  onClick={rotateSelectedPages}
+                  className="knit-control-sm knit-btn-secondary inline-flex items-center gap-1 px-2 text-xs disabled:opacity-45"
+                >
+                  <RotateCw className="h-3.5 w-3.5 text-[#007BFF]" />
+                  <span>{t.image2pdf.selectionRotate90}</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={selectedPageIds.size === 0}
+                  onClick={deleteSelectedPages}
+                  className="knit-control-sm inline-flex items-center gap-1 rounded-[4px] border border-[#F5C2C7] bg-[#F8D7DA] px-2 text-xs font-semibold text-[#842029] hover:bg-[#F1AEB5] disabled:opacity-45"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  <span>{t.image2pdf.selectionDelete}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={exitSelectionMode}
+                  className="knit-control-sm knit-btn-secondary inline-flex items-center gap-1 px-2 text-xs"
+                >
+                  <X className="h-3.5 w-3.5" />
+                  <span>{t.image2pdf.selectionDone}</span>
+                </button>
+              </div>
             </div>
           )}
+
+          <div
+            ref={splitContainerRef}
+            style={
+              showBookmarks
+                ? ({ "--img-left": `${(liveLeftRatio * 100).toFixed(2)}%` } as React.CSSProperties)
+                : undefined
+            }
+            className={
+              showBookmarks
+                ? "grid grid-cols-1 items-start gap-4 lg:gap-2 lg:[grid-template-columns:var(--img-left)_12px_minmax(0,1fr)]"
+                : "grid grid-cols-1 gap-4"
+            }
+          >
+            <div className="min-w-0 space-y-3">
+              <div
+                ref={gridOuterRef}
+                style={{
+                  paddingTop: `${grid.topPadPx}px`,
+                  paddingBottom: `${grid.bottomPadPx}px`,
+                }}
+              >
+                <div
+                  ref={gridInnerRef}
+                  className="grid gap-3 select-none"
+                  style={{ gridTemplateColumns: `repeat(${gridCols}, minmax(0, 1fr))` }}
+                >
+                  {visiblePages.map((page, localIdx) => {
+                    const idx = grid.startIdx + localIdx;
+                    const showBarLeft = !isNoOpInsert && insertAt === idx;
+                    const showBarEnd =
+                      !isNoOpInsert && insertAt === pages.length && idx === pages.length - 1;
+                    const pageBookmarks = pageBookmarkMap.get(idx);
+
+                    return (
+                      <ImagePageCard
+                        key={page.id}
+                        page={page}
+                        idx={idx}
+                        cardSize={cardSize}
+                        thumbUrl={thumbQueue.thumbs[page.id]}
+                        thumbBakedSig={thumbQueue.thumbMetas[page.id]?.sig}
+                        thumbBakedRot={thumbQueue.thumbMetas[page.id]?.bakedRot ?? 0}
+                        loadThumbs={loadThumbs}
+                        selectionMode={selectionMode}
+                        isSelected={selectedPageIds.has(page.id)}
+                        isMissing={missingSourcePaths.has(page.source.path)}
+                        missingBadgeLabel={t.image2pdf.missingFileBadge}
+                        bookmarkTitles={pageBookmarkMap.get(idx)}
+                        bookmarkTooltip={
+                          pageBookmarks ? t.image2pdf.bookmarkBadgeTitle(pageBookmarks) : undefined
+                        }
+                        isDragged={dragIndex !== null && (dragIndex === idx || draggingPageIds.has(page.id))}
+                        isDraggingAny={dragIndex !== null}
+                        showBarLeft={showBarLeft}
+                        showBarEnd={showBarEnd}
+                        editedBadgeLabel={t.image2pdf.editedBadge}
+                        rotateTitle={t.image2pdf.rotateTitle}
+                        editBtnLabel={t.image2pdf.editBtn}
+                        editBtnTitle={t.image2pdf.editBtnTitle}
+                        deletePageTitle={t.image2pdf.deletePageTitle}
+                        onRegisterRef={registerCardRef}
+                        onPointerDownCard={handleCardPointerDown}
+                        onDoubleClickCard={handleCardDoubleClick}
+                        onContextMenuCard={handleCardContextMenu}
+                        onRotate={rotatePage}
+                        onEdit={handleEditPage}
+                        onRemove={removePage}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {showBookmarks && (
+              <>
+                <PaneResizeHandle
+                  orientation="vertical"
+                  title={t.image2pdf.resizeWidthTitle}
+                  ariaLabel={t.image2pdf.resizeWidthTitle}
+                  onPointerDown={handleSplitWidthResize}
+                />
+                <div className="min-w-0 space-y-2 lg:sticky lg:-top-3 lg:self-start">
+                  <label className="knit-card flex cursor-pointer items-center gap-2 px-3 py-2 text-xs font-medium text-[#212529]">
+                    <input
+                      type="checkbox"
+                      checked={autoUpdateBookmarksOnDelete}
+                      onChange={(e) => setAutoUpdateBookmarksOnDelete(e.target.checked)}
+                    />
+                    <span>{t.image2pdf.autoUpdateBookmarksLabel}</span>
+                  </label>
+                  <BookmarkTreeEditor
+                    nodes={bookmarks}
+                    totalPages={pages.length}
+                    enableGlobalUndoShortcut={false}
+                    onChange={setBookmarks}
+                  />
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -1788,100 +1643,27 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
           className="pointer-events-none fixed z-50 flex items-center gap-2 rounded-[4px] border border-[#007BFF] bg-white/95 px-2.5 py-1.5 text-xs font-semibold text-[#212529] shadow-lg"
         >
           <span className="rounded bg-[#007BFF] px-1.5 py-0.5 font-mono-code text-[11px] text-white">
-            #{dragIndex + 1}
+            {draggingPageIds.size > 1 ? `${draggingPageIds.size}×` : `#${dragIndex + 1}`}
           </span>
-          <span className="max-w-[180px] truncate">{pages[dragIndex].label}</span>
+          <span className="max-w-[180px] truncate">
+            {draggingPageIds.size > 1
+              ? t.image2pdf.multiDragGhostLabel(draggingPageIds.size)
+              : pages[dragIndex].label}
+          </span>
         </div>
       )}
 
-      {/* Large Image Preview Modal (opened via Double-Click) */}
-      {previewPage && (
-        <div
-          onClick={() => setPreviewPageId(null)}
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4"
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="flex h-[92vh] w-[94vw] max-w-[1400px] flex-col overflow-hidden rounded-[4px] border border-[#CED4DA] bg-white shadow-2xl"
-          >
-            <div className="flex shrink-0 items-center justify-between border-b border-[#DEE2E6] bg-[#F8F9FA] px-4 py-2.5">
-              <div className="min-w-0">
-                <div className="truncate text-sm font-bold text-[#212529]">
-                  {previewPage.label}
-                </div>
-                <div className="font-mono-code text-xs text-[#6C757D]">
-                  {previewPage.width_px}x{previewPage.height_px}
-                  {previewPage.rotation_deg % 360 !== 0
-                    ? ` · ${previewPage.rotation_deg}°`
-                    : ""}
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  disabled={!loadThumbs}
-                  onClick={() => {
-                    const id = previewPage.id;
-                    setPreviewPageId(null);
-                    setEditingPageId(id);
-                  }}
-                  className="inline-flex items-center gap-1.5 rounded-[4px] bg-[#007BFF] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#0069D9] disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  <Edit3 className="h-3.5 w-3.5" />
-                  {t.image2pdf.editBtn}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setPreviewPageId(null)}
-                  aria-label={t.common.close}
-                  className="rounded-[4px] p-1.5 text-[#6C757D] hover:bg-[#E9ECEF] hover:text-[#212529]"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-            </div>
-            <div className="flex flex-1 items-center justify-center overflow-auto bg-[#212529] p-4">
-              {(() => {
-                const edited = hasPageEdits(previewPage);
-                if (edited) {
-                  const sig = pageEditSignature(previewPage);
-                  const bakedSrc = editedPreviewCache[`${previewPage.id}:${sig}`];
-                  if (bakedSrc) {
-                    return (
-                      <img
-                        src={bakedSrc}
-                        alt={previewPage.label}
-                        className="max-h-full max-w-full object-contain shadow-lg"
-                      />
-                    );
-                  }
-                  const fallbackSrc = resolveFullResSrc(previewPage);
-                  return fallbackSrc ? (
-                    <img
-                      src={fallbackSrc}
-                      alt={previewPage.label}
-                      className="max-h-full max-w-full object-contain shadow-lg"
-                      style={{ transform: `rotate(${previewPage.rotation_deg}deg)` }}
-                    />
-                  ) : (
-                    <Layers className="h-10 w-10 text-[#6C757D]" />
-                  );
-                }
-                const uneditedSrc = resolveFullResSrc(previewPage);
-                return uneditedSrc ? (
-                  <img
-                    src={uneditedSrc}
-                    alt={previewPage.label}
-                    className="max-h-full max-w-full object-contain shadow-lg"
-                  />
-                ) : (
-                  <Layers className="h-10 w-10 text-[#6C757D]" />
-                );
-              })()}
-            </div>
-          </div>
-        </div>
-      )}
+      <ImagePreviewModal
+        page={previewPage}
+        loadThumbs={loadThumbs}
+        editedPreviewCache={editedPreviewCache}
+        resolveFullResSrc={resolveFullResSrc}
+        onClose={() => setPreviewPageId(null)}
+        onOpenEditor={(id) => {
+          setPreviewPageId(null);
+          setEditingPageId(id);
+        }}
+      />
 
       {editingPage && (
         <ImageCanvasEditorModal
@@ -1895,9 +1677,25 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
           }}
         />
       )}
+
       <ExportConflictModal
         conflictPaths={pendingConflict?.conflicts ?? []}
         onResolve={(c) => void handleConflictResolution(c)}
+      />
+
+      <ImageContextMenu
+        page={contextMenuPage}
+        pageIndex={contextMenu?.pageIndex ?? 0}
+        x={contextMenu?.x ?? 0}
+        y={contextMenu?.y ?? 0}
+        onClose={() => setContextMenu(null)}
+        onRotateBy={rotatePageBy}
+        onDelete={removePage}
+        onPreviewInfo={(id) => setPreviewPageId(id)}
+        onCopyImagePath={handleCopyImagePath}
+        onCopyFolderPath={handleCopyFolderPath}
+        onAttachBookmark={handleAttachBookmarkAtPage}
+        onSelectPage={handleSelectSingleFromContext}
       />
 
       <ImportFeedbackToast toast={importToast} />

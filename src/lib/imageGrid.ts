@@ -1,5 +1,7 @@
 export const IMAGE_GRID_GAP_PX = 12;
 
+export type CardSizePreset = "small" | "medium" | "large";
+
 export interface VisibleRowRange {
   startRow: number;
   endRow: number;

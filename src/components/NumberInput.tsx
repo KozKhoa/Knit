@@ -88,12 +88,18 @@ export const NumberInput: React.FC<NumberInputProps> = ({
     stepByRef.current = stepBy;
   }, [stepBy]);
 
-  // Only adjust via mouse wheel when input is actively focused (prevents accidental edits during page scroll)
-  React.useEffect(() => {
+  const wheelCleanupRef = React.useRef<(() => void) | null>(null);
+
+  const detachWheel = React.useCallback(() => {
+    wheelCleanupRef.current?.();
+    wheelCleanupRef.current = null;
+  }, []);
+
+  const attachWheel = React.useCallback(() => {
     const el = containerRef.current;
-    if (!el) return;
+    if (!el || disabled || wheelCleanupRef.current) return;
     const onWheel = (e: WheelEvent) => {
-      if (disabled || document.activeElement !== inputRef.current) return;
+      if (document.activeElement !== inputRef.current) return;
       e.preventDefault();
       if (e.deltaY < 0) {
         stepByRef.current(1);
@@ -102,8 +108,15 @@ export const NumberInput: React.FC<NumberInputProps> = ({
       }
     };
     el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
+    wheelCleanupRef.current = () => {
+      el.removeEventListener("wheel", onWheel);
+    };
   }, [disabled]);
+
+  React.useEffect(() => {
+    if (disabled) detachWheel();
+    return () => detachWheel();
+  }, [disabled, detachWheel]);
 
   const sizeClass = size === "sm" ? "knit-control-sm text-xs" : "knit-control text-xs";
 
@@ -126,9 +139,13 @@ export const NumberInput: React.FC<NumberInputProps> = ({
         aria-valuenow={value}
         disabled={disabled}
         value={text}
-        onFocus={() => setFocused(true)}
+        onFocus={() => {
+          setFocused(true);
+          attachWheel();
+        }}
         onBlur={() => {
           setFocused(false);
+          detachWheel();
           commitText(text);
         }}
         onChange={(e) => {

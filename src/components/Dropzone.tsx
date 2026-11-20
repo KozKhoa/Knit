@@ -13,7 +13,7 @@ interface DropzoneProps {
   loadingLabel?: string;
 }
 
-export const Dropzone: React.FC<DropzoneProps> = ({
+export const Dropzone: React.FC<DropzoneProps> = React.memo(({
   title,
   description,
   onPickFiles,
@@ -68,4 +68,4 @@ export const Dropzone: React.FC<DropzoneProps> = ({
       </div>
     </div>
   );
-};
+});

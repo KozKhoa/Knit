@@ -107,3 +107,45 @@ export function pageEditSignature(page: PageDraft): string {
     .join(";");
   return `${rot}|${cropKey}|${strokesKey}|${textsKey}`;
 }
+
+/**
+ * Reorders one page or a multi-selected group of pages so they land contiguously
+ * at `insertAtIndex` while preserving the relative order of moved items.
+ */
+export function reorderSelectedPages(
+  pages: PageDraft[],
+  selectedIds: ReadonlySet<string>,
+  draggedId: string,
+  insertAtIndex: number,
+): PageDraft[] {
+  if (pages.length <= 1) return pages;
+  const draggedIdx = pages.findIndex((p) => p.id === draggedId);
+  if (draggedIdx < 0) return pages;
+
+  const isMulti = selectedIds.has(draggedId) && selectedIds.size > 1;
+  const movingSet = isMulti ? selectedIds : new Set([draggedId]);
+
+  const moving: PageDraft[] = [];
+  const remaining: PageDraft[] = [];
+  const clampedInsert = Math.max(0, Math.min(pages.length, insertAtIndex));
+
+  let targetRemainingIdx = 0;
+  for (let i = 0; i < pages.length; i++) {
+    const p = pages[i];
+    if (movingSet.has(p.id)) {
+      moving.push(p);
+    } else {
+      remaining.push(p);
+      if (i < clampedInsert) {
+        targetRemainingIdx += 1;
+      }
+    }
+  }
+
+  if (moving.length === 0) return pages;
+  const next = [...remaining];
+  next.splice(targetRemainingIdx, 0, ...moving);
+
+  const unchanged = next.every((p, i) => p.id === pages[i]?.id);
+  return unchanged ? pages : next;
+}

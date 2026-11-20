@@ -107,12 +107,15 @@ export type PageLayoutPolicy =
 
 export type AnimatedImagePolicy = "first_frame_only" | "unpack_all_frames";
 
+export type PdfExportMode = "fast" | "balanced" | "safe";
+
 export interface Image2PdfConfig {
   output_path: string;
   layout: PageLayoutPolicy;
   jpeg_quality: number;
   lossless_passthrough: boolean;
   animated_policy: AnimatedImagePolicy;
+  export_mode: PdfExportMode;
   max_mb: number | null;
   max_pages_per_file?: number | null;
 }
@@ -284,6 +287,12 @@ export interface ArchiveSummary {
   output_bytes: number;
 }
 
+export interface ArchiveEstimate {
+  files_count: number;
+  input_bytes: number;
+  estimated_output_bytes: number;
+}
+
 // --- knit-manga ---
 export type MangaScanMode = "auto" | "single" | "library";
 export type NodeKind = "chapter" | "volume" | "arc";
@@ -322,6 +331,7 @@ export interface Story {
   cover: string | null;
   chapters: Chapter[];
   warnings: string[];
+  total_bytes?: number;
 }
 
 export interface MangaPackOptions {

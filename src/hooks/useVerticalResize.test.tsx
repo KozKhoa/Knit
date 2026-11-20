@@ -15,7 +15,7 @@ function Harness({
 }: {
   value: number;
   min: number;
-  max: number;
+  max?: number;
   onCommit: (next: number) => void;
 }) {
   const { height, isResizing, handlePointerDown } = useVerticalResize({
@@ -86,5 +86,18 @@ describe("useVerticalResize", () => {
     fireEvent(window, new MouseEvent("pointermove", { bubbles: true, clientY: 150 }));
     fireEvent(window, new MouseEvent("pointerup", { bubbles: true }));
     expect(onCommit).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows unlimited growth when max is omitted", () => {
+    const onCommit = vi.fn();
+    render(<Harness value={300} min={180} onCommit={onCommit} />);
+    const handle = screen.getByRole("separator");
+
+    fireEvent(handle, new MouseEvent("pointerdown", { bubbles: true, clientY: 100, button: 0 }));
+    fireEvent(window, new MouseEvent("pointermove", { bubbles: true, clientY: 1500 }));
+    expect(screen.getByTestId("height").textContent).toBe("1700");
+
+    fireEvent(window, new MouseEvent("pointerup", { bubbles: true }));
+    expect(onCommit).toHaveBeenCalledWith(1700);
   });
 });

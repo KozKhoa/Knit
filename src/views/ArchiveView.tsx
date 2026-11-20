@@ -1,12 +1,17 @@
 import React from "react";
 import { Archive, Lock, Trash2 } from "lucide-react";
 import { Dropzone } from "../components/Dropzone";
+import { ErrorBanner } from "../components/ErrorBanner";
 import { Select } from "../components/Select";
+import { ViewHeader } from "../components/ViewHeader";
 import { useI18n } from "../i18n";
 import {
   checkExportConflicts,
   createArchive,
+  estimateArchiveSize,
   formatBytes,
+  isJobCancelledError,
+  isTauriRuntime,
   pickDirectory,
   pickFiles,
   pickSaveFile,
@@ -86,7 +91,51 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
     conflicts: string[];
   } | null>(null);
   const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
+  const [estimatedBytes, setEstimatedBytes] = React.useState<number | null>(null);
+  const [estimating, setEstimating] = React.useState(false);
   const lastHandledDropSeq = React.useRef<number>(0);
+
+  // Low-priority async size estimation in background (never blocks export)
+  React.useEffect(() => {
+    if (inputs.length === 0 || !isTauriRuntime()) {
+      setEstimatedBytes(null);
+      setEstimating(false);
+      return;
+    }
+    let cancelled = false;
+    setEstimating(true);
+    const timer = window.setTimeout(() => {
+      const encryption: ZipEncryption =
+        format !== "zip" || encryptionKind === "none"
+          ? { kind: "none" }
+          : encryptionKind === "aes256"
+            ? { kind: "aes256", password }
+            : { kind: "zip_crypto", password };
+      void estimateArchiveSize(inputs, includeRootDir, ignoreHidden, {
+        format,
+        compression,
+        encryption,
+      })
+        .then((est) => {
+          if (!cancelled) {
+            setEstimatedBytes(est.estimated_output_bytes);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setEstimatedBytes(null);
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setEstimating(false);
+        });
+    }, 220);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [inputs, includeRootDir, ignoreHidden, format, compression, encryptionKind, password]);
 
   const extForFormat = React.useCallback((fmt: ArchiveFormat) => {
     switch (fmt) {
@@ -193,9 +242,11 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
         "success",
       );
     } catch (e) {
-      const msg = String(e);
+      const rawMsg = String(e);
+      const cancelled = isJobCancelledError(rawMsg);
+      const msg = cancelled ? t.common.jobCancelledMsg : rawMsg;
       setErrorMsg(msg);
-      onFinishJob(t.shell.nav.archive.label, [], msg, "error");
+      onFinishJob(t.shell.nav.archive.label, [], msg, cancelled ? "cancelled" : "error");
     }
   };
 
@@ -244,27 +295,23 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-bold text-[#212529]">{t.archive.title}</h1>
-          <p className="text-sm text-[#6C757D]">{t.archive.subtitle}</p>
-        </div>
-        <button
-          type="button"
-          disabled={inputs.length === 0 || busy}
-          onClick={() => void handlePack()}
-          className="knit-control flex items-center gap-1.5 rounded-[4px] bg-[#007BFF] px-4 text-sm font-semibold text-white hover:bg-[#0069D9] disabled:opacity-50"
-        >
-          <Archive className="h-4 w-4" />
-          {t.archive.packBtn}
-        </button>
-      </div>
+      <ViewHeader
+        title={t.archive.title}
+        subtitle={t.archive.subtitle}
+        actions={
+          <button
+            type="button"
+            disabled={inputs.length === 0 || busy}
+            onClick={() => void handlePack()}
+            className="knit-control knit-btn-primary flex items-center gap-1.5 px-4 text-sm disabled:opacity-50"
+          >
+            <Archive className="h-4 w-4" />
+            {t.archive.packBtn}
+          </button>
+        }
+      />
 
-      {errorMsg && (
-        <div className="rounded-[4px] border border-[#F5C6CB] bg-[#F8D7DA] px-3.5 py-2.5 text-sm text-[#721C24]">
-          {errorMsg}
-        </div>
-      )}
+      <ErrorBanner message={errorMsg} />
 
       <ExportFilenameControl
         value={exportFilename}
@@ -272,6 +319,12 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
         placeholder={`archive.${currentExt}`}
         defaultExportDir={defaultExportDir}
         existsAtDefaultDir={existsAtDefaultDir}
+        estimateText={
+          estimatedBytes !== null
+            ? t.common.estimatedOutputSummary(formatBytes(estimatedBytes), 1)
+            : null
+        }
+        estimating={estimating}
       />
 
       <div className="grid grid-cols-1 gap-3.5 rounded-[4px] border border-[#DEE2E6] bg-white p-4 md:grid-cols-4">
