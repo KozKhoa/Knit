@@ -1,24 +1,28 @@
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use knit_archive::{collect_entries, pack_entries, ArchiveOptions, ArchiveSummary};
+use knit_archive::{
+    collect_entries, estimate_archive_output, pack_entries, ArchiveEstimate, ArchiveOptions,
+    ArchiveSummary,
+};
 use knit_core::job::ThrottledReporter;
 use knit_core::{
     app_cache_dir, app_config_dir, sanitize_filename, CancellationToken, JobLogLevel,
     JobProgress, JobReporter, LogVerbosity, NoopReporter,
 };
 use knit_docs::{
-    compile_epub_to_pdf_bytes, compile_text_to_pdf_bytes, convert_document_to_pdf,
-    convert_text_to_pdf, detect_libreoffice, read_utf8_text, write_utf8_text, DocConvertOptions,
+    clear_epub_cache, compile_epub_to_pdf_bytes, compile_text_to_pdf_bytes,
+    compile_text_to_pdf_bytes_with_cancel, convert_document_to_pdf, convert_text_to_pdf,
+    detect_libreoffice, evict_typst_cache, read_utf8_text, write_utf8_text, DocConvertOptions,
     DocConvertResult, DocInputKind, EngineStatus,
 };
 use knit_manga::{default_output_name, pack_stories, scan_stories, MangaPackOptions, MangaPackSummary, MangaScanMode, Story};
 use knit_pdf::{
-    build_pdf_from_drafts, inspect_pdf, merge_pdfs, render_image_thumbnail,
-    render_image_thumbnail_jpeg, render_page_draft_preview_jpeg, render_pdf_bytes_thumbnails,
-    render_pdf_thumbnail, render_pdf_thumbnail_jpeg, scan_image_files_with_reporter,
-    scan_image_folder_with_reporter, split_multi_pdf, split_pdf, AnimatedImagePolicy,
-    BookmarkNode, Image2PdfConfig, ImageScanResult, PageDraft,
-    PageSource, PdfBuildResult, PdfInfo, PdfMergeConfig, PdfSplitRule,
+    build_pdf_from_drafts, clear_pdf_reader_cache, inspect_pdf, merge_pdfs,
+    render_image_thumbnail, render_image_thumbnail_jpeg, render_page_draft_preview_jpeg,
+    render_pdf_bytes_thumbnails, render_pdf_thumbnail, render_pdf_thumbnail_jpeg,
+    scan_image_files_with_reporter, scan_image_folder_with_reporter, split_multi_pdf, split_pdf,
+    AnimatedImagePolicy, BookmarkNode, Image2PdfConfig, ImageScanResult, PageDraft, PageSource,
+    PdfBuildResult, PdfInfo, PdfMergeConfig, PdfSplitRule,
 };
 use knit_renamer::{
     apply_rename_plan, build_rename_plan, compile_rule, recompute_collisions, scan_items,
@@ -89,6 +93,7 @@ pub struct AppMetrics {
 
 pub struct AppState {
     jobs: Mutex<HashMap<String, CancellationToken>>,
+    docs_preview_cancel: Mutex<Option<CancellationToken>>,
     preset_store: Mutex<PresetStore>,
     undo_manifest_path: PathBuf,
     renamer_scan_cache: Mutex<Option<CachedRenamerScan>>,
@@ -100,6 +105,7 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             jobs: Mutex::new(HashMap::new()),
+            docs_preview_cancel: Mutex::new(None),
             preset_store: Mutex::new(PresetStore::default_os()),
             undo_manifest_path: app_config_dir().join("last_rename_undo.json"),
             renamer_scan_cache: Mutex::new(None),
@@ -179,6 +185,9 @@ async fn clear_image_preview_cache() -> Result<(), String> {
                 }
             }
         }
+        clear_pdf_reader_cache();
+        clear_epub_cache();
+        evict_typst_cache();
         trim_process_heap();
         Ok(())
     })
@@ -258,6 +267,22 @@ async fn validate_export_directory(dir: PathBuf) -> Result<ExportDirStatus, Stri
 async fn check_export_conflicts(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         Ok(paths.into_iter().filter(|p| p.exists()).collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn check_missing_files(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut seen = std::collections::HashSet::new();
+        let mut missing = Vec::new();
+        for p in paths {
+            if seen.insert(p.clone()) && !p.is_file() {
+                missing.push(p);
+            }
+        }
+        Ok(missing)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -489,6 +514,12 @@ fn thumb_semaphore() -> &'static tokio::sync::Semaphore {
     })
 }
 
+/// Semaphore riêng cho thao tác xem phóng to (double click) để không bao giờ bị nghẽn sau hàng đợi thumbnail nền.
+fn preview_semaphore() -> &'static tokio::sync::Semaphore {
+    static SEM: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
+    SEM.get_or_init(|| tokio::sync::Semaphore::new(2))
+}
+
 fn thumb_cache_dir() -> PathBuf {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
@@ -655,7 +686,7 @@ async fn render_page_draft_preview_file(
         return Ok(cache_path);
     }
 
-    let _permit = thumb_semaphore()
+    let _permit = preview_semaphore()
         .acquire()
         .await
         .map_err(|e| e.to_string())?;
@@ -795,7 +826,7 @@ async fn render_pdf_page_preview_file(
         return Ok(cache_path);
     }
 
-    let _permit = thumb_semaphore()
+    let _permit = preview_semaphore()
         .acquire()
         .await
         .map_err(|e| e.to_string())?;
@@ -979,6 +1010,11 @@ async fn docs_write_text_file(path: PathBuf, content: String) -> Result<(), Stri
     .map_err(|e| e.to_string())?
 }
 
+fn docs_preview_semaphore() -> &'static tokio::sync::Semaphore {
+    static SEM: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
+    SEM.get_or_init(|| tokio::sync::Semaphore::new(1))
+}
+
 #[tauri::command]
 async fn docs_preview_pdf_bytes(
     content: Option<String>,
@@ -986,26 +1022,50 @@ async fn docs_preview_pdf_bytes(
     input_kind: DocInputKind,
     base_dir: Option<PathBuf>,
     options: DocConvertOptions,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<tauri::ipc::Response, String> {
+    let token = CancellationToken::new();
+    if let Ok(mut guard) = state.docs_preview_cancel.lock() {
+        if let Some(prev) = guard.replace(token.clone()) {
+            prev.cancel();
+        }
+    }
+
+    let _permit = docs_preview_semaphore()
+        .acquire()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if token.is_cancelled() {
+        return Err("Job cancelled by user".to_string());
+    }
+
     tauri::async_runtime::spawn_blocking(move || {
-        let (pdf_bytes, _) = match input_kind {
+        let res = match input_kind {
             DocInputKind::Epub => {
                 let path = input_path
-                    .ok_or_else(|| "Thieu duong dan EPUB de xem truoc".to_string())?;
-                compile_epub_to_pdf_bytes(&path, &options, &CancellationToken::new(), &NoopReporter)
-                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| "Missing EPUB path for preview".to_string())?;
+                compile_epub_to_pdf_bytes(&path, &options, &token, &NoopReporter)
+                    .map_err(|e| e.to_string())
             }
             DocInputKind::Markdown | DocInputKind::PlainText | DocInputKind::Html => {
                 let text = content.unwrap_or_default();
-                compile_text_to_pdf_bytes(&text, input_kind, base_dir.as_deref(), &options)
-                    .map_err(|e| e.to_string())?
-            }
-            _ => {
-                return Err(
-                    "Chi ho tro xem truoc PDF cho Markdown, Plain Text, HTML va EPUB".to_string(),
+                compile_text_to_pdf_bytes_with_cancel(
+                    &text,
+                    input_kind,
+                    base_dir.as_deref(),
+                    &options,
+                    Some(&token),
                 )
+                .map_err(|e| e.to_string())
             }
+            _ => Err(
+                "PDF live preview is only supported for Markdown, Plain Text, HTML, and EPUB"
+                    .to_string(),
+            ),
         };
+        trim_process_heap();
+        let (pdf_bytes, _) = res?;
         Ok(tauri::ipc::Response::new(pdf_bytes))
     })
     .await
@@ -1075,6 +1135,32 @@ async fn docs_convert_content_to_pdf(
 }
 
 // --- knit-archive commands ---
+#[tauri::command]
+async fn archive_estimate_size(
+    inputs: Vec<PathBuf>,
+    include_root_dir: bool,
+    ignore_hidden: bool,
+    options: ArchiveOptions,
+) -> Result<ArchiveEstimate, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        estimate_archive_output(&inputs, include_root_dir, ignore_hidden, &options)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn get_file_size_bytes(path: PathBuf) -> Result<u64, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::metadata(&path)
+            .map(|m| m.len())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 async fn archive_pack(
     job_id: String,
@@ -1331,23 +1417,57 @@ fn collect_process_tree_stats() -> (u64, u64, usize) {
     let mut total_ram_bytes = 0u64;
     for &pid in &visited {
         total_ticks = total_ticks.saturating_add(cpu_ticks_map.get(&pid).copied().unwrap_or(0));
-        if let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) {
-            for line in status.lines() {
-                if let Some(rest) = line.strip_prefix("VmRSS:") {
-                    let kb = rest
-                        .split_whitespace()
-                        .next()
-                        .and_then(|s| s.parse::<u64>().ok())
-                        .unwrap_or(0);
-                    total_ram_bytes = total_ram_bytes.saturating_add(kb.saturating_mul(1024));
-                    break;
-                }
-            }
-        }
+        total_ram_bytes = total_ram_bytes.saturating_add(read_linux_process_ram_bytes(pid));
     }
 
     // Linux USER_HZ is 100 ticks/sec -> 10_000_000 ns per tick
     (total_ticks.saturating_mul(10_000_000), total_ram_bytes, visited.len())
+}
+
+#[cfg(target_os = "linux")]
+fn parse_proc_kb_value(line: &str, prefix: &str) -> Option<u64> {
+    let rest = line.strip_prefix(prefix)?;
+    rest.split_whitespace().next()?.parse::<u64>().ok()
+}
+
+#[cfg(target_os = "linux")]
+fn read_linux_process_ram_bytes(pid: u32) -> u64 {
+    // Ưu tiên Pss_Anon + Pss_Shmem từ smaps_rollup để chia đều bộ nhớ dùng chung giữa các WebKit process
+    // và không tính OS clean file page-cache (ví dụ file PDF mmap) vào RAM ứng dụng.
+    if let Ok(rollup) = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")) {
+        let mut pss_anon_kb: Option<u64> = None;
+        let mut pss_shmem_kb: Option<u64> = None;
+        let mut pss_kb: Option<u64> = None;
+        for line in rollup.lines() {
+            if pss_anon_kb.is_none() {
+                pss_anon_kb = parse_proc_kb_value(line, "Pss_Anon:");
+            }
+            if pss_shmem_kb.is_none() {
+                pss_shmem_kb = parse_proc_kb_value(line, "Pss_Shmem:");
+            }
+            if pss_kb.is_none() {
+                pss_kb = parse_proc_kb_value(line, "Pss:");
+            }
+        }
+        if pss_anon_kb.is_some() || pss_shmem_kb.is_some() {
+            return pss_anon_kb
+                .unwrap_or(0)
+                .saturating_add(pss_shmem_kb.unwrap_or(0))
+                .saturating_mul(1024);
+        }
+        if let Some(pss) = pss_kb {
+            return pss.saturating_mul(1024);
+        }
+    }
+
+    if let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) {
+        for line in status.lines() {
+            if let Some(kb) = parse_proc_kb_value(line, "VmRSS:") {
+                return kb.saturating_mul(1024);
+            }
+        }
+    }
+    0
 }
 
 #[cfg(target_os = "windows")]
@@ -1535,6 +1655,7 @@ pub fn run() {
             clear_image_preview_cache,
             validate_export_directory,
             check_export_conflicts,
+            check_missing_files,
             resolve_unique_export_path,
             dialog_pick_paths,
             dialog_save_path,
@@ -1558,6 +1679,8 @@ pub fn run() {
             docs_preview_pdf_bytes,
             docs_preview_markdown,
             docs_convert_content_to_pdf,
+            get_file_size_bytes,
+            archive_estimate_size,
             archive_pack,
             manga_scan,
             manga_pack,

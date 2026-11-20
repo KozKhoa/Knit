@@ -1,6 +1,6 @@
 use crate::markdown::{escape_typst_text, typst_preamble, typst_string_literal};
 use crate::models::{DocConvertOptions, DocConvertResult, DocInputKind};
-use crate::world::compile_typst_to_pdf_with_toc;
+use crate::world::{compile_typst_with_prepared_assets, prepare_typst_images};
 use epub::doc::EpubDoc;
 use knit_core::{
     atomic_write_file, CancellationToken, JobProgress, JobReporter, JobReporterExt, KnitError,
@@ -10,8 +10,30 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::io::Write;
-use std::path::Path;
-use std::sync::OnceLock;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::UNIX_EPOCH;
+use typst::foundations::Bytes;
+
+struct CachedEpubPayload {
+    path: PathBuf,
+    file_len: u64,
+    mtime_nanos: u128,
+    title: Option<String>,
+    body_markup: String,
+    prepared_virtual: Arc<HashMap<String, Bytes>>,
+}
+
+static LAST_PARSED_EPUB: OnceLock<Mutex<Option<Arc<CachedEpubPayload>>>> = OnceLock::new();
+
+/// Giải phóng bộ nhớ đệm EPUB đã phân tích gần nhất.
+pub fn clear_epub_cache() {
+    if let Some(lock) = LAST_PARSED_EPUB.get() {
+        if let Ok(mut guard) = lock.lock() {
+            *guard = None;
+        }
+    }
+}
 
 pub fn html_to_typst(html: &str, opts: &DocConvertOptions) -> String {
     let mut out = typst_preamble(opts);
@@ -154,39 +176,59 @@ pub fn html_fragment_to_typst(html: &str, virtual_img_prefix: Option<&str>) -> S
     re_nl.replace_all(escaped.trim(), "\n\n").into_owned()
 }
 
-pub fn compile_epub_to_pdf_bytes(
+fn load_or_parse_epub(
     input_path: &Path,
-    opts: &DocConvertOptions,
     cancel: &CancellationToken,
     reporter: &dyn JobReporter,
-) -> Result<(Vec<u8>, usize)> {
-    reporter.info("Dang giai nen va doc cau truc EPUB");
-    let mut doc = EpubDoc::new(input_path)
-        .map_err(|e| KnitError::InvalidInput(format!("Loi mo EPUB {}: {e}", input_path.display())))?;
+) -> Result<Arc<CachedEpubPayload>> {
+    let meta = std::fs::metadata(input_path)?;
+    let file_len = meta.len();
+    let mtime_nanos = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
 
-    let mut effective_opts = opts.clone();
-    if effective_opts.title.is_none() {
-        effective_opts.title = doc.get_title();
+    let cache_lock = LAST_PARSED_EPUB.get_or_init(|| Mutex::new(None));
+    if let Ok(guard) = cache_lock.lock() {
+        if let Some(existing) = guard.as_ref() {
+            if existing.path == input_path
+                && existing.file_len == file_len
+                && existing.mtime_nanos == mtime_nanos
+            {
+                return Ok(Arc::clone(existing));
+            }
+        }
     }
 
+    reporter.info("Extracting and reading EPUB structure");
+    let mut doc = EpubDoc::new(input_path).map_err(|e| {
+        KnitError::InvalidInput(format!("Failed to open EPUB {}: {e}", input_path.display()))
+    })?;
+
+    let title = doc.get_title();
+
     // Thu thập ảnh/tài nguyên nhúng trong EPUB vào virtual filesystem của Typst
-    let mut virtual_files: HashMap<String, Vec<u8>> = HashMap::new();
+    let mut virtual_files: HashMap<String, Bytes> = HashMap::new();
     let res_entries: Vec<(String, std::path::PathBuf, String)> = doc
         .resources
         .iter()
         .map(|(id, item)| (id.clone(), item.path.clone(), item.mime.clone()))
         .collect();
     for (_id, rel_path, mime) in res_entries {
+        if cancel.is_cancelled() {
+            return Err(KnitError::Cancelled);
+        }
         if mime.starts_with("image/") {
             if let Some(bytes) = doc.get_resource_by_path(&rel_path) {
                 let key = rel_path.to_string_lossy().replace('\\', "/");
-                virtual_files.insert(key, bytes);
+                virtual_files.insert(key, Bytes::new(bytes));
             }
         }
     }
 
-    let mut markup = typst_preamble(&effective_opts);
-    let emit_blk_markers = effective_opts.include_toc && effective_opts.toc_page > 1;
+    let mut raw_body = String::new();
     let mut blk_idx = 0usize;
     let num_chapters = doc.get_num_chapters();
 
@@ -200,7 +242,7 @@ pub fn compile_epub_to_pdf_bytes(
             total: num_chapters.max(1) as u64,
             bytes_done: 0,
             bytes_total: 0,
-            current_item: format!("Chuong {}/{}", i + 1, num_chapters),
+            current_item: format!("Chapter {}/{}", i + 1, num_chapters),
         });
         if !doc.set_current_chapter(i) {
             continue;
@@ -211,25 +253,74 @@ pub fn compile_epub_to_pdf_bytes(
         if let Some((xhtml, _mime)) = doc.get_current_str() {
             let converted = html_fragment_to_typst(&xhtml, chapter_dir.as_deref());
             if !converted.trim().is_empty() {
-                if i > 0 {
-                    markup.push_str("\n#pagebreak(weak: true)\n");
+                if blk_idx > 0 {
+                    raw_body.push_str("\n#pagebreak(weak: true)\n");
                 }
-                if emit_blk_markers {
-                    let _ = writeln!(markup, "#metadata({blk_idx}) <knit-blk>");
-                    blk_idx += 1;
-                }
-                let _ = writeln!(markup, "{converted}\n");
+                let _ = writeln!(raw_body, "#metadata({blk_idx}) <knit-blk>");
+                blk_idx += 1;
+                let _ = writeln!(raw_body, "{converted}\n");
             }
         }
     }
 
-    reporter.info("Dang bien dich EPUB sang PDF (Typst)");
+    if cancel.is_cancelled() {
+        return Err(KnitError::Cancelled);
+    }
+
+    let body_markup = prepare_typst_images(&raw_body, None, &mut virtual_files);
+    let payload = Arc::new(CachedEpubPayload {
+        path: input_path.to_path_buf(),
+        file_len,
+        mtime_nanos,
+        title,
+        body_markup,
+        prepared_virtual: Arc::new(virtual_files),
+    });
+
+    if let Ok(mut guard) = cache_lock.lock() {
+        *guard = Some(Arc::clone(&payload));
+    }
+
+    Ok(payload)
+}
+
+pub fn compile_epub_to_pdf_bytes(
+    input_path: &Path,
+    opts: &DocConvertOptions,
+    cancel: &CancellationToken,
+    reporter: &dyn JobReporter,
+) -> Result<(Vec<u8>, usize)> {
+    if cancel.is_cancelled() {
+        return Err(KnitError::Cancelled);
+    }
+    let cached = load_or_parse_epub(input_path, cancel, reporter)?;
+    if cancel.is_cancelled() {
+        return Err(KnitError::Cancelled);
+    }
+
+    let mut effective_opts = opts.clone();
+    if effective_opts.title.is_none() {
+        effective_opts.title = cached.title.clone();
+    }
+
+    let preamble = typst_preamble(&effective_opts);
+    let mut markup = String::with_capacity(preamble.len() + cached.body_markup.len());
+    markup.push_str(&preamble);
+    markup.push_str(&cached.body_markup);
+
+    reporter.info("Compiling EPUB to PDF (Typst)");
     let toc_target = if effective_opts.include_toc && effective_opts.toc_page > 1 {
         Some(effective_opts.toc_page)
     } else {
         None
     };
-    compile_typst_to_pdf_with_toc(&markup, None, &virtual_files, toc_target)
+    compile_typst_with_prepared_assets(
+        &markup,
+        None,
+        Arc::clone(&cached.prepared_virtual),
+        toc_target,
+        Some(cancel),
+    )
 }
 
 pub fn convert_epub_to_pdf(

@@ -40,6 +40,7 @@ hayro = "0.9"
 ab_glyph = "0.2"
 imageproc = "0.27"
 pulldown-cmark = "0.13"
+comemo = "0.5"
 typst = "0.15"
 typst-layout = "0.15"
 typst-pdf = "0.15"
@@ -55,6 +56,7 @@ uuid = { version = "1.16", features = ["v4"] }
 chrono = "0.4"
 walkdir = "2.5"
 base64 = "0.22"
+memmap2 = "0.9"
 
 [profile.release]
 codegen-units = 1
@@ -62,3 +64,18 @@ lto = true
 opt-level = "z"
 panic = "abort"
 strip = true
+
+[profile.dev.package.image]
+opt-level = 2
+
+[profile.dev.package.zune-jpeg]
+opt-level = 2
+
+[profile.dev.package.flate2]
+opt-level = 2
+
+[profile.dev.package.miniz_oxide]
+opt-level = 2
+
+[profile.dev.package.png]
+opt-level = 2

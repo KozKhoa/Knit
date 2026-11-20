@@ -88,7 +88,7 @@ pub fn convert_office_to_pdf(
     let status = detect_libreoffice();
     let exe = status.executable_path.ok_or_else(|| {
         KnitError::Internal(
-            "Khong tim thay LibreOffice (soffice) tren he thong. Vui long cai dat LibreOffice de chuyen doi DOCX/PPTX sang PDF."
+            "LibreOffice (soffice) was not found on this system. Please install LibreOffice to convert DOCX/PPTX to PDF."
                 .into(),
         )
     })?;
@@ -98,7 +98,7 @@ pub fn convert_office_to_pdf(
     }
 
     let kind = DocInputKind::from_path(input_path).ok_or_else(|| {
-        KnitError::InvalidInput(format!("Khong phai file Office hop le: {}", input_path.display()))
+        KnitError::InvalidInput(format!("Invalid Office file: {}", input_path.display()))
     })?;
 
     let tmp_dir = tempfile::tempdir()?;
@@ -108,7 +108,7 @@ pub fn convert_office_to_pdf(
     std::fs::create_dir_all(&out_tmp_dir)?;
 
     let profile_uri = path_to_file_uri(&profile_dir);
-    reporter.info(format!("Dang goi LibreOffice headless: {}", exe.display()));
+    reporter.info(format!("Running headless LibreOffice: {}", exe.display()));
 
     let mut child = Command::new(&exe)
         .arg("--headless")

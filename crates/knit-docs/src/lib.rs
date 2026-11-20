@@ -4,14 +4,19 @@ pub mod models;
 pub mod office;
 pub mod world;
 
-pub use html_epub::{compile_epub_to_pdf_bytes, convert_epub_to_pdf, html_to_typst};
+pub use html_epub::{
+    clear_epub_cache, compile_epub_to_pdf_bytes, convert_epub_to_pdf, html_to_typst,
+};
 pub use markdown::{markdown_to_typst, markdown_to_typst_with_assets, txt_to_typst};
 pub use models::{
     DocConvertOptions, DocConvertResult, DocFont, DocInputKind, DocTheme, EngineStatus,
     PageNumberFormat, PageNumberPosition, PageNumberingOptions, PageOrientation, PageSizePreset,
 };
 pub use office::{convert_office_to_pdf, detect_libreoffice};
-pub use world::{compile_typst_to_pdf, compile_typst_to_pdf_with_toc};
+pub use world::{
+    compile_typst_to_pdf, compile_typst_to_pdf_with_toc,
+    compile_typst_to_pdf_with_toc_cancellable, evict_typst_cache,
+};
 
 use knit_core::{
     atomic_write_file, ensure_disk_space, CancellationToken, JobProgress, JobReporter,
@@ -43,6 +48,21 @@ pub fn compile_text_to_pdf_bytes(
     base_dir: Option<&Path>,
     opts: &DocConvertOptions,
 ) -> Result<(Vec<u8>, usize)> {
+    compile_text_to_pdf_bytes_with_cancel(content, kind, base_dir, opts, None)
+}
+
+pub fn compile_text_to_pdf_bytes_with_cancel(
+    content: &str,
+    kind: DocInputKind,
+    base_dir: Option<&Path>,
+    opts: &DocConvertOptions,
+    cancel: Option<&CancellationToken>,
+) -> Result<(Vec<u8>, usize)> {
+    if let Some(tok) = cancel {
+        if tok.is_cancelled() {
+            return Err(KnitError::Cancelled);
+        }
+    }
     let (markup, assets) = build_typst_markup_with_assets(content, kind, opts)?;
     let effective_base = match kind {
         DocInputKind::Markdown | DocInputKind::Html => base_dir,
@@ -53,7 +73,7 @@ pub fn compile_text_to_pdf_bytes(
     } else {
         None
     };
-    compile_typst_to_pdf_with_toc(&markup, effective_base, &assets, toc_target)
+    compile_typst_to_pdf_with_toc_cancellable(&markup, effective_base, &assets, toc_target, cancel)
 }
 
 /// Chuyển nội dung văn bản trong bộ nhớ thành file PDF (dùng cho editor có chỉnh sửa trực tiếp).
@@ -78,14 +98,14 @@ pub fn convert_text_to_pdf(
         }
     }
 
-    reporter.info(format!("Dang chuyen doi {:?} -> PDF (Typst)", kind));
+    reporter.info(format!("Converting {:?} -> PDF (Typst)", kind));
     reporter.normal(format!(
-        "Biên dịch tài liệu ({:?}, khổ {:?}, hướng {:?})",
+        "Compiling document ({:?}, paper {:?}, orientation {:?})",
         kind, opts.page_size, opts.orientation
     ));
     let (pdf_bytes, pages) = compile_text_to_pdf_bytes(content, kind, base_dir, opts)?;
     reporter.detailed(format!(
-        "Đã biên dịch Typst xong: {} trang ({} bytes) -> {}",
+        "Typst compilation complete: {} pages ({} bytes) -> {}",
         pages,
         pdf_bytes.len(),
         output_path.display()
@@ -127,7 +147,7 @@ pub fn convert_document_to_pdf(
 
     let kind = DocInputKind::from_path(input_path).ok_or_else(|| {
         KnitError::InvalidInput(format!(
-            "Dinh dang tai lieu khong duoc ho tro: {}",
+            "Unsupported document format: {}",
             input_path.display()
         ))
     })?;

@@ -10,6 +10,7 @@ serde.workspace = true
 serde_json.workspace = true
 image.workspace = true
 pulldown-cmark.workspace = true
+comemo.workspace = true
 typst.workspace = true
 typst-layout.workspace = true
 typst-pdf.workspace = true

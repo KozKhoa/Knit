@@ -361,3 +361,77 @@ fn orientation_line_spacing_page_numbering_and_toc_at_page_n_work() {
     assert!(pages >= 3, "expected >= 3 pages, got {pages}");
     assert!(pdf_bytes.starts_with(b"%PDF-"));
 }
+
+#[test]
+fn page_numbering_can_start_at_zero() {
+    let mut md = String::from("# Intro\n\nFirst page\n\n");
+    for idx in 1..=28 {
+        md.push_str(&format!(
+            "## Section {idx}\n\nSample paragraph {idx} with enough body text to span multiple pages so zero-based numbering is exercised.\n\n"
+        ));
+    }
+    let opts = DocConvertOptions {
+        page_numbering: knit_docs::PageNumberingOptions {
+            enabled: true,
+            start_number: 0,
+            start_from_page: 1,
+            position: knit_docs::PageNumberPosition::BottomCenter,
+            format: knit_docs::PageNumberFormat::PageOfTotal,
+            label_prefix: None,
+        },
+        ..DocConvertOptions::default()
+    };
+
+    let typ = markdown_to_typst(&md, &opts);
+    assert!(typ.contains("+ 0"));
+    let (pdf_bytes, pages) =
+        compile_text_to_pdf_bytes(&md, DocInputKind::Markdown, None, &opts).unwrap();
+    assert!(pages >= 2, "expected >= 2 pages, got {pages}");
+    assert!(pdf_bytes.starts_with(b"%PDF-"));
+}
+
+#[test]
+fn repeated_page_numbering_updates_evict_cache_and_honor_cancellation() {
+    let mut md = String::from("# Memory Hygiene Test\n\n");
+    for idx in 1..=20 {
+        md.push_str(&format!("## Chapter {idx}\n\nParagraph content for chapter {idx}.\n\n"));
+    }
+
+    for start_num in 0..5 {
+        let opts = DocConvertOptions {
+            page_numbering: knit_docs::PageNumberingOptions {
+                enabled: true,
+                start_number: start_num,
+                start_from_page: 1,
+                position: knit_docs::PageNumberPosition::BottomRight,
+                format: knit_docs::PageNumberFormat::PageOfTotal,
+                label_prefix: None,
+            },
+            ..DocConvertOptions::default()
+        };
+        let (bytes, pages) = knit_docs::compile_text_to_pdf_bytes_with_cancel(
+            &md,
+            DocInputKind::Markdown,
+            None,
+            &opts,
+            None,
+        )
+        .unwrap();
+        assert!(pages >= 1);
+        assert!(bytes.starts_with(b"%PDF-"));
+    }
+
+    knit_docs::evict_typst_cache();
+    knit_docs::clear_epub_cache();
+
+    let tok = CancellationToken::new();
+    tok.cancel();
+    let cancelled_res = knit_docs::compile_text_to_pdf_bytes_with_cancel(
+        &md,
+        DocInputKind::Markdown,
+        None,
+        &DocConvertOptions::default(),
+        Some(&tok),
+    );
+    assert!(matches!(cancelled_res, Err(knit_core::KnitError::Cancelled)));
+}

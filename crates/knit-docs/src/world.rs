@@ -1,10 +1,10 @@
 use image::ImageFormat;
-use knit_core::{safe_join_within, KnitError, Result};
+use knit_core::{safe_join_within, CancellationToken, KnitError, Result};
 use regex::Regex;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use typst::diag::{FileError, FileResult};
 use typst::foundations::{Bytes, Datetime, Duration, Label, Selector};
 use typst::introspection::Introspector;
@@ -146,14 +146,14 @@ pub struct KnitTypstWorld {
     main_id: FileId,
     source: Source,
     base_dir: Option<PathBuf>,
-    virtual_files: HashMap<String, Bytes>,
+    virtual_files: Arc<HashMap<String, Bytes>>,
 }
 
 impl KnitTypstWorld {
     pub fn new(
         markup: &str,
         base_dir: Option<&Path>,
-        virtual_files: HashMap<String, Bytes>,
+        virtual_files: Arc<HashMap<String, Bytes>>,
     ) -> Self {
         let catalog = shared_fonts();
         let main_id = RootedPath::new(
@@ -224,6 +224,19 @@ impl World for KnitTypstWorld {
     }
 }
 
+struct ComemoEvictGuard(usize);
+
+impl Drop for ComemoEvictGuard {
+    fn drop(&mut self) {
+        comemo::evict(self.0);
+    }
+}
+
+/// Dọn toàn bộ global memoization cache của Typst (`comemo`).
+pub fn evict_typst_cache() {
+    comemo::evict(0);
+}
+
 /// Biên dịch mã nguồn Typst thành bytes PDF và số trang.
 /// Đồng thời chuẩn hóa định dạng ảnh theo magic bytes (khắc phục lỗi `.jpg` nhưng chứa dữ liệu PNG/WebP/BMP...).
 pub fn compile_typst_to_pdf(
@@ -237,9 +250,9 @@ pub fn compile_typst_to_pdf(
 fn compile_typst_doc(
     markup: &str,
     base_dir: Option<&Path>,
-    virtual_files: &HashMap<String, Bytes>,
+    virtual_files: &Arc<HashMap<String, Bytes>>,
 ) -> Result<PagedDocument> {
-    let world = KnitTypstWorld::new(markup, base_dir, virtual_files.clone());
+    let world = KnitTypstWorld::new(markup, base_dir, Arc::clone(virtual_files));
     let warned = typst::compile::<PagedDocument>(&world);
     warned.output.map_err(|errs| {
         let msgs: Vec<String> = errs.iter().map(|e| e.message.to_string()).collect();
@@ -262,7 +275,32 @@ fn query_label_pages(doc: &PagedDocument, label_name: &'static str) -> Vec<usize
     introspector
         .query(&selector)
         .into_iter()
-        .filter_map(|elem| elem.location().and_then(|loc| introspector.pages(loc)).map(|p| p.get()))
+        .filter_map(|elem| elem.location().and_then(|loc| introspector.page(loc)).map(|p| p.get()))
+        .collect()
+}
+
+fn query_block_pages(doc: &PagedDocument) -> Vec<(usize, usize)> {
+    let Some(label) = Label::new(typst::utils::PicoStr::constant("knit-blk")) else {
+        return Vec::new();
+    };
+    let selector = Selector::Label(label);
+    let introspector = doc.introspector();
+    introspector
+        .query(&selector)
+        .into_iter()
+        .filter_map(|elem| {
+            let page = elem
+                .location()
+                .and_then(|loc| introspector.page(loc))
+                .map(|p| p.get())?;
+            let id = elem
+                .to_packed::<typst::introspection::MetadataElem>()
+                .and_then(|m| match m.value {
+                    typst::foundations::Value::Int(n) if n >= 0 => Some(n as usize),
+                    _ => None,
+                })?;
+            Some((id, page))
+        })
         .collect()
 }
 
@@ -273,23 +311,72 @@ pub fn compile_typst_to_pdf_with_toc(
     virtual_files: &HashMap<String, Vec<u8>>,
     toc_page: Option<usize>,
 ) -> Result<(Vec<u8>, usize)> {
+    compile_typst_to_pdf_with_toc_cancellable(markup, base_dir, virtual_files, toc_page, None)
+}
+
+pub fn compile_typst_to_pdf_with_toc_cancellable(
+    markup: &str,
+    base_dir: Option<&Path>,
+    virtual_files: &HashMap<String, Vec<u8>>,
+    toc_page: Option<usize>,
+    cancel: Option<&CancellationToken>,
+) -> Result<(Vec<u8>, usize)> {
+    if let Some(tok) = cancel {
+        if tok.is_cancelled() {
+            return Err(KnitError::Cancelled);
+        }
+    }
     let mut prepared_virtual: HashMap<String, Bytes> = virtual_files
         .iter()
         .map(|(k, v)| (k.clone(), Bytes::new(v.clone())))
         .collect();
     let prepared_markup = prepare_typst_images(markup, base_dir, &mut prepared_virtual);
+    compile_typst_with_prepared_assets(
+        &prepared_markup,
+        base_dir,
+        Arc::new(prepared_virtual),
+        toc_page,
+        cancel,
+    )
+}
 
-    let final_doc = if let Some(target_page) = toc_page.filter(|&p| p > 1 && prepared_markup.contains("<knit-blk>")) {
-        let pass1 = compile_typst_doc(&prepared_markup, base_dir, &prepared_virtual)?;
-        let pages_of_blocks = query_label_pages(&pass1, "knit-blk");
+pub(crate) fn compile_typst_with_prepared_assets(
+    prepared_markup: &str,
+    base_dir: Option<&Path>,
+    prepared_virtual: Arc<HashMap<String, Bytes>>,
+    toc_page: Option<usize>,
+    cancel: Option<&CancellationToken>,
+) -> Result<(Vec<u8>, usize)> {
+    // Evict stale memoized artifacts from previous compilations when this scope exits.
+    let _evict_guard = ComemoEvictGuard(2);
 
-        let build_with_split = |split_idx: Option<usize>| -> String {
+    let check_cancel = || -> Result<()> {
+        if let Some(tok) = cancel {
+            if tok.is_cancelled() {
+                return Err(KnitError::Cancelled);
+            }
+        }
+        Ok(())
+    };
+
+    check_cancel()?;
+
+    let final_doc = if let Some(target_page) =
+        toc_page.filter(|&p| p > 1 && prepared_markup.contains("<knit-blk>"))
+    {
+        let pass1 = compile_typst_doc(prepared_markup, base_dir, &prepared_virtual)?;
+        check_cancel()?;
+        let pages_of_blocks = query_block_pages(&pass1);
+        drop(pass1);
+
+        let build_with_split = |block_id: Option<usize>| -> String {
             let toc_snippet = "\n#pagebreak(weak: true)\n#metadata(0) <knit-toc>\n#outline(indent: auto)\n#pagebreak(weak: true)\n";
-            let inserted = match split_idx {
+            let inserted = match block_id {
                 Some(k) => {
                     let needle = format!("#metadata({k}) <knit-blk>");
                     if let Some(pos) = prepared_markup.find(&needle) {
-                        let mut s = String::with_capacity(prepared_markup.len() + toc_snippet.len());
+                        let mut s =
+                            String::with_capacity(prepared_markup.len() + toc_snippet.len());
                         s.push_str(&prepared_markup[..pos]);
                         s.push_str(toc_snippet);
                         s.push_str(&prepared_markup[pos..]);
@@ -305,36 +392,47 @@ pub fn compile_typst_to_pdf_with_toc(
             strip_knit_blk_markers(&inserted)
         };
 
-        let mut split_idx = pages_of_blocks.iter().position(|&p| p >= target_page);
-        let mut candidate_markup = build_with_split(split_idx);
-        let mut candidate_doc = compile_typst_doc(&candidate_markup, base_dir, &prepared_virtual)?;
+        let mut split_pos = pages_of_blocks.iter().position(|&(_, p)| p >= target_page);
+        let mut candidate_markup = build_with_split(split_pos.map(|i| pages_of_blocks[i].0));
+        let mut candidate_doc =
+            compile_typst_doc(&candidate_markup, base_dir, &prepared_virtual)?;
+        check_cancel()?;
 
-        if let (Some(k), Some(&toc_actual)) = (split_idx, query_label_pages(&candidate_doc, "knit-toc").first()) {
-            if toc_actual > target_page && k > 0 {
-                split_idx = Some(k - 1);
-                candidate_markup = build_with_split(split_idx);
-                candidate_doc = compile_typst_doc(&candidate_markup, base_dir, &prepared_virtual)?;
+        if let (Some(pos), Some(&toc_actual)) = (
+            split_pos,
+            query_label_pages(&candidate_doc, "knit-toc").first(),
+        ) {
+            if toc_actual > target_page && pos > 0 {
+                split_pos = Some(pos - 1);
+                candidate_markup = build_with_split(split_pos.map(|i| pages_of_blocks[i].0));
+                candidate_doc =
+                    compile_typst_doc(&candidate_markup, base_dir, &prepared_virtual)?;
+                check_cancel()?;
             }
         }
         candidate_doc
     } else {
-        let clean = if prepared_markup.contains("<knit-blk>") {
-            strip_knit_blk_markers(&prepared_markup)
+        let clean;
+        let markup_ref = if prepared_markup.contains("<knit-blk>") {
+            clean = strip_knit_blk_markers(prepared_markup);
+            clean.as_str()
         } else {
             prepared_markup
         };
-        compile_typst_doc(&clean, base_dir, &prepared_virtual)?
+        compile_typst_doc(markup_ref, base_dir, &prepared_virtual)?
     };
 
+    check_cancel()?;
     let pages = final_doc.pages().len();
-    let pdf_bytes = typst_pdf::pdf(&final_doc, &typst_pdf::PdfOptions::default()).map_err(|errs| {
-        let msgs: Vec<String> = errs.iter().map(|e| e.message.to_string()).collect();
-        KnitError::InvalidInput(format!("Loi xuat PDF tu Typst: {}", msgs.join("; ")))
-    })?;
+    let pdf_bytes =
+        typst_pdf::pdf(&final_doc, &typst_pdf::PdfOptions::default()).map_err(|errs| {
+            let msgs: Vec<String> = errs.iter().map(|e| e.message.to_string()).collect();
+            KnitError::InvalidInput(format!("Loi xuat PDF tu Typst: {}", msgs.join("; ")))
+        })?;
     Ok((pdf_bytes, pages))
 }
 
-fn prepare_typst_images(
+pub(crate) fn prepare_typst_images(
     markup: &str,
     base_dir: Option<&Path>,
     virtual_files: &mut HashMap<String, Bytes>,
@@ -481,5 +579,64 @@ fn hex_val(b: u8) -> Option<u8> {
         b'a'..=b'f' => Some(b - b'a' + 10),
         b'A'..=b'F' => Some(b - b'A' + 10),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::markdown::markdown_to_typst;
+    use crate::models::DocConvertOptions;
+
+    #[test]
+    fn toc_page_inserts_in_middle_of_document_not_just_start_or_end() {
+        let mut md = String::from("# Intro Page\n\nIntroductory text.\n\n");
+        for idx in 1..=65 {
+            md.push_str(&format!(
+                "## Section {idx}\n\nParagraph content for section {idx} with enough text to span across multiple pages cleanly during Typst layout.\n\n"
+            ));
+        }
+
+        let opts = DocConvertOptions {
+            include_toc: true,
+            toc_page: 3,
+            ..DocConvertOptions::default()
+        };
+        let markup = markdown_to_typst(&md, &opts);
+        let mut virtual_files = HashMap::new();
+        let prepared = prepare_typst_images(&markup, None, &mut virtual_files);
+        let virtual_files = Arc::new(virtual_files);
+        let pass1 = compile_typst_doc(&prepared, None, &virtual_files).unwrap();
+        let total_pages_without_toc = pass1.pages().len();
+        assert!(
+            total_pages_without_toc >= 5,
+            "expected at least 5 pages, got {total_pages_without_toc}"
+        );
+
+        let block_pages = query_block_pages(&pass1);
+        assert!(
+            block_pages.iter().any(|&(_, p)| p == 2)
+                && block_pages.iter().any(|&(_, p)| p >= 4),
+            "expected blocks spread across multiple pages, got: {block_pages:?}"
+        );
+
+        // Verify compile_typst_to_pdf_with_toc places <knit-toc> on page 3 (strictly in the middle)
+        let (pdf_bytes, final_pages) =
+            compile_typst_to_pdf_with_toc(&markup, None, &HashMap::new(), Some(3)).unwrap();
+        assert!(pdf_bytes.starts_with(b"%PDF-"));
+        assert!(final_pages > total_pages_without_toc);
+
+        // Re-run the split check to inspect the actual page of <knit-toc>
+        let split_pos = block_pages.iter().position(|&(_, p)| p >= 3).unwrap();
+        let needle = format!("#metadata({}) <knit-blk>", block_pages[split_pos].0);
+        let pos = prepared.find(&needle).unwrap();
+        let toc_snippet = "\n#pagebreak(weak: true)\n#metadata(0) <knit-toc>\n#outline(indent: auto)\n#pagebreak(weak: true)\n";
+        let mut inserted = String::new();
+        inserted.push_str(&prepared[..pos]);
+        inserted.push_str(toc_snippet);
+        inserted.push_str(&prepared[pos..]);
+        let candidate = compile_typst_doc(&strip_knit_blk_markers(&inserted), None, &virtual_files).unwrap();
+        let toc_pages = query_label_pages(&candidate, "knit-toc");
+        assert_eq!(toc_pages, vec![3], "TOC should land on page 3, got {toc_pages:?}");
     }
 }
