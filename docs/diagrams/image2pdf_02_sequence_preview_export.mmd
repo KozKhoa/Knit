@@ -1,0 +1,29 @@
+sequenceDiagram
+    participant UI as 📋 Image2PdfView
+    participant IPC as 🔌 src-tauri
+    participant TSem as 🚦 thumb_semaphore
+    participant PSem as 🔍 preview_semaphore
+    participant Disk as 💾 Disk Cache / FS
+    participant Rust as ⚙️ knit-pdf Packer
+
+    UI->>IPC: check_missing_files(uniquePaths)
+    IPC->>Disk: Path::exists() per file
+    Disk-->>IPC: missingPaths[]
+    alt Any source file missing
+        IPC-->>UI: missingPaths -> block export & highlight cards
+    else All source files present
+        UI->>TSem: Background grid render_image_thumb_file
+        TSem->>Disk: Double-check cache .jpg
+        ModalOrZoom->>PSem: Double-click render_page_draft_preview_file
+        PSem->>PSem: Acquire isolated 2-permit semaphore
+        PSem-->>ModalOrZoom: Return cached draft .jpg path
+        UI->>IPC: pdf_build_from_images(jobId, drafts, bookmarks, config)
+        IPC->>Rust: build_pdf_from_drafts(chunks + StreamingPdfWriter)
+        loop Every Rayon batch
+            Rust-->>IPC: JobProgress (~10Hz via Channel)
+            IPC-->>UI: Progress bar + English JobLog
+        end
+        Rust-->>IPC: PdfBuildResult (output_files, total_pages, passthrough_pages)
+        IPC->>IPC: trim_process_heap() -> malloc_trim(0)
+        IPC-->>UI: Return PdfBuildResult
+    end

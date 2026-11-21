@@ -2,7 +2,7 @@
 
 ## Tổng quan Trạng thái
 - **Giai đoạn hiện tại:** Hoàn tất toàn bộ 6 core crates (`knit-core`, `knit-archive`, `knit-manga`, `knit-renamer`, `knit-pdf`, `knit-docs`), Frontend React/TypeScript/Tailwind Workbench, lớp vỏ `src-tauri` Desktop Shell và GitHub Actions CI/Release.
-- **Cập nhật lần cuối:** 2026-11-20
+- **Cập nhật lần cuối:** 2026-11-21
 
 | Milestone | Trạng thái | Ghi chú |
 |---|---|---|
@@ -119,3 +119,9 @@
 - **Single-Entry Parsed EPUB Cache**: Added `LAST_PARSED_EPUB` in `crates/knit-docs/src/html_epub.rs` keyed by `(path, file_len, mtime_nanos)` so changing page numbering or layout options reuses pre-parsed markup and normalized image buffers without re-extracting the `.epub` archive.
 - **Serialized Cancellable Preview IPC & PDF.js Canvas Release**: Added `docs_preview_cancel` + 1-permit `docs_preview_semaphore()` + `trim_process_heap()` in `src-tauri/src/lib.rs`, `destroyPdfDoc` (`doc.destroy()` / `loadingTask.destroy()`), and two-way `IntersectionObserver` off-screen `<canvas>` backing-store release (`canvas.width = 0; canvas.height = 0`) in `PdfJsPreview.tsx`.
 - **Verification**: `cargo test --workspace` (51/51), `cargo check -p knit-desktop` (exit 0), `pnpm build` (exit 0), `pnpm test` (20/20 files, 69/69 tests), `python3 .agents/skills/knit-qa-gate/scripts/audit-rules.py` (Pass).
+
+## `image2pdf` Agent Docs, Mermaid Diagrams & Automated Functional Test Suite (2026-11-21)
+- **Agent-Optimized Documentation & Mermaid Architecture**: Added root `llms.txt` index, `docs/image2pdf-agent-guide.md`, Draft 2020-12 `docs/specs/image2pdf.schema.json`, upgraded `docs/image2pdf-architecture.md` with 4 validated Mermaid diagrams (`docs/diagrams/image2pdf_01..04*.mmd`), and advertised all surfaces in `README.md`.
+- **ISTQB Functional Test Suite & Layer 1+2 Automation**: Documented 40 functional test cases + RTM in `docs/image2pdf-functional-tests.md`, added 3 comprehensive Rust integration suites in `crates/knit-pdf/tests/pdf_tests.rs`, and created `src/views/Image2PdfView.test.tsx` (6 Vitest/jsdom state-machine & UI tests).
+- **Bug Caught & Fixed by BVA (`TC-DOM-07`)**: Fixed `f32::clamp` panic (`min > max`) in `crates/knit-pdf/src/imaging.rs` (`apply_edits` & `rasterize_annotations`) when rasterizing text annotations on tiny cropped heights (`h < 20px`), and synced multi-part PDF naming (`_part01.pdf`) across docs.
+- **Verification**: `cargo test --workspace` (54/54), `cargo check -p knit-desktop` (exit 0), `pnpm build` (exit 0), `pnpm test` (21/21 files, 75/75 tests), `python3 .agents/skills/knit-qa-gate/scripts/audit-rules.py` (Pass).

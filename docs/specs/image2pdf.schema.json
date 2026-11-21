@@ -1,0 +1,476 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://knit.local/docs/specs/image2pdf.schema.json",
+  "title": "Knit image2pdf IPC & Data Contract",
+  "description": "Machine-readable schema and Tauri IPC / Rust crate contract for Knit image2pdf (v0.1.0). Derived directly from crates/knit-pdf/src/models.rs, src-tauri/src/lib.rs, and src/types/ipc.ts.",
+  "version": "0.1.0",
+  "x-llms-index": "/llms.txt",
+  "x-supported-image-extensions": [
+    "jpg",
+    "jpeg",
+    "jfif",
+    "png",
+    "webp",
+    "avif",
+    "gif",
+    "bmp",
+    "tiff",
+    "tif"
+  ],
+  "x-ipc-operations": [
+    {
+      "operationId": "scanImagesForPdf",
+      "tauriCommand": "pdf_scan_images",
+      "rustEntrypoint": "knit_pdf::scan_image_files_with_reporter / knit_pdf::scan_image_folder_with_reporter",
+      "summary": "Scan image files or folders into PageDraft[] and folder-based BookmarkNode[].",
+      "description": "Read-only disk scan with natural sort and AVIF header-seek optimization. Shifts subfolder BookmarkNode target_page_index offsets across multiple inputs. Requires Tauri runtime (isTauriRuntime() === true) and non-empty paths. Use checkMissingFiles before export if user may have moved files after import.",
+      "deprecated": false,
+      "parameters": {
+        "type": "object",
+        "required": ["paths", "isFolder", "animatedPolicy"],
+        "additionalProperties": false,
+        "properties": {
+          "paths": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string" },
+            "description": "Absolute filesystem paths to image files or root folders."
+          },
+          "isFolder": {
+            "type": "boolean",
+            "description": "When true (or when path is a directory), recursively walks subdirectories in natural order and generates hierarchical BookmarkNode entries."
+          },
+          "animatedPolicy": {
+            "$ref": "#/$defs/AnimatedImagePolicy"
+          },
+          "onEvent": {
+            "description": "Optional Tauri Channel<JobEvent> receiving scan progress and log messages."
+          }
+        }
+      },
+      "returns": { "$ref": "#/$defs/ImageScanResult" },
+      "errors": [
+        { "pattern": "Chua chon anh hoac thu muc anh", "cause": "Empty paths array passed to pdf_scan_images." },
+        { "pattern": "Path not found: <path>", "cause": "Folder root does not exist on disk." }
+      ]
+    },
+    {
+      "operationId": "renderImageThumbFile",
+      "tauriCommand": "render_image_thumb_file",
+      "rustEntrypoint": "knit_pdf::render_image_thumbnail_jpeg",
+      "summary": "Render and disk-cache a JPEG grid thumbnail, returning the local cache file path.",
+      "description": "Preferred thumbnail command. Uses thumb_semaphore (2..4 permits) and double-checked atomic disk cache in app_cache_dir/image-thumbs/. Wrap returned path with convertFileSrc(path) for WebView <img> rendering. Use renderPageDraftPreviewFile instead when rendering cropped/rotated/annotated drafts.",
+      "deprecated": false,
+      "parameters": {
+        "type": "object",
+        "required": ["path", "maxWidth"],
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string", "description": "Absolute path to source image file." },
+          "maxWidth": { "type": "integer", "minimum": 1, "default": 360, "description": "Maximum thumbnail pixel dimension." }
+        }
+      },
+      "returns": {
+        "type": "string",
+        "description": "Absolute path to cached .jpg file on disk. Pass through convertFileSrc() in browser UI."
+      }
+    },
+    {
+      "operationId": "renderImageThumbBase64",
+      "tauriCommand": "render_image_thumb",
+      "rustEntrypoint": "knit_pdf::render_image_thumbnail",
+      "summary": "Legacy Base64 PNG thumbnail renderer (prefer renderImageThumbFile).",
+      "description": "Deprecated for grid virtualization because PNG encoding and Base64 IPC serialization bloat WebView heap. Use renderImageThumbFile + convertFileSrc instead.",
+      "deprecated": true,
+      "x-replacement": "renderImageThumbFile",
+      "parameters": {
+        "type": "object",
+        "required": ["path", "maxWidth"],
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string" },
+          "maxWidth": { "type": "integer", "minimum": 1, "default": 360 }
+        }
+      },
+      "returns": { "type": "string", "description": "Raw Base64-encoded PNG bytes (no data: prefix)." }
+    },
+    {
+      "operationId": "renderPageDraftPreviewFile",
+      "tauriCommand": "render_page_draft_preview_file",
+      "rustEntrypoint": "knit_pdf::render_page_draft_preview_jpeg",
+      "summary": "Render a high-priority edited PageDraft preview JPEG and return its disk cache path.",
+      "description": "Runs under preview_semaphore (2 isolated permits) so zoom/editor previews never queue behind grid thumbnails. Applies EXIF transpose, rotation_deg, normalized CropRect, and AnnotationLayer onto a white RGB surface and caches JPEG quality 82 on disk.",
+      "deprecated": false,
+      "parameters": {
+        "type": "object",
+        "required": ["draft", "maxSize"],
+        "additionalProperties": false,
+        "properties": {
+          "draft": { "$ref": "#/$defs/PageDraft" },
+          "maxSize": { "type": "integer", "minimum": 0, "default": 360, "description": "Max pixel dimension; 0 preserves edited full dimensions." }
+        }
+      },
+      "returns": {
+        "type": "string",
+        "description": "Absolute path to cached draft preview .jpg file on disk."
+      }
+    },
+    {
+      "operationId": "checkMissingFiles",
+      "tauriCommand": "check_missing_files",
+      "summary": "Return subset of source paths that no longer exist on disk before exporting.",
+      "description": "Read-only idempotent preflight check. Pass deduplicated PageDraft.source.path values before opening save dialogs or calling buildImage2Pdf. Returns empty array outside Tauri runtime.",
+      "deprecated": false,
+      "parameters": {
+        "type": "object",
+        "required": ["paths"],
+        "additionalProperties": false,
+        "properties": {
+          "paths": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Unique source file paths to check via Path::exists()."
+          }
+        }
+      },
+      "returns": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Missing paths from the input array (empty if all files exist)."
+      }
+    },
+    {
+      "operationId": "buildImage2Pdf",
+      "tauriCommand": "pdf_build_from_images",
+      "rustEntrypoint": "knit_pdf::build_pdf_from_drafts",
+      "summary": "Stream PageDraft[] and BookmarkNode[] into one or more PDF files on disk.",
+      "description": "Long-running cancellable background job. Processes images in bounded Rayon chunks (batch_size 4..24) and streams directly to disk via StreamingPdfWriter (256 KiB BufWriter + TempFilesGuard). Supports Fast (single output, passthrough), Balanced, and Safe modes, plus max_mb or max_pages_per_file splitting with bookmark remapping. Calls trim_process_heap() / malloc_trim(0) on completion or cancellation.",
+      "deprecated": false,
+      "parameters": {
+        "type": "object",
+        "required": ["jobId", "drafts", "bookmarks", "config"],
+        "additionalProperties": false,
+        "properties": {
+          "jobId": { "type": "string", "format": "uuid", "description": "Caller-generated job ID registered for cancel_job." },
+          "drafts": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/PageDraft" } },
+          "bookmarks": { "type": "array", "items": { "$ref": "#/$defs/BookmarkNode" } },
+          "config": { "$ref": "#/$defs/Image2PdfConfig" },
+          "onEvent": { "description": "Optional Tauri Channel<JobEvent> throttled at ~10 Hz." }
+        }
+      },
+      "returns": { "$ref": "#/$defs/PdfBuildResult" },
+      "errors": [
+        { "pattern": "Khong co trang nao de tao PDF", "cause": "Empty drafts array passed." },
+        { "pattern": "Invalid input: PdfPage duoc xu ly truc tiep trong PDF ops", "cause": "Draft with PageSource.kind == pdf_page passed into raster image2pdf export." },
+        { "pattern": "Job cancelled by user", "cause": "cancel_job(jobId) triggered; TempFilesGuard removes all .tmp artifacts." },
+        { "pattern": "Insufficient disk space: need ~<needed>, available <available>", "cause": "Free disk space on target volume is below 1x (Balanced) or 2x (Safe) estimated input bytes." }
+      ]
+    },
+    {
+      "operationId": "cancelJob",
+      "tauriCommand": "cancel_job",
+      "summary": "Signal CancellationToken for an active pdf_build_from_images job.",
+      "description": "Idempotent cooperative cancellation. Aborts between Rayon chunks or pages and triggers TempFilesGuard cleanup of uncommitted .tmp files.",
+      "deprecated": false,
+      "parameters": {
+        "type": "object",
+        "required": ["jobId"],
+        "additionalProperties": false,
+        "properties": {
+          "jobId": { "type": "string", "format": "uuid" }
+        }
+      },
+      "returns": { "type": "null" }
+    },
+    {
+      "operationId": "clearImagePreviewCache",
+      "tauriCommand": "clear_image_preview_cache",
+      "summary": "Delete disk thumbnail caches and release OS heap via malloc_trim(0).",
+      "description": "Safe to call when clearing the workspace list. Removes image-thumbs cache files, resets PDF/EPUB/Typst caches, and trims process heap on Linux glibc.",
+      "deprecated": false,
+      "parameters": { "type": "object", "properties": {}, "additionalProperties": false },
+      "returns": { "type": "null" }
+    }
+  ],
+  "$defs": {
+    "PageSource": {
+      "description": "Discriminated union identifying the read-only backing file and frame/page index for a PageDraft.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "path"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "image_file" },
+            "path": { "type": "string", "description": "Absolute path to static image or first-frame animated image." }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "path", "frame_index"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "animated_frame" },
+            "path": { "type": "string", "description": "Absolute path to GIF or animated WebP." },
+            "frame_index": { "type": "integer", "minimum": 0, "description": "0-based animation frame index." }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "path", "page_index"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "pdf_page" },
+            "path": { "type": "string", "description": "Reserved for PDF editor pages; not valid input for raster image2pdf export." },
+            "page_index": { "type": "integer", "minimum": 0 }
+          }
+        }
+      ],
+      "discriminator": { "propertyName": "kind" }
+    },
+    "CropRect": {
+      "type": "object",
+      "description": "Normalized crop rectangle in [0.0, 1.0] relative to EXIF-oriented image dimensions.",
+      "required": ["x", "y", "width", "height"],
+      "additionalProperties": false,
+      "properties": {
+        "x": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "y": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "width": { "type": "number", "exclusiveMinimum": 0.0, "maximum": 1.0 },
+        "height": { "type": "number", "exclusiveMinimum": 0.0, "maximum": 1.0 }
+      }
+    },
+    "TextAnnotation": {
+      "type": "object",
+      "required": ["id", "text", "x", "y", "font_size_ratio", "color_hex"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "text": { "type": "string", "description": "UTF-8 label rendered onto the edited image." },
+        "x": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "y": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "font_size_ratio": { "type": "number", "exclusiveMinimum": 0.0, "default": 0.04, "description": "Text height ratio relative to post-crop/rotate image height." },
+        "color_hex": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$", "example": "#DC3545" }
+      }
+    },
+    "StrokeAnnotation": {
+      "type": "object",
+      "required": ["id", "points", "stroke_width_ratio", "color_hex"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "points": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
+          }
+        },
+        "stroke_width_ratio": { "type": "number", "exclusiveMinimum": 0.0, "default": 0.006, "description": "Stroke width ratio relative to shortest image side." },
+        "color_hex": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$", "example": "#007BFF" }
+      }
+    },
+    "AnnotationLayer": {
+      "type": "object",
+      "required": ["texts", "strokes"],
+      "additionalProperties": false,
+      "properties": {
+        "texts": { "type": "array", "default": [], "items": { "$ref": "#/$defs/TextAnnotation" } },
+        "strokes": { "type": "array", "default": [], "items": { "$ref": "#/$defs/StrokeAnnotation" } }
+      }
+    },
+    "PageDraft": {
+      "type": "object",
+      "description": "Non-destructive page edit state referencing a read-only image on disk.",
+      "required": ["id", "source", "rotation_deg", "crop", "annotations", "duration_ms", "label", "width_px", "height_px"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "source": { "$ref": "#/$defs/PageSource" },
+        "rotation_deg": { "type": "integer", "enum": [0, 90, 180, 270], "default": 0, "description": "Clockwise additional rotation in degrees. Any non-zero value disables lossless passthrough." },
+        "crop": { "oneOf": [{ "$ref": "#/$defs/CropRect" }, { "type": "null" }], "default": null },
+        "annotations": { "$ref": "#/$defs/AnnotationLayer" },
+        "duration_ms": { "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }], "default": null, "description": "Optional PDF page /Dur duration in milliseconds for animated frames." },
+        "label": { "type": "string" },
+        "width_px": { "type": "integer", "minimum": 0 },
+        "height_px": { "type": "integer", "minimum": 0 },
+        "file_size_bytes": { "type": "integer", "minimum": 0, "default": 0 }
+      }
+    },
+    "BookmarkNode": {
+      "type": "object",
+      "description": "PDF Outline node targeting a 0-based page index.",
+      "required": ["title", "target_page_index", "children"],
+      "additionalProperties": false,
+      "properties": {
+        "title": { "type": "string" },
+        "target_page_index": { "type": "integer", "minimum": 0, "description": "0-based page index (clamped to page count - 1 when written)." },
+        "children": { "type": "array", "default": [], "items": { "$ref": "#/$defs/BookmarkNode" } }
+      }
+    },
+    "PageBackground": {
+      "description": "Fill color behind fitted images on fixed paper sizes (FitA4 / FitLetter).",
+      "oneOf": [
+        { "type": "object", "required": ["kind"], "additionalProperties": false, "properties": { "kind": { "const": "transparent" } } },
+        { "type": "object", "required": ["kind"], "additionalProperties": false, "properties": { "kind": { "const": "white" } } },
+        { "type": "object", "required": ["kind"], "additionalProperties": false, "properties": { "kind": { "const": "black" } } },
+        {
+          "type": "object",
+          "required": ["kind", "r", "g", "b"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "custom" },
+            "r": { "type": "integer", "minimum": 0, "maximum": 255 },
+            "g": { "type": "integer", "minimum": 0, "maximum": 255 },
+            "b": { "type": "integer", "minimum": 0, "maximum": 255 }
+          }
+        }
+      ],
+      "discriminator": { "propertyName": "kind" }
+    },
+    "PageLayoutPolicy": {
+      "description": "PDF page dimensions clamped to ISO PDF bounds [3.0, 14400.0] pt.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["mode", "dpi"],
+          "additionalProperties": false,
+          "properties": {
+            "mode": { "const": "original_size" },
+            "dpi": { "type": "number", "exclusiveMinimum": 0.0, "default": 72.0, "description": "Pixels per inch (72.0 = 1px = 1pt)." }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["mode", "margin_pt"],
+          "additionalProperties": false,
+          "properties": {
+            "mode": { "const": "fit_a4" },
+            "margin_pt": { "type": "number", "minimum": 0.0, "description": "Page margin in PDF points (1 mm = 72 / 25.4 pt). A4 = 595.28 x 841.89 pt." },
+            "background": { "$ref": "#/$defs/PageBackground" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["mode", "margin_pt"],
+          "additionalProperties": false,
+          "properties": {
+            "mode": { "const": "fit_letter" },
+            "margin_pt": { "type": "number", "minimum": 0.0, "description": "Page margin in PDF points. Letter = 612.0 x 792.0 pt." },
+            "background": { "$ref": "#/$defs/PageBackground" }
+          }
+        }
+      ],
+      "discriminator": { "propertyName": "mode" }
+    },
+    "AnimatedImagePolicy": {
+      "type": "string",
+      "enum": ["first_frame_only", "unpack_all_frames"],
+      "default": "first_frame_only",
+      "x-enumDescriptions": {
+        "first_frame_only": "Imports only frame 0 of GIF/WebP animations.",
+        "unpack_all_frames": "Expands each frame into an AnimatedFrame PageDraft with duration_ms mapped to PDF /Dur."
+      }
+    },
+    "PdfExportMode": {
+      "type": "string",
+      "enum": ["fast", "balanced", "safe"],
+      "default": "balanced",
+      "x-enumDescriptions": {
+        "fast": "Max throughput (4..8 workers, batch 24). Skips disk space check and split rules (always 1 output file). Header-only passthrough checks.",
+        "balanced": "Default (2..4 workers, batch 4..8). Checks 1x disk space, supports max_mb / max_pages_per_file, header-level passthrough.",
+        "safe": "Max safety (2..4 workers, batch 4). Checks 2x disk space, supports splitting, full pixel decode verification before passthrough."
+      }
+    },
+    "Image2PdfConfig": {
+      "type": "object",
+      "required": ["output_path", "layout", "jpeg_quality", "lossless_passthrough", "animated_policy", "export_mode", "max_mb"],
+      "additionalProperties": false,
+      "properties": {
+        "output_path": { "type": "string", "description": "Target .pdf path. Multi-part splits write _part01.pdf, _part02.pdf, etc." },
+        "layout": { "$ref": "#/$defs/PageLayoutPolicy" },
+        "jpeg_quality": { "type": "integer", "minimum": 1, "maximum": 100, "default": 88 },
+        "lossless_passthrough": { "type": "boolean", "default": true, "description": "When true, unedited JPEG/RGB-Gray8-PNG bypass decode/re-encode." },
+        "animated_policy": { "$ref": "#/$defs/AnimatedImagePolicy" },
+        "export_mode": { "$ref": "#/$defs/PdfExportMode" },
+        "max_mb": { "oneOf": [{ "type": "number", "exclusiveMinimum": 0.0 }, { "type": "null" }], "default": null, "description": "Split output PDFs when next page would exceed max_mb MiB. Ignored when export_mode is fast." },
+        "max_pages_per_file": { "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }], "default": null, "description": "Split output PDFs after N pages. Ignored when export_mode is fast." }
+      },
+      "example": {
+        "output_path": "/tmp/output.pdf",
+        "layout": { "mode": "original_size", "dpi": 72.0 },
+        "jpeg_quality": 88,
+        "lossless_passthrough": true,
+        "animated_policy": "first_frame_only",
+        "export_mode": "balanced",
+        "max_mb": null,
+        "max_pages_per_file": null
+      }
+    },
+    "ImageScanResult": {
+      "type": "object",
+      "required": ["pages", "bookmarks"],
+      "additionalProperties": false,
+      "properties": {
+        "pages": { "type": "array", "items": { "$ref": "#/$defs/PageDraft" } },
+        "bookmarks": { "type": "array", "items": { "$ref": "#/$defs/BookmarkNode" } },
+        "warnings": { "type": "array", "default": [], "items": { "type": "string" } }
+      }
+    },
+    "PdfBuildResult": {
+      "type": "object",
+      "required": ["output_files", "total_pages", "total_bytes", "passthrough_pages"],
+      "additionalProperties": false,
+      "properties": {
+        "output_files": { "type": "array", "items": { "type": "string" } },
+        "total_pages": { "type": "integer", "minimum": 0 },
+        "total_bytes": { "type": "integer", "minimum": 0 },
+        "passthrough_pages": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "JobLogLevel": {
+      "type": "string",
+      "enum": ["info", "warn", "error"]
+    },
+    "JobProgress": {
+      "type": "object",
+      "required": ["phase", "done", "total", "bytes_done", "bytes_total", "current_item"],
+      "additionalProperties": false,
+      "properties": {
+        "phase": { "type": "string", "example": "pack" },
+        "done": { "type": "integer", "minimum": 0 },
+        "total": { "type": "integer", "minimum": 0 },
+        "bytes_done": { "type": "integer", "minimum": 0 },
+        "bytes_total": { "type": "integer", "minimum": 0 },
+        "current_item": { "type": "string" }
+      }
+    },
+    "JobEvent": {
+      "description": "Tagged stream payload emitted over Tauri Channel<JobEvent>.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "data"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "progress" },
+            "data": { "$ref": "#/$defs/JobProgress" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "level", "message"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "log" },
+            "level": { "$ref": "#/$defs/JobLogLevel" },
+            "message": { "type": "string" }
+          }
+        }
+      ],
+      "discriminator": { "propertyName": "kind" }
+    }
+  }
+}

@@ -1,0 +1,63 @@
+classDiagram
+    class Image2PdfConfig {
+        +PathBuf output_path
+        +PageLayoutPolicy layout
+        +u8 jpeg_quality
+        +bool lossless_passthrough
+        +AnimatedImagePolicy animated_policy
+        +PdfExportMode export_mode
+        +Option~f64~ max_mb
+        +Option~usize~ max_pages_per_file
+    }
+
+    class PageDraft {
+        +String id
+        +PageSource source
+        +i32 rotation_deg
+        +Option~CropRect~ crop
+        +AnnotationLayer annotations
+        +Option~u32~ duration_ms
+        +String label
+        +u32 width_px
+        +u32 height_px
+        +u64 file_size_bytes
+        +has_pixel_edits() bool
+    }
+
+    class PageSource {
+        <<enumeration>>
+        ImageFile(path)
+        AnimatedFrame(path, frame_index)
+        PdfPage(path, page_index)
+    }
+
+    class CropRect {
+        +f32 x
+        +f32 y
+        +f32 width
+        +f32 height
+    }
+
+    class AnnotationLayer {
+        +Vec~TextAnnotation~ texts
+        +Vec~StrokeAnnotation~ strokes
+    }
+
+    class BookmarkNode {
+        +String title
+        +usize target_page_index
+        +Vec~BookmarkNode~ children
+    }
+
+    class PdfBuildResult {
+        +Vec~PathBuf~ output_files
+        +usize total_pages
+        +u64 total_bytes
+        +usize passthrough_pages
+    }
+
+    PageDraft *-- PageSource
+    PageDraft *-- CropRect
+    PageDraft *-- AnnotationLayer
+    BookmarkNode *-- BookmarkNode : children
+    Image2PdfConfig ..> PdfBuildResult : produces

@@ -37,3 +37,8 @@ pnpm tauri build
 - [DESIGIN.md](DESIGIN.md) — Design tokens & Flat UI guidelines
 - [docs/glossary.md](docs/glossary.md) — Từ điển thuật ngữ miền nghiệp vụ
 - [docs/decisions/](docs/decisions/) — Architecture Decision Records (`ADR-001`..`ADR-005`)
+- [llms.txt](llms.txt) — Mục lục tài liệu tối ưu cho coding agents (chuẩn `llmstxt.org`)
+- [docs/image2pdf-agent-guide.md](docs/image2pdf-agent-guide.md) — Hướng dẫn tích hợp `image2pdf` (TypeScript Tauri IPC & Rust `knit-pdf`, bảng tham số & mã lỗi)
+- [docs/image2pdf-architecture.md](docs/image2pdf-architecture.md) — Tài liệu thiết kế kiến trúc & sơ đồ Mermaid cho `image2pdf`
+- [docs/specs/image2pdf.schema.json](docs/specs/image2pdf.schema.json) — JSON Schema & đặc tả hợp đồng IPC cho `image2pdf`
+- [docs/image2pdf-functional-tests.md](docs/image2pdf-functional-tests.md) — Bộ test case chức năng chuẩn ISTQB & Ma trận truy xuất yêu cầu (RTM) cho `image2pdf`

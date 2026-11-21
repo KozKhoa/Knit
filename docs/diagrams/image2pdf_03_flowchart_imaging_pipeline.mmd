@@ -1,0 +1,26 @@
+flowchart TD
+    Start(["🖼️ prepare_page_for_pdf_with_mode"]) --> Edits{"has_pixel_edits() or\n!lossless_passthrough?"}
+    Edits -->|"Yes"| Raster["⚙️ Decode + EXIF Transpose\nRotate + Crop + Composite"]
+    Raster --> Encode["📦 Encode JPEG (jpeg_quality)\nor Zlib Flate"]
+
+    Edits -->|"No"| Format{"Source format?"}
+    Format -->|"WebP / AVIF / GIF / BMP / TIFF"| Raster
+    Format -->|"JPEG / PNG"| Mode{"export_mode?"}
+
+    Mode -->|"Fast / Balanced"| Header["🔍 Header check\nJPEG SOF/EXIF=1 or PNG Gray8/RGB8"]
+    Header -->|"Valid"| Pass["⚡ LosslessPassthrough\nCopy raw /DCTDecode or IDAT"]
+    Header -->|"Invalid / EXIF rotated"| Raster
+
+    Mode -->|"Safe"| FullDecode["🛡️ Full pixel decode verification"]
+    FullDecode -->|"Intact & passthrough-eligible"| Pass
+    FullDecode -->|"Needs normalization"| Encode
+
+    classDef entry fill:#87CEEB,stroke:#0B7285,stroke-width:2px,color:#000000
+    classDef decision fill:#FFD700,stroke:#333333,stroke-width:2px,color:#000000
+    classDef fast fill:#90EE90,stroke:#2B8A3E,stroke-width:2px,color:#003300
+    classDef render fill:#FFE8CC,stroke:#D9480F,stroke-width:2px,color:#3B1700
+
+    class Start entry
+    class Edits,Format,Mode decision
+    class Pass fast
+    class Raster,Encode,Header,FullDecode render

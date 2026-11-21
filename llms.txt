@@ -1,0 +1,23 @@
+# Knit
+
+> Offline desktop workbench (Rust Workspace + Tauri v2 + React/TypeScript) for converting images and documents into PDF, merging/splitting PDFs, packing encrypted archives or manga volumes, and batch-renaming files. Current workspace version: 0.1.0.
+
+## image2pdf Integration & API Surfaces
+
+- [image2pdf Agent Guide](docs/image2pdf-agent-guide.md): answer-first runnable TypeScript Tauri IPC and pure-Rust `knit-pdf` snippets, UI-to-API mapping, config/bounds tables, and exact error string fixes
+- [image2pdf Machine-Readable Schema](docs/specs/image2pdf.schema.json): Draft 2020-12 JSON Schema for `PageDraft`, `BookmarkNode`, `Image2PdfConfig`, `PdfBuildResult`, and annotated `x-ipc-operations`
+- [image2pdf Architecture & Diagrams](docs/image2pdf-architecture.md): three-layer architecture, streaming writer, dual-semaphore preview pipeline, domain class diagram, and validated Mermaid diagrams
+- [image2pdf Functional Test Suite](docs/image2pdf-functional-tests.md): ISTQB functional test cases (Domain EP/BVA, Decision Tables, State Transitions, Use Cases, Fault Attack) and Requirements Traceability Matrix
+
+## Workspace Reference
+
+- [Project Architecture](ARCHITECTURE.md): Rust workspace crates, Tauri v2 IPC boundary, and data flow across all tools
+- [Project Rules](RULES.md): non-negotiable workspace boundary, UI icon, and atomic write invariants
+- [Domain Glossary](docs/glossary.md): canonical definitions for `PageDraft`, `BookmarkNode`, `AtomicOutput`, `ScanFilter`, and `RenamePlan`
+- [PDF Merge & Split Architecture](docs/pdf-ops-architecture.md): `hayro` mmap LRU cache, multi-file splitting, and UI virtualization design
+
+## Optional
+
+- [Product Requirements](PRD.md): v1 feature scope and functional goals
+- [Progress Log](PROGRESS.md): chronological implementation milestones and verification history
+- [Architecture Decision Records](docs/decisions/): ADR-001 through ADR-005 design rationale

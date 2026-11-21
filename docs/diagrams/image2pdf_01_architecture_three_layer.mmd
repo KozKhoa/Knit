@@ -1,0 +1,39 @@
+flowchart TD
+    subgraph FE["Frontend React + TS (src/views/Image2PdfView.tsx)"]
+        UI["📋 Image2PdfView\n(PageDraft JSON + BookmarkNode)"]
+        VGrid["🪟 useVirtualizedGrid\n(Viewport + 3 overscan rows)"]
+        Queue["⚡ useThumbnailQueue\n(LIFO + Prune + 40ms batch)"]
+        Canvas["✏️ ImageCanvasEditorModal\n(Normalized 0..1 edits)"]
+    end
+
+    subgraph IPC["Desktop Shell Adapter (src-tauri/src/lib.rs)"]
+        TSem["🚦 thumb_semaphore (2..4)\nrender_image_thumb_file"]
+        PSem["🔍 preview_semaphore (2)\nrender_page_draft_preview_file"]
+        ExportCmd["🚀 pdf_build_from_images\n(spawn_blocking + 10Hz events)"]
+        Trim["🧹 trim_process_heap\n(clear caches + malloc_trim)"]
+    end
+
+    subgraph Core["Pure Rust Core (crates/knit-pdf)"]
+        Imaging["🖼️ imaging.rs\nprepare_page_for_pdf_with_mode"]
+        Packer["⚙️ packer.rs\nbuild_pdf_from_drafts (Rayon)"]
+        Writer["💾 StreamingPdfWriter\nBufWriter 256 KiB -> .tmp"]
+        Guard["🛡️ TempFilesGuard\n(Atomic rename or Drop cleanup)"]
+    end
+
+    UI --> VGrid --> Queue
+    Queue -->|"IPC invoke"| TSem
+    Canvas -->|"Preview edit"| PSem
+    UI -->|"Export PDF"| ExportCmd
+    ExportCmd --> Packer
+    Packer -->|"chunks(batch_size)"| Imaging
+    Imaging -->|"PreparedImage"| Writer
+    Writer --> Guard
+    ExportCmd -.->|"Done / Cancelled"| Trim
+
+    classDef ui fill:#E7F1FF,stroke:#007BFF,stroke-width:2px,color:#003366
+    classDef ipc fill:#FFF3CD,stroke:#D39E00,stroke-width:2px,color:#533F03
+    classDef core fill:#D4EDDA,stroke:#28A745,stroke-width:2px,color:#155724
+
+    class UI,VGrid,Queue,Canvas ui
+    class TSem,PSem,ExportCmd,Trim ipc
+    class Imaging,Packer,Writer,Guard core
