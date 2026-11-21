@@ -45,3 +45,8 @@ skills-lock.json
 
 # sample image 
 tests/images/samples/
+
+# Playwright E2E artifacts
+test-results/
+playwright-report/
+playwright/.cache/
