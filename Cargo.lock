@@ -3454,10 +3454,13 @@ dependencies = [
  "memmap2",
  "oxideav-avif",
  "rayon",
+ "resvg",
  "serde",
  "serde_json",
  "tempfile",
+ "tiny-skia",
  "typst-assets",
+ "usvg",
  "uuid",
 ]
 

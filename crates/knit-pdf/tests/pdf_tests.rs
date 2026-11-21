@@ -1505,3 +1505,128 @@ fn tc_eg_01_02_03_fault_attack_truncated_jpeg_avif_boxes_and_pdf_page_guard() {
         "unexpected error: {pdf_src_err}"
     );
 }
+
+fn make_sample_animated_gif(path: &std::path::Path, w: u32, h: u32) {
+    use image::codecs::gif::GifEncoder;
+    use image::{Delay, Frame};
+
+    let colors = [
+        Rgba([220, 40, 40, 255]),
+        Rgba([40, 200, 60, 255]),
+        Rgba([40, 80, 220, 255]),
+    ];
+    let file = std::fs::File::create(path).unwrap();
+    let mut encoder = GifEncoder::new(file);
+    let frames: Vec<Frame> = colors
+        .into_iter()
+        .map(|rgba| {
+            let img = RgbaImage::from_fn(w, h, |_, _| rgba);
+            Frame::from_parts(img, 0, 0, Delay::from_numer_denom_ms(120, 1))
+        })
+        .collect();
+    encoder.encode_frames(frames.into_iter()).unwrap();
+}
+
+#[test]
+fn svg_to_pdf_and_animated_gif_unpack_and_richmedia() {
+    let tmp = tempdir().unwrap();
+
+    // 1. SVG support: inspect dimensions, scan, and export to PDF
+    let svg_path = tmp.path().join("diagram.svg");
+    std::fs::write(
+        &svg_path,
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="320" height="240" viewBox="0 0 320 240">
+            <rect x="0" y="0" width="320" height="240" fill="#FFFFFF"/>
+            <rect x="20" y="20" width="280" height="200" fill="#007BFF"/>
+        </svg>"##,
+    )
+    .unwrap();
+    assert_eq!(inspect_image_dimensions(&svg_path).unwrap(), (320, 240));
+    let svg_scan = scan_image_files(&[svg_path.clone()], AnimatedImagePolicy::FirstFrameOnly).unwrap();
+    assert_eq!(svg_scan.pages.len(), 1);
+    let svg_pdf = tmp.path().join("svg_out.pdf");
+    let svg_res = build_pdf_from_drafts(
+        &svg_scan.pages,
+        &[],
+        &Image2PdfConfig {
+            output_path: svg_pdf.clone(),
+            layout: PageLayoutPolicy::OriginalSize { dpi: 72.0 },
+            jpeg_quality: 90,
+            lossless_passthrough: true,
+            animated_policy: AnimatedImagePolicy::FirstFrameOnly,
+            export_mode: PdfExportMode::Balanced,
+            max_mb: None,
+            max_pages_per_file: None,
+        },
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+    assert_eq!(svg_res.total_pages, 1);
+    let svg_info = inspect_pdf(&svg_pdf).unwrap();
+    assert_eq!(svg_info.page_count, 1);
+    let svg_thumb = render_pdf_thumbnail(&svg_pdf, 0, 160).unwrap();
+    let svg_img = image::load_from_memory(&svg_thumb).unwrap().to_rgb8();
+    assert!(svg_img.pixels().any(|p| p[2] > 180 && p[0] < 80), "expected blue SVG rect in PDF");
+
+    // 2. GIF UnpackAllFrames even when imported initially under FirstFrameOnly
+    let gif_path = tmp.path().join("anim.gif");
+    make_sample_animated_gif(&gif_path, 80, 60);
+    let gif_scan_first = scan_image_files(&[gif_path.clone()], AnimatedImagePolicy::FirstFrameOnly).unwrap();
+    assert_eq!(gif_scan_first.pages.len(), 1);
+
+    let unpacked_pdf = tmp.path().join("gif_unpacked.pdf");
+    let unpacked_res = build_pdf_from_drafts(
+        &gif_scan_first.pages,
+        &[BookmarkNode {
+            title: "AnimStart".into(),
+            target_page_index: 0,
+            children: vec![],
+        }],
+        &Image2PdfConfig {
+            output_path: unpacked_pdf.clone(),
+            layout: PageLayoutPolicy::OriginalSize { dpi: 72.0 },
+            jpeg_quality: 85,
+            lossless_passthrough: true,
+            animated_policy: AnimatedImagePolicy::UnpackAllFrames,
+            export_mode: PdfExportMode::Balanced,
+            max_mb: None,
+            max_pages_per_file: None,
+        },
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+    assert_eq!(unpacked_res.total_pages, 3);
+    assert_eq!(inspect_pdf(&unpacked_pdf).unwrap().page_count, 3);
+
+    // 3. GIF EmbedRichMedia writes Poster XObject + /Screen + /RichMedia + /EmbeddedFile
+    let rich_pdf = tmp.path().join("gif_richmedia.pdf");
+    let rich_res = build_pdf_from_drafts(
+        &gif_scan_first.pages,
+        &[],
+        &Image2PdfConfig {
+            output_path: rich_pdf.clone(),
+            layout: PageLayoutPolicy::OriginalSize { dpi: 72.0 },
+            jpeg_quality: 85,
+            lossless_passthrough: true,
+            animated_policy: AnimatedImagePolicy::EmbedRichMedia,
+            export_mode: PdfExportMode::Balanced,
+            max_mb: None,
+            max_pages_per_file: None,
+        },
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+    assert_eq!(rich_res.total_pages, 1);
+    let rich_bytes = std::fs::read(&rich_pdf).unwrap();
+    let rich_text = String::from_utf8_lossy(&rich_bytes);
+    assert!(rich_text.contains("/Subtype /Screen"));
+    assert!(rich_text.contains("/Subtype /RichMedia"));
+    assert!(rich_text.contains("/Type /EmbeddedFile"));
+    assert!(rich_text.contains("/S /Rendition"));
+    // Poster XObject renders cleanly through hayro
+    let poster_thumb = render_pdf_thumbnail(&rich_pdf, 0, 80).unwrap();
+    assert!(!poster_thumb.is_empty());
+}

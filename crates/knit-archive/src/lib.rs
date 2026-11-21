@@ -74,11 +74,12 @@ impl Default for ArchiveOptions {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArchiveEntrySpec {
     pub source_path: PathBuf,
     pub archive_path: String,
     pub size_bytes: u64,
+    #[serde(default)]
     pub compression_override: Option<CompressionLevel>,
 }
 
@@ -139,12 +140,20 @@ pub fn estimate_archive_output(
     options: &ArchiveOptions,
 ) -> Result<ArchiveEstimate> {
     let entries = collect_entries(inputs, include_root_dir, ignore_hidden)?;
+    Ok(estimate_archive_entries(&entries, options))
+}
+
+/// Ước lượng dung lượng xuất ra trực tiếp từ danh sách `ArchiveEntrySpec` đã tùy chỉnh.
+pub fn estimate_archive_entries(
+    entries: &[ArchiveEntrySpec],
+    options: &ArchiveOptions,
+) -> ArchiveEstimate {
     let files_count = entries.len();
     let mut input_bytes = 0u64;
     let mut compressible_bytes = 0u64;
     let mut precompressed_bytes = 0u64;
 
-    for e in &entries {
+    for e in entries {
         input_bytes = input_bytes.saturating_add(e.size_bytes);
         if is_already_compressed_ext(&e.source_path) {
             precompressed_bytes = precompressed_bytes.saturating_add(e.size_bytes);
@@ -181,11 +190,11 @@ pub fn estimate_archive_output(
     let overhead = (files_count as u64).saturating_mul(overhead_per_file);
     let estimated_output_bytes = estimated_payload.saturating_add(overhead);
 
-    Ok(ArchiveEstimate {
+    ArchiveEstimate {
         files_count,
         input_bytes,
         estimated_output_bytes,
-    })
+    }
 }
 
 /// Gom danh sách file/thư mục đầu vào thành `ArchiveEntrySpec` với đường dẫn POSIX `/`.

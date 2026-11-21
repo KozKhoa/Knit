@@ -1,8 +1,11 @@
 use crate::bookmarks::remap_tree;
-use crate::imaging::{prepare_page_for_pdf_with_mode, PdfColorSpace, PreparedImage};
+use crate::imaging::{
+    expand_drafts_for_animated_policy, prepare_page_for_pdf_with_mode, probe_animation_frames,
+    PdfColorSpace, PreparedImage,
+};
 use crate::models::{
-    BookmarkNode, Image2PdfConfig, PageBackground, PageDraft, PageLayoutPolicy, PageSource,
-    PdfBuildResult, PdfExportMode,
+    AnimatedImagePolicy, BookmarkNode, Image2PdfConfig, PageBackground, PageDraft,
+    PageLayoutPolicy, PageSource, PdfBuildResult, PdfExportMode,
 };
 use knit_core::{
     ensure_disk_space, CancellationToken, JobProgress, JobReporter, JobReporterExt, KnitError,
@@ -30,6 +33,7 @@ struct PreparedDraftResult {
     duration_ms: Option<u32>,
     label: String,
     passthrough: bool,
+    embedded_gif: Option<(Vec<u8>, String)>,
 }
 
 pub(crate) struct TempFilesGuard {
@@ -165,6 +169,7 @@ impl<W: Write> StreamingPdfWriter<W> {
         image: PreparedImage,
         layout: PageLayoutPolicy,
         duration_ms: Option<u32>,
+        embedded_gif: Option<(Vec<u8>, String)>,
     ) -> Result<()> {
         let img_id = self.alloc_id();
         self.begin_obj(img_id)?;
@@ -240,11 +245,103 @@ impl<W: Write> StreamingPdfWriter<W> {
         writeln!(self.w, "<< /XObject << /Im0 {img_id} 0 R >> >>\nendobj")?;
 
         let page_id = self.alloc_id();
+        let annot_ids = if let Some((gif_bytes, gif_name)) = embedded_gif {
+            let ef_stream_id = self.alloc_id();
+            self.begin_obj(ef_stream_id)?;
+            writeln!(
+                self.w,
+                "<< /Type /EmbeddedFile /Subtype /image#2Fgif /Params << /Size {} >> /Length {} >>",
+                gif_bytes.len(),
+                gif_bytes.len()
+            )?;
+            self.w.write_all(b"stream\n")?;
+            self.w.write_all(&gif_bytes)?;
+            self.w.write_all(b"\nendstream\nendobj\n")?;
+            drop(gif_bytes);
+
+            let filespec_id = self.alloc_id();
+            self.begin_obj(filespec_id)?;
+            write!(self.w, "<< /Type /Filespec /F ")?;
+            write_pdf_string(&mut self.w, &gif_name)?;
+            write!(self.w, " /UF ")?;
+            write_pdf_string(&mut self.w, &gif_name)?;
+            writeln!(
+                self.w,
+                " /EF << /F {ef_stream_id} 0 R /UF {ef_stream_id} 0 R >> >>\nendobj"
+            )?;
+
+            let media_clip_id = self.alloc_id();
+            self.begin_obj(media_clip_id)?;
+            write!(self.w, "<< /Type /MediaClip /S /MCD /N ")?;
+            write_pdf_string(&mut self.w, &gif_name)?;
+            writeln!(
+                self.w,
+                " /CT (image/gif) /D {filespec_id} 0 R /P << /TF (TEMPNEVER) >> >>\nendobj"
+            )?;
+
+            let rendition_id = self.alloc_id();
+            self.begin_obj(rendition_id)?;
+            write!(self.w, "<< /Type /Rendition /S /MR /N ")?;
+            write_pdf_string(&mut self.w, &gif_name)?;
+            writeln!(self.w, " /C {media_clip_id} 0 R >>\nendobj")?;
+
+            let x2 = draw_x + draw_w;
+            let y2 = draw_y + draw_h;
+            let screen_annot_id = self.alloc_id();
+            self.begin_obj(screen_annot_id)?;
+            write!(
+                self.w,
+                "<< /Type /Annot /Subtype /Screen /Rect [{draw_x:.4} {draw_y:.4} {x2:.4} {y2:.4}] /F 4 /P {page_id} 0 R /T "
+            )?;
+            write_pdf_string(&mut self.w, &gif_name)?;
+            writeln!(
+                self.w,
+                " /A << /S /Rendition /OP 0 /R {rendition_id} 0 R /AN {screen_annot_id} 0 R >> /AA << /PO << /S /Rendition /OP 0 /R {rendition_id} 0 R /AN {screen_annot_id} 0 R >> /PV << /S /Rendition /OP 0 /R {rendition_id} 0 R /AN {screen_annot_id} 0 R >> >> >>\nendobj"
+            )?;
+
+            let richmedia_config_id = self.alloc_id();
+            self.begin_obj(richmedia_config_id)?;
+            writeln!(
+                self.w,
+                "<< /Type /RichMediaConfiguration /Subtype /Video /Instances [<< /Type /RichMediaInstance /Subtype /Video /Asset {filespec_id} 0 R >>] >>\nendobj"
+            )?;
+
+            let richmedia_content_id = self.alloc_id();
+            self.begin_obj(richmedia_content_id)?;
+            write!(self.w, "<< /Type /RichMediaContent /Assets << /Names [")?;
+            write_pdf_string(&mut self.w, &gif_name)?;
+            writeln!(
+                self.w,
+                " {filespec_id} 0 R] >> /Configurations [{richmedia_config_id} 0 R] >>\nendobj"
+            )?;
+
+            let richmedia_settings_id = self.alloc_id();
+            self.begin_obj(richmedia_settings_id)?;
+            writeln!(
+                self.w,
+                "<< /Type /RichMediaSettings /Activation << /Condition /PO /Presentation << /Style /Embedded >> >> /Deactivation << /Condition /PC >> >>\nendobj"
+            )?;
+
+            let richmedia_annot_id = self.alloc_id();
+            self.begin_obj(richmedia_annot_id)?;
+            writeln!(
+                self.w,
+                "<< /Type /Annot /Subtype /RichMedia /Rect [{draw_x:.4} {draw_y:.4} {x2:.4} {y2:.4}] /F 4 /P {page_id} 0 R /RichMediaContent {richmedia_content_id} 0 R /RichMediaSettings {richmedia_settings_id} 0 R >>\nendobj"
+            )?;
+
+            Some((screen_annot_id, richmedia_annot_id))
+        } else {
+            None
+        };
+
         self.begin_obj(page_id)?;
         write!(
             self.w,
             "<< /Type /Page /Parent 1 0 R /MediaBox [0 0 {page_w} {page_h}] /Resources {resources_id} 0 R /Contents {content_id} 0 R"
         )?;
+        if let Some((screen_id, richmedia_id)) = annot_ids {
+            write!(self.w, " /Annots [{screen_id} 0 R {richmedia_id} 0 R]")?;
+        }
         if let Some(ms) = duration_ms {
             write!(self.w, " /Dur {:.6}", (ms as f32) / 1000.0)?;
         }
@@ -420,6 +517,11 @@ pub fn build_pdf_from_drafts(
         }
     }
 
+    let (effective_drafts, effective_bookmarks) =
+        expand_drafts_for_animated_policy(drafts, bookmarks, config.animated_policy)?;
+    let drafts = effective_drafts.as_slice();
+    let bookmarks = effective_bookmarks.as_slice();
+
     // Mode 1 (Fast): luôn xuất 1 file PDF duy nhất, bỏ qua split rules.
     let (max_bytes, max_pages_per_file) = if mode == PdfExportMode::Fast {
         (None, None)
@@ -498,11 +600,35 @@ pub fn build_pdf_from_drafts(
                             ..
                         }
                     );
+                    let embedded_gif = if config.animated_policy == AnimatedImagePolicy::EmbedRichMedia {
+                        if let PageSource::ImageFile { ref path } = draft.source {
+                            let is_gif = path
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .is_some_and(|e| e.eq_ignore_ascii_case("gif"));
+                            if is_gif && probe_animation_frames(path).ok().flatten().is_some() {
+                                let gif_bytes = std::fs::read(path)?;
+                                let gif_name = path
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("animation.gif")
+                                    .to_string();
+                                Some((gif_bytes, gif_name))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
                     Ok(PreparedDraftResult {
                         image,
                         duration_ms: draft.duration_ms,
                         label: draft.label.clone(),
                         passthrough,
+                        embedded_gif,
                     })
                 })
                 .collect()
@@ -525,7 +651,11 @@ pub fn build_pdf_from_drafts(
             let stream_len = match &item.image {
                 PreparedImage::JpegStream { bytes, .. } => bytes.len() as u64,
                 PreparedImage::FlateStream { zlib_bytes, .. } => zlib_bytes.len() as u64,
-            };
+            } + item
+                .embedded_gif
+                .as_ref()
+                .map(|(b, _)| b.len() as u64)
+                .unwrap_or(0);
 
             let cur_writer = writer.as_ref().expect("active StreamingPdfWriter");
             let exceeds_pages =
@@ -557,7 +687,7 @@ pub fn build_pdf_from_drafts(
             writer
                 .as_mut()
                 .expect("active StreamingPdfWriter")
-                .write_page(item.image, config.layout, item.duration_ms)?;
+                .write_page(item.image, config.layout, item.duration_ms, item.embedded_gif)?;
 
             global_page_idx += 1;
             if mode != PdfExportMode::Fast {

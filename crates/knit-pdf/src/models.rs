@@ -135,6 +135,7 @@ pub enum AnimatedImagePolicy {
     #[default]
     FirstFrameOnly,
     UnpackAllFrames,
+    EmbedRichMedia,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]

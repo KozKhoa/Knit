@@ -1,8 +1,8 @@
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use knit_archive::{
-    collect_entries, estimate_archive_output, pack_entries, ArchiveEstimate, ArchiveOptions,
-    ArchiveSummary,
+    collect_entries, estimate_archive_entries, estimate_archive_output, pack_entries,
+    ArchiveEntrySpec, ArchiveEstimate, ArchiveOptions, ArchiveSummary,
 };
 use knit_core::job::ThrottledReporter;
 use knit_core::{
@@ -17,12 +17,12 @@ use knit_docs::{
 };
 use knit_manga::{default_output_name, pack_stories, scan_stories, MangaPackOptions, MangaPackSummary, MangaScanMode, Story};
 use knit_pdf::{
-    build_pdf_from_drafts, clear_pdf_reader_cache, inspect_pdf, merge_pdfs,
-    render_image_thumbnail, render_image_thumbnail_jpeg, render_page_draft_preview_jpeg,
-    render_pdf_bytes_thumbnails, render_pdf_thumbnail, render_pdf_thumbnail_jpeg,
-    scan_image_files_with_reporter, scan_image_folder_with_reporter, split_multi_pdf, split_pdf,
-    AnimatedImagePolicy, BookmarkNode, Image2PdfConfig, ImageScanResult, PageDraft, PageSource,
-    PdfBuildResult, PdfInfo, PdfMergeConfig, PdfSplitRule,
+    build_pdf_from_drafts, clear_pdf_reader_cache, expand_drafts_for_animated_policy, inspect_pdf,
+    merge_pdfs, render_image_thumbnail, render_image_thumbnail_jpeg,
+    render_page_draft_preview_jpeg, render_pdf_bytes_thumbnails, render_pdf_thumbnail,
+    render_pdf_thumbnail_jpeg, scan_image_files_with_reporter, scan_image_folder_with_reporter,
+    split_multi_pdf, split_pdf, AnimatedImagePolicy, BookmarkNode, Image2PdfConfig,
+    ImageScanResult, PageDraft, PageSource, PdfBuildResult, PdfInfo, PdfMergeConfig, PdfSplitRule,
 };
 use knit_renamer::{
     apply_rename_plan, build_rename_plan, compile_rule, recompute_collisions, scan_items,
@@ -860,6 +860,38 @@ async fn render_pdf_page_preview_file(
     .map_err(|e| e.to_string())?
 }
 
+#[derive(Serialize)]
+struct SyncAnimatedDraftsResult {
+    pages: Vec<PageDraft>,
+    bookmarks: Vec<BookmarkNode>,
+}
+
+#[tauri::command]
+async fn pdf_sync_animated_drafts(
+    drafts: Vec<PageDraft>,
+    bookmarks: Vec<BookmarkNode>,
+    animated_policy: AnimatedImagePolicy,
+) -> Result<SyncAnimatedDraftsResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (pages, bookmarks) =
+            expand_drafts_for_animated_policy(&drafts, &bookmarks, animated_policy)
+                .map_err(|e| e.to_string())?;
+        Ok(SyncAnimatedDraftsResult { pages, bookmarks })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn read_pdf_file_bytes(path: PathBuf) -> Result<tauri::ipc::Response, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+        Ok(tauri::ipc::Response::new(bytes))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 async fn pdf_build_from_images(
     job_id: String,
@@ -1136,15 +1168,30 @@ async fn docs_convert_content_to_pdf(
 
 // --- knit-archive commands ---
 #[tauri::command]
+async fn archive_collect_entries(
+    inputs: Vec<PathBuf>,
+    include_root_dir: bool,
+    ignore_hidden: bool,
+) -> Result<Vec<ArchiveEntrySpec>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        collect_entries(&inputs, include_root_dir, ignore_hidden).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 async fn archive_estimate_size(
     inputs: Vec<PathBuf>,
     include_root_dir: bool,
     ignore_hidden: bool,
     options: ArchiveOptions,
+    custom_entries: Option<Vec<ArchiveEntrySpec>>,
 ) -> Result<ArchiveEstimate, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        estimate_archive_output(&inputs, include_root_dir, ignore_hidden, &options)
-            .map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || match custom_entries {
+        Some(entries) => Ok(estimate_archive_entries(&entries, &options)),
+        None => estimate_archive_output(&inputs, include_root_dir, ignore_hidden, &options)
+            .map_err(|e| e.to_string()),
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1169,6 +1216,7 @@ async fn archive_pack(
     include_root_dir: bool,
     ignore_hidden: bool,
     options: ArchiveOptions,
+    custom_entries: Option<Vec<ArchiveEntrySpec>>,
     on_event: Channel<JobEvent>,
     state: State<'_, Arc<AppState>>,
 ) -> Result<ArchiveSummary, String> {
@@ -1177,7 +1225,10 @@ async fn archive_pack(
     tauri::async_runtime::spawn_blocking(move || {
         let reporter = make_reporter(&state_arc, on_event);
         let res = (|| {
-            let entries = collect_entries(&inputs, include_root_dir, ignore_hidden)?;
+            let entries = match custom_entries {
+                Some(list) => list,
+                None => collect_entries(&inputs, include_root_dir, ignore_hidden)?,
+            };
             pack_entries(&entries, &output_path, &options, &token, &reporter)
         })()
         .map_err(|e| e.to_string());
@@ -1660,6 +1711,8 @@ pub fn run() {
             dialog_pick_paths,
             dialog_save_path,
             pdf_scan_images,
+            pdf_sync_animated_drafts,
+            read_pdf_file_bytes,
             render_image_thumb,
             render_image_thumb_file,
             render_page_draft_preview_file,
@@ -1680,6 +1733,7 @@ pub fn run() {
             docs_preview_markdown,
             docs_convert_content_to_pdf,
             get_file_size_bytes,
+            archive_collect_entries,
             archive_estimate_size,
             archive_pack,
             manga_scan,

@@ -21,11 +21,11 @@ use std::fs::File;
 use std::io::{BufReader, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use uuid::Uuid;
 
 pub const SUPPORTED_IMAGE_EXTS: &[&str] = &[
-    "jpg", "jpeg", "jfif", "png", "webp", "avif", "gif", "bmp", "tiff", "tif",
+    "jpg", "jpeg", "jfif", "png", "webp", "avif", "gif", "bmp", "tiff", "tif", "svg",
 ];
 
 pub fn is_supported_image(path: &Path) -> bool {
@@ -286,8 +286,90 @@ fn read_jpeg_header_dimensions(path: &Path) -> Result<Option<(u32, u32)>> {
     }
 }
 
+fn shared_svg_fontdb() -> &'static Arc<usvg::fontdb::Database> {
+    static DB: OnceLock<Arc<usvg::fontdb::Database>> = OnceLock::new();
+    DB.get_or_init(|| {
+        let mut db = usvg::fontdb::Database::new();
+        for data in typst_assets::fonts() {
+            db.load_font_data(data.to_vec());
+        }
+        db.load_system_fonts();
+        Arc::new(db)
+    })
+}
+
+fn parse_svg_tree(bytes: &[u8], base_dir: Option<&Path>) -> Result<usvg::Tree> {
+    let mut opt = usvg::Options::default();
+    opt.fontdb = Arc::clone(shared_svg_fontdb());
+    opt.resources_dir = base_dir.map(|p| p.to_path_buf());
+    usvg::Tree::from_data(bytes, &opt)
+        .map_err(|e| KnitError::InvalidInput(format!("SVG khong hop le: {e}")))
+}
+
+fn compute_svg_raster_size(svg_size: usvg::Size, target_max_side: Option<u32>) -> (u32, u32, f32, f32) {
+    let w = svg_size.width().max(1.0);
+    let h = svg_size.height().max(1.0);
+    let max_dim = w.max(h);
+    let scale = if let Some(max_s) = target_max_side {
+        let target = max_s.max(1) as f32;
+        (target / max_dim).min(4096.0 / max_dim)
+    } else if max_dim < 128.0 {
+        512.0 / max_dim
+    } else if max_dim > 4096.0 {
+        4096.0 / max_dim
+    } else {
+        1.0
+    };
+    let pw = (w * scale).round().clamp(1.0, 4096.0) as u32;
+    let ph = (h * scale).round().clamp(1.0, 4096.0) as u32;
+    (pw, ph, pw as f32 / w, ph as f32 / h)
+}
+
+fn inspect_svg_dimensions(path: &Path) -> Result<(u32, u32)> {
+    let bytes = std::fs::read(path)?;
+    let tree = parse_svg_tree(&bytes, path.parent())?;
+    let (pw, ph, _, _) = compute_svg_raster_size(tree.size(), None);
+    Ok((pw, ph))
+}
+
+fn decode_svg_from_bytes(
+    bytes: &[u8],
+    path: &Path,
+    target_max_side: Option<u32>,
+) -> Result<DynamicImage> {
+    let tree = parse_svg_tree(bytes, path.parent())?;
+    let (pw, ph, sx, sy) = compute_svg_raster_size(tree.size(), target_max_side);
+    let mut pixmap = tiny_skia::Pixmap::new(pw, ph).ok_or_else(|| {
+        KnitError::InvalidInput(format!("Khong the tao buffer raster cho SVG {}", path.display()))
+    })?;
+    resvg::render(&tree, tiny_skia::Transform::from_scale(sx, sy), &mut pixmap.as_mut());
+    let src = pixmap.data();
+    let mut straight = vec![0u8; src.len()];
+    for (dst_px, src_px) in straight.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
+        let a = src_px[3];
+        if a == 0 {
+            dst_px.copy_from_slice(&[0, 0, 0, 0]);
+        } else if a == 255 {
+            dst_px.copy_from_slice(src_px);
+        } else {
+            let af = a as f32 / 255.0;
+            dst_px[0] = (src_px[0] as f32 / af).round().clamp(0.0, 255.0) as u8;
+            dst_px[1] = (src_px[1] as f32 / af).round().clamp(0.0, 255.0) as u8;
+            dst_px[2] = (src_px[2] as f32 / af).round().clamp(0.0, 255.0) as u8;
+            dst_px[3] = a;
+        }
+    }
+    let rgba = RgbaImage::from_raw(pw, ph, straight).ok_or_else(|| {
+        KnitError::InvalidInput(format!("SVG buffer khong khop {}", path.display()))
+    })?;
+    Ok(DynamicImage::ImageRgba8(rgba))
+}
+
 pub fn inspect_image_dimensions(path: &Path) -> Result<(u32, u32)> {
     let ext = ext_lower(path);
+    if ext == "svg" {
+        return inspect_svg_dimensions(path);
+    }
     if matches!(ext.as_str(), "jpg" | "jpeg" | "jfif") {
         if let Some(dims) = read_jpeg_header_dimensions(path)? {
             return Ok(dims);
@@ -647,7 +729,7 @@ fn build_image_drafts(
 
 /// Trả về danh sách `(width, height, duration_ms)` nếu file là GIF/WebP động (>1 frame).
 /// Duyệt từng frame thay vì `collect_frames()` để giải phóng ngay pixel buffer sau mỗi frame.
-fn probe_animation_frames(path: &Path) -> Result<Option<Vec<(u32, u32, u32)>>> {
+pub(crate) fn probe_animation_frames(path: &Path) -> Result<Option<Vec<(u32, u32, u32)>>> {
     let ext = ext_lower(path);
     match ext.as_str() {
         "gif" => {
@@ -693,6 +775,124 @@ fn probe_animation_frames(path: &Path) -> Result<Option<Vec<(u32, u32, u32)>>> {
         }
         _ => Ok(None),
     }
+}
+
+fn remap_bookmarks_by_index(
+    nodes: &[BookmarkNode],
+    old_to_new: &[usize],
+    new_len: usize,
+) -> Vec<BookmarkNode> {
+    if new_len == 0 {
+        return Vec::new();
+    }
+    let max_idx = new_len - 1;
+    nodes
+        .iter()
+        .map(|n| {
+            let mapped = old_to_new
+                .get(n.target_page_index)
+                .copied()
+                .unwrap_or(n.target_page_index)
+                .min(max_idx);
+            BookmarkNode {
+                title: n.title.clone(),
+                target_page_index: mapped,
+                children: remap_bookmarks_by_index(&n.children, old_to_new, new_len),
+            }
+        })
+        .collect()
+}
+
+/// Đồng bộ danh sách `PageDraft` và `BookmarkNode` theo `AnimatedImagePolicy`:
+/// - `UnpackAllFrames`: tách các `ImageFile` GIF/WebP động thành từng `AnimatedFrame`.
+/// - `FirstFrameOnly` / `EmbedRichMedia`: gộp lại các chuỗi `AnimatedFrame` liền kề cùng file về 1 `ImageFile`.
+pub fn expand_drafts_for_animated_policy(
+    drafts: &[PageDraft],
+    bookmarks: &[BookmarkNode],
+    policy: AnimatedImagePolicy,
+) -> Result<(Vec<PageDraft>, Vec<BookmarkNode>)> {
+    let mut out = Vec::with_capacity(drafts.len());
+    let mut old_to_new = vec![0usize; drafts.len()];
+
+    if policy == AnimatedImagePolicy::UnpackAllFrames {
+        for (old_idx, draft) in drafts.iter().enumerate() {
+            old_to_new[old_idx] = out.len();
+            if let PageSource::ImageFile { ref path } = draft.source {
+                let ext = ext_lower(path);
+                if (ext == "gif" || ext == "webp") && path.is_file() {
+                    if let Some(frames) = probe_animation_frames(path)? {
+                        let base_label = draft.label.clone();
+                        for (f_idx, (w, h, dur_ms)) in frames.into_iter().enumerate() {
+                            out.push(PageDraft {
+                                id: if f_idx == 0 {
+                                    draft.id.clone()
+                                } else {
+                                    Uuid::new_v4().to_string()
+                                },
+                                source: PageSource::AnimatedFrame {
+                                    path: path.clone(),
+                                    frame_index: f_idx,
+                                },
+                                rotation_deg: draft.rotation_deg,
+                                crop: draft.crop,
+                                annotations: draft.annotations.clone(),
+                                duration_ms: Some(dur_ms.max(20)),
+                                label: format!("{base_label} #{}", f_idx + 1),
+                                width_px: w,
+                                height_px: h,
+                                file_size_bytes: draft.file_size_bytes,
+                            });
+                        }
+                        continue;
+                    }
+                }
+            }
+            out.push(draft.clone());
+        }
+    } else {
+        let mut i = 0usize;
+        while i < drafts.len() {
+            let draft = &drafts[i];
+            if let PageSource::AnimatedFrame { ref path, .. } = draft.source {
+                let new_idx = out.len();
+                let mut j = i;
+                while j < drafts.len() {
+                    if let PageSource::AnimatedFrame { path: ref p2, .. } = drafts[j].source {
+                        if p2 == path {
+                            old_to_new[j] = new_idx;
+                            j += 1;
+                            continue;
+                        }
+                    }
+                    break;
+                }
+                let file_name = path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| draft.label.clone());
+                out.push(PageDraft {
+                    id: draft.id.clone(),
+                    source: PageSource::ImageFile { path: path.clone() },
+                    rotation_deg: draft.rotation_deg,
+                    crop: draft.crop,
+                    annotations: draft.annotations.clone(),
+                    duration_ms: None,
+                    label: file_name,
+                    width_px: draft.width_px,
+                    height_px: draft.height_px,
+                    file_size_bytes: draft.file_size_bytes,
+                });
+                i = j;
+            } else {
+                old_to_new[i] = out.len();
+                out.push(draft.clone());
+                i += 1;
+            }
+        }
+    }
+
+    let remapped_bookmarks = remap_bookmarks_by_index(bookmarks, &old_to_new, out.len());
+    Ok((out, remapped_bookmarks))
 }
 
 /// Chuẩn bị dữ liệu ảnh để nhúng vào PDF theo chế độ xử lý (mặc định `Balanced`).
@@ -845,8 +1045,8 @@ fn encode_dynamic_for_pdf(
     compression: Compression,
 ) -> Result<PreparedImage> {
     if lossless_passthrough {
-        let is_png = matches!(&draft.source, PageSource::ImageFile { path } if ext_lower(path) == "png");
-        if is_png {
+        let is_lossless_source = matches!(&draft.source, PageSource::ImageFile { path } if matches!(ext_lower(path).as_str(), "png" | "svg"));
+        if is_lossless_source {
             if let DynamicImage::ImageLuma8(gray) = img {
                 let (w, h) = (gray.width(), gray.height());
                 let zlib_bytes = compress_zlib_with_level(gray.as_raw(), compression)?;
@@ -1102,6 +1302,9 @@ pub fn load_source_image(source: &PageSource) -> Result<DynamicImage> {
 }
 
 fn load_image_from_bytes_with_exif(bytes: &[u8], path: &Path) -> Result<DynamicImage> {
+    if ext_lower(path) == "svg" {
+        return decode_svg_from_bytes(bytes, path, None);
+    }
     if ext_lower(path) == "avif" || bytes.get(4..12) == Some(b"ftypavif") {
         let decoded = oxideav_avif::decode(bytes)
             .map_err(|e| KnitError::InvalidInput(format!("AVIF decode loi {}: {e}", path.display())))?;
@@ -1129,6 +1332,10 @@ fn load_image_from_bytes_with_exif(bytes: &[u8], path: &Path) -> Result<DynamicI
 
 fn load_image_with_exif(path: &Path) -> Result<DynamicImage> {
     let ext = ext_lower(path);
+    if ext == "svg" {
+        let bytes = std::fs::read(path)?;
+        return decode_svg_from_bytes(&bytes, path, None);
+    }
     if ext == "avif" {
         let bytes = std::fs::read(path)?;
         return load_image_from_bytes_with_exif(&bytes, path);
@@ -1273,6 +1480,10 @@ pub fn rasterize_annotations(img: &mut RgbaImage, layer: &AnnotationLayer) -> Re
 }
 
 fn load_resized_thumbnail(path: &Path, max_width: u32) -> Result<DynamicImage> {
+    if ext_lower(path) == "svg" {
+        let bytes = std::fs::read(path)?;
+        return decode_svg_from_bytes(&bytes, path, (max_width > 0).then_some(max_width));
+    }
     let img = load_image_with_exif(path)?;
     let (w, h) = (img.width(), img.height());
     if w > max_width && max_width > 0 {
