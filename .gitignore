@@ -43,3 +43,5 @@ skills-lock.json
 
 *.code-workspace
 
+# sample image 
+tests/images/samples/
