@@ -1183,8 +1183,8 @@ pub fn apply_edits(mut img: DynamicImage, draft: &PageDraft) -> Result<DynamicIm
         let ih = img.height() as f32;
         let nx = x.clamp(0.0, 0.999);
         let ny = y.clamp(0.0, 0.999);
-        let nw = width.clamp(0.001, 1.0 - nx);
-        let nh = height.clamp(0.001, 1.0 - ny);
+        let nw = width.clamp(0.001, (1.0 - nx).max(0.001));
+        let nh = height.clamp(0.001, (1.0 - ny).max(0.001));
 
         let px = (nx * iw).round() as u32;
         let py = (ny * ih).round() as u32;
@@ -1254,7 +1254,9 @@ pub fn rasterize_annotations(img: &mut RgbaImage, layer: &AnnotationLayer) -> Re
                 continue;
             }
             let color = parse_hex_rgba(&text.color_hex);
-            let px_height = (h * text.font_size_ratio).clamp(10.0, h * 0.5);
+            let max_px_h = (h * 0.5).max(1.0);
+            let min_px_h = 10.0_f32.min(max_px_h);
+            let px_height = (h * text.font_size_ratio).clamp(min_px_h, max_px_h);
             let scale = PxScale::from(px_height);
             let line_step = font.as_scaled(scale).height().ceil() as i32;
             let base_x = (text.x * w).round() as i32;

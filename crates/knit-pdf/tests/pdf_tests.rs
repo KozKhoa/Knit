@@ -1099,3 +1099,409 @@ fn streaming_merge_duplicates_rotates_interleaves_and_splits_by_max_bytes() {
         .sum();
     assert_eq!(total_split_pages, 3);
 }
+
+#[test]
+fn tc_dom_03_to_10_domain_boundaries_and_invalid_inputs() {
+    let tmp = tempdir().unwrap();
+
+    // TC-DOM-03: Scan non-existent directory -> KnitError::NotFound
+    let missing_dir = tmp.path().join("missing_folder_404");
+    let missing_err =
+        scan_image_folder(&missing_dir, AnimatedImagePolicy::FirstFrameOnly).unwrap_err();
+    assert!(matches!(missing_err, knit_core::KnitError::NotFound(_)));
+
+    // TC-DOM-04: Non-image files yield empty pages; building with empty drafts fails with exact message
+    let txt_path = tmp.path().join("readme.txt");
+    let pdf_path = tmp.path().join("doc.pdf");
+    std::fs::write(&txt_path, b"plain text").unwrap();
+    std::fs::write(&pdf_path, b"%PDF-1.4\n").unwrap();
+    let non_img_scan =
+        scan_image_files(&[txt_path, pdf_path], AnimatedImagePolicy::FirstFrameOnly).unwrap();
+    assert!(non_img_scan.pages.is_empty());
+
+    let base_cfg = |out: std::path::PathBuf| Image2PdfConfig {
+        output_path: out,
+        layout: PageLayoutPolicy::OriginalSize { dpi: 72.0 },
+        jpeg_quality: 88,
+        lossless_passthrough: true,
+        animated_policy: AnimatedImagePolicy::FirstFrameOnly,
+        export_mode: PdfExportMode::Balanced,
+        max_mb: None,
+        max_pages_per_file: None,
+    };
+    let empty_err = build_pdf_from_drafts(
+        &[],
+        &[],
+        &base_cfg(tmp.path().join("empty.pdf")),
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap_err();
+    assert!(
+        empty_err.to_string().contains("Khong co trang nao de tao PDF"),
+        "unexpected error: {empty_err}"
+    );
+
+    // TC-DOM-05: jpeg_quality boundary LB = 1 (clamped to 10) vs UB = 100 on rotated noisy JPG (forces JPEG encode)
+    let noisy_jpg = tmp.path().join("noisy.jpg");
+    let noisy = image::RgbImage::from_fn(200, 160, |x, y| {
+        image::Rgb([
+            ((x * 19 + y * 7) % 255) as u8,
+            ((x ^ (y * 11)) % 255) as u8,
+            ((x * 3 + y * 23) % 255) as u8,
+        ])
+    });
+    DynamicImage::ImageRgb8(noisy)
+        .write_to(&mut std::fs::File::create(&noisy_jpg).unwrap(), ImageFormat::Jpeg)
+        .unwrap();
+    let mut rotated_draft =
+        scan_image_files(&[noisy_jpg], AnimatedImagePolicy::FirstFrameOnly)
+            .unwrap()
+            .pages
+            .remove(0);
+    rotated_draft.rotation_deg = 90;
+
+    let mut cfg_q1 = base_cfg(tmp.path().join("q1.pdf"));
+    cfg_q1.jpeg_quality = 1;
+    let res_q1 = build_pdf_from_drafts(
+        &[rotated_draft.clone()],
+        &[],
+        &cfg_q1,
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+    let mut cfg_q100 = base_cfg(tmp.path().join("q100.pdf"));
+    cfg_q100.jpeg_quality = 100;
+    let res_q100 = build_pdf_from_drafts(
+        &[rotated_draft],
+        &[],
+        &cfg_q100,
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+    assert_eq!(res_q1.passthrough_pages, 0);
+    assert_eq!(res_q100.passthrough_pages, 0);
+    assert!(res_q1.total_bytes < res_q100.total_bytes);
+
+    // TC-DOM-06: Tiny 1x1 PNG at 300 DPI (0.24 pt < ISO_MIN_PT 3.0) clamps to (3.0, 3.0)
+    let tiny_png = tmp.path().join("tiny.png");
+    make_sample_png(&tiny_png, 1, 1, [20, 40, 60, 255]);
+    let tiny_draft = scan_image_files(&[tiny_png], AnimatedImagePolicy::FirstFrameOnly)
+        .unwrap()
+        .pages
+        .remove(0);
+    let mut tiny_cfg = base_cfg(tmp.path().join("tiny.pdf"));
+    tiny_cfg.layout = PageLayoutPolicy::OriginalSize { dpi: 300.0 };
+    let tiny_res = build_pdf_from_drafts(
+        &[tiny_draft],
+        &[],
+        &tiny_cfg,
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+    assert_eq!(tiny_res.total_pages, 1);
+    let clamped = knit_pdf::packer::compute_page_box(1, 1, tiny_cfg.layout);
+    assert!((clamped.0 - 3.0).abs() < 0.01 && (clamped.1 - 3.0).abs() < 0.01);
+
+    // TC-DOM-07 & TC-DOM-10: Degenerate CropRect (width=0, x+w > 1) + invalid color_hex fallback
+    let crop_png = tmp.path().join("crop_src.png");
+    make_sample_png(&crop_png, 100, 80, [255, 255, 255, 255]);
+    let mut edge_draft = scan_image_files(&[crop_png], AnimatedImagePolicy::FirstFrameOnly)
+        .unwrap()
+        .pages
+        .remove(0);
+    edge_draft.crop = Some(CropRect {
+        x: 0.95,
+        y: 0.95,
+        width: 0.0,
+        height: 0.5,
+    });
+    edge_draft.annotations.texts.push(TextAnnotation {
+        id: "t_bad".into(),
+        text: "Fallback".into(),
+        x: 0.1,
+        y: 0.1,
+        font_size_ratio: 0.1,
+        color_hex: "invalid_hex".into(),
+    });
+    edge_draft.annotations.strokes.push(StrokeAnnotation {
+        id: "s_bad".into(),
+        points: vec![[0.1, 0.2], [0.8, 0.2]],
+        stroke_width_ratio: 0.02,
+        color_hex: "#12".into(),
+    });
+    let edge_res = build_pdf_from_drafts(
+        &[edge_draft],
+        &[],
+        &base_cfg(tmp.path().join("edge_crop.pdf")),
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+    assert_eq!(edge_res.total_pages, 1);
+    assert_eq!(inspect_pdf(&edge_res.output_files[0]).unwrap().page_count, 1);
+
+    // TC-DOM-08 & TC-EG-07: max_pages_per_file boundaries (0, 1, 2) and single-part vs multi-part naming
+    let mut three_paths = Vec::new();
+    for i in 0..3 {
+        let p = tmp.path().join(format!("s{i}.jpg"));
+        make_sample_jpg(&p, 40, 40, [i as u8 * 40, 80, 120]);
+        three_paths.push(p);
+    }
+    let three_scan =
+        scan_image_files(&three_paths, AnimatedImagePolicy::FirstFrameOnly).unwrap();
+
+    let mut cfg0 = base_cfg(tmp.path().join("out0.pdf"));
+    cfg0.max_pages_per_file = Some(0);
+    let r0 = build_pdf_from_drafts(
+        &three_scan.pages,
+        &[],
+        &cfg0,
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+    assert_eq!(r0.output_files, vec![tmp.path().join("out0.pdf")]);
+    assert_eq!(inspect_pdf(&r0.output_files[0]).unwrap().page_count, 3);
+
+    let mut cfg1 = base_cfg(tmp.path().join("out1.pdf"));
+    cfg1.max_pages_per_file = Some(1);
+    let r1 = build_pdf_from_drafts(
+        &three_scan.pages,
+        &[],
+        &cfg1,
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+    assert_eq!(
+        r1.output_files,
+        vec![
+            tmp.path().join("out1_part01.pdf"),
+            tmp.path().join("out1_part02.pdf"),
+            tmp.path().join("out1_part03.pdf"),
+        ]
+    );
+
+    let mut cfg2 = base_cfg(tmp.path().join("out2.pdf"));
+    cfg2.max_pages_per_file = Some(2);
+    let r2 = build_pdf_from_drafts(
+        &three_scan.pages,
+        &[],
+        &cfg2,
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+    assert_eq!(r2.output_files.len(), 2);
+    assert_eq!(inspect_pdf(&r2.output_files[0]).unwrap().page_count, 2);
+    assert_eq!(inspect_pdf(&r2.output_files[1]).unwrap().page_count, 1);
+}
+
+#[test]
+fn tc_dt_01_to_06_decision_table_passthrough_vs_rasterize() {
+    let tmp = tempdir().unwrap();
+
+    let rgb_jpg = tmp.path().join("rgb.jpg");
+    make_sample_jpg(&rgb_jpg, 64, 64, [20, 120, 220]);
+
+    let alpha_png = tmp.path().join("alpha.png");
+    make_sample_png(&alpha_png, 64, 64, [100, 150, 200, 128]);
+
+    let avif_path = tmp.path().join("pic.avif");
+    let avif_rgba = RgbaImage::from_fn(32, 32, |x, y| Rgba([x as u8 * 4, y as u8 * 4, 150, 255]));
+    let avif_bytes = oxideav_avif::encode_rgba8(
+        32,
+        32,
+        avif_rgba.as_raw(),
+        &oxideav_avif::EncodeOptions::default().with_quality(80),
+    )
+    .unwrap();
+    std::fs::write(&avif_path, avif_bytes).unwrap();
+
+    let jpg_draft = scan_image_files(&[rgb_jpg], AnimatedImagePolicy::FirstFrameOnly)
+        .unwrap()
+        .pages
+        .remove(0);
+    let alpha_draft = scan_image_files(&[alpha_png], AnimatedImagePolicy::FirstFrameOnly)
+        .unwrap()
+        .pages
+        .remove(0);
+    let avif_draft = scan_image_files(&[avif_path], AnimatedImagePolicy::FirstFrameOnly)
+        .unwrap()
+        .pages
+        .remove(0);
+
+    let run = |draft: PageDraft, passthrough: bool, mode: PdfExportMode, name: &str| {
+        build_pdf_from_drafts(
+            &[draft],
+            &[],
+            &Image2PdfConfig {
+                output_path: tmp.path().join(name),
+                layout: PageLayoutPolicy::OriginalSize { dpi: 72.0 },
+                jpeg_quality: 85,
+                lossless_passthrough: passthrough,
+                animated_policy: AnimatedImagePolicy::FirstFrameOnly,
+                export_mode: mode,
+                max_mb: None,
+                max_pages_per_file: None,
+            },
+            &CancellationToken::new(),
+            &NoopReporter,
+        )
+        .unwrap()
+    };
+
+    // TC-DT-01 (R1): unedited RGB8 JPEG in Balanced -> passthrough
+    assert_eq!(run(jpg_draft.clone(), true, PdfExportMode::Balanced, "r1.pdf").passthrough_pages, 1);
+    // TC-DT-02 (R2): unedited RGB8 JPEG in Safe -> full pixel decode verifies, then passthrough
+    assert_eq!(run(jpg_draft.clone(), true, PdfExportMode::Safe, "r2.pdf").passthrough_pages, 1);
+    // TC-DT-03 (R3): translucent RGBA PNG -> cannot passthrough (composites on white)
+    assert_eq!(run(alpha_draft, true, PdfExportMode::Balanced, "r3.pdf").passthrough_pages, 0);
+    // TC-DT-04 (R4): unedited AVIF -> rasterize + encode
+    assert_eq!(run(avif_draft, true, PdfExportMode::Balanced, "r4.pdf").passthrough_pages, 0);
+    // TC-DT-05 (R5): RGB8 JPEG rotated 90 deg -> must rasterize
+    let mut rotated_jpg = jpg_draft.clone();
+    rotated_jpg.rotation_deg = 90;
+    assert_eq!(run(rotated_jpg, true, PdfExportMode::Balanced, "r5.pdf").passthrough_pages, 0);
+    // TC-DT-06 (R6): unedited RGB8 JPEG with lossless_passthrough=false -> re-encode
+    assert_eq!(run(jpg_draft, false, PdfExportMode::Balanced, "r6.pdf").passthrough_pages, 0);
+}
+
+#[test]
+fn tc_eg_01_02_03_fault_attack_truncated_jpeg_avif_boxes_and_pdf_page_guard() {
+    let tmp = tempdir().unwrap();
+
+    // TC-EG-01 (FH-01): Truncated JPEG body after valid SOI+SOF0 header
+    let full_jpg = tmp.path().join("full_noisy.jpg");
+    let noisy_rgb = image::RgbImage::from_fn(160, 120, |x, y| {
+        image::Rgb([
+            ((x * 17 + y * 3) % 255) as u8,
+            ((x ^ (y * 7)) % 255) as u8,
+            ((x * 5 + y * 13) % 255) as u8,
+        ])
+    });
+    DynamicImage::ImageRgb8(noisy_rgb)
+        .write_to(&mut std::fs::File::create(&full_jpg).unwrap(), ImageFormat::Jpeg)
+        .unwrap();
+    let valid_bytes = std::fs::read(&full_jpg).unwrap();
+    // Truncate right after SOF0 segment so header inspection succeeds (Balanced passes through),
+    // while full pixel decode in Safe mode fails due to missing SOS/entropy tables.
+    let sof_pos = valid_bytes
+        .windows(2)
+        .position(|w| w == [0xFF, 0xC0])
+        .expect("SOF0 marker");
+    let sof_len = u16::from_be_bytes([valid_bytes[sof_pos + 2], valid_bytes[sof_pos + 3]]) as usize;
+    let trunc_len = (sof_pos + 2 + sof_len + 8).min(valid_bytes.len() - 4);
+    let trunc_jpg = tmp.path().join("truncated.jpg");
+    std::fs::write(&trunc_jpg, &valid_bytes[..trunc_len]).unwrap();
+
+    let trunc_draft = scan_image_files(&[trunc_jpg], AnimatedImagePolicy::FirstFrameOnly)
+        .unwrap()
+        .pages
+        .remove(0);
+    let bal_res = build_pdf_from_drafts(
+        &[trunc_draft.clone()],
+        &[],
+        &Image2PdfConfig {
+            output_path: tmp.path().join("bal_trunc.pdf"),
+            layout: PageLayoutPolicy::OriginalSize { dpi: 72.0 },
+            jpeg_quality: 85,
+            lossless_passthrough: true,
+            animated_policy: AnimatedImagePolicy::FirstFrameOnly,
+            export_mode: PdfExportMode::Balanced,
+            max_mb: None,
+            max_pages_per_file: None,
+        },
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+    assert_eq!(bal_res.passthrough_pages, 1);
+
+    let safe_err = build_pdf_from_drafts(
+        &[trunc_draft],
+        &[],
+        &Image2PdfConfig {
+            output_path: tmp.path().join("safe_trunc.pdf"),
+            layout: PageLayoutPolicy::OriginalSize { dpi: 72.0 },
+            jpeg_quality: 85,
+            lossless_passthrough: true,
+            animated_policy: AnimatedImagePolicy::FirstFrameOnly,
+            export_mode: PdfExportMode::Safe,
+            max_mb: None,
+            max_pages_per_file: None,
+        },
+        &CancellationToken::new(),
+        &NoopReporter,
+    );
+    assert!(safe_err.is_err(), "Safe mode must reject truncated JPEG payload");
+
+    // TC-EG-02 (FH-02): AVIF with 64-bit extended-size (size32 == 1) dummy mdat box inserted after ftyp
+    let avif_rgba = RgbaImage::from_fn(128, 96, |x, y| Rgba([x as u8, y as u8, 200, 255]));
+    let raw_avif = oxideav_avif::encode_rgba8(
+        128,
+        96,
+        avif_rgba.as_raw(),
+        &oxideav_avif::EncodeOptions::default().with_quality(75),
+    )
+    .unwrap();
+    assert_eq!(&raw_avif[4..8], b"ftyp");
+    let ftyp_size = u32::from_be_bytes(raw_avif[0..4].try_into().unwrap()) as usize;
+    let dummy_payload = vec![0xAAu8; 32];
+    let ext_box_size: u64 = 16 + dummy_payload.len() as u64;
+    let mut reordered_avif = Vec::with_capacity(raw_avif.len() + ext_box_size as usize);
+    reordered_avif.extend_from_slice(&raw_avif[..ftyp_size]);
+    reordered_avif.extend_from_slice(&1u32.to_be_bytes());
+    reordered_avif.extend_from_slice(b"mdat");
+    reordered_avif.extend_from_slice(&ext_box_size.to_be_bytes());
+    reordered_avif.extend_from_slice(&dummy_payload);
+    reordered_avif.extend_from_slice(&raw_avif[ftyp_size..]);
+
+    let complex_avif = tmp.path().join("complex.avif");
+    std::fs::write(&complex_avif, &reordered_avif).unwrap();
+    assert_eq!(inspect_image_dimensions(&complex_avif).unwrap(), (128, 96));
+
+    // TC-EG-03 (FH-03): PageSource::PdfPage passed into image2pdf fails with explicit message
+    let pdf_draft = PageDraft {
+        id: "pdf-pg".into(),
+        source: PageSource::PdfPage {
+            path: tmp.path().join("dummy.pdf"),
+            page_index: 0,
+        },
+        rotation_deg: 0,
+        crop: None,
+        annotations: AnnotationLayer::default(),
+        duration_ms: None,
+        label: "dummy.pdf".into(),
+        width_px: 100,
+        height_px: 100,
+        file_size_bytes: 0,
+    };
+    let pdf_src_err = build_pdf_from_drafts(
+        &[pdf_draft],
+        &[],
+        &Image2PdfConfig {
+            output_path: tmp.path().join("pdf_src_fail.pdf"),
+            layout: PageLayoutPolicy::OriginalSize { dpi: 72.0 },
+            jpeg_quality: 85,
+            lossless_passthrough: true,
+            animated_policy: AnimatedImagePolicy::FirstFrameOnly,
+            export_mode: PdfExportMode::Balanced,
+            max_mb: None,
+            max_pages_per_file: None,
+        },
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap_err();
+    assert!(
+        pdf_src_err
+            .to_string()
+            .contains("PdfPage duoc xu ly truc tiep trong PDF ops"),
+        "unexpected error: {pdf_src_err}"
+    );
+}
