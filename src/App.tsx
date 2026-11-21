@@ -20,6 +20,7 @@ import type {
   JobLogEntry,
   JobProgress,
   LogVerbosity,
+  RunningJobInfo,
   ToolId,
 } from "./types/ipc";
 import { ArchiveView } from "./views/ArchiveView";
@@ -60,7 +61,9 @@ const AppInner: React.FC = () => {
     "knit.export.defaultDir",
     "",
   );
-  const [activeJobId, setActiveJobId] = React.useState<string | null>(null);
+  const [runningJobs, setRunningJobs] = React.useState<RunningJobInfo[]>([]);
+  const runningJobsRef = React.useRef<RunningJobInfo[]>([]);
+  runningJobsRef.current = runningJobs;
 
   React.useEffect(() => {
     void setLogVerbosity(logVerbosity);
@@ -72,7 +75,6 @@ const AppInner: React.FC = () => {
     const clamped = Math.min(20, Math.max(13, Math.round(appFontSizePx || 16)));
     root.style.setProperty("--knit-app-font-size", `${clamped}px`);
   }, [appFontFamily, appFontSizePx]);
-  const [progress, setProgress] = React.useState<JobProgress | null>(null);
   const [logs, setLogs] = React.useState<JobLogEntry[]>([]);
   const [history, setHistory] = React.useState<JobHistoryItem[]>([]);
   const [nativeDialogOpen, setNativeDialogOpen] = React.useState(false);
@@ -151,25 +153,41 @@ const AppInner: React.FC = () => {
   );
 
   const handleStartJob = React.useCallback(
-    (jobId: string, label: string) => {
-      setActiveJobId(jobId);
-      setProgress({
+    (jobId: string, label: string, outputPaths: string[] = []) => {
+      const initialProgress: JobProgress = {
         phase: "start",
         done: 0,
         total: 1,
         bytes_done: 0,
         bytes_total: 0,
         current_item: t.common.startingJob(label),
-      });
+      };
+      setRunningJobs((prev) => [
+        ...prev,
+        {
+          jobId,
+          tool: activeToolRef.current,
+          label,
+          outputPaths,
+          progress: initialProgress,
+        },
+      ]);
       appendLog("info", t.common.startJobLog(label));
     },
     [appendLog, t.common],
   );
 
   const handleJobEvent = React.useCallback(
-    (ev: JobEvent) => {
+    (ev: JobEvent, jobId?: string) => {
       if (ev.kind === "progress") {
-        setProgress(ev.data);
+        setRunningJobs((prev) => {
+          if (prev.length === 0) return prev;
+          if (jobId) {
+            return prev.map((j) => (j.jobId === jobId ? { ...j, progress: ev.data } : j));
+          }
+          const lastIdx = prev.length - 1;
+          return prev.map((j, idx) => (idx === lastIdx ? { ...j, progress: ev.data } : j));
+        });
       } else {
         appendLog(ev.level, ev.message);
       }
@@ -184,14 +202,21 @@ const AppInner: React.FC = () => {
       summary: string,
       status: "success" | "error" | "cancelled",
       heading?: string,
+      jobId?: string,
     ) => {
-      setActiveJobId(null);
-      setProgress(null);
+      const matchedJob = jobId
+        ? runningJobsRef.current.find((j) => j.jobId === jobId)
+        : runningJobsRef.current[runningJobsRef.current.length - 1];
+      setRunningJobs((prev) => {
+        if (prev.length === 0) return prev;
+        if (jobId) return prev.filter((j) => j.jobId !== jobId);
+        return prev.slice(0, -1);
+      });
       appendLog(status === "error" ? "error" : status === "cancelled" ? "warn" : "info", summary);
       setHistory((prev) => [
         {
           id: crypto.randomUUID(),
-          tool: activeToolRef.current,
+          tool: matchedJob?.tool ?? activeToolRef.current,
           title,
           outputs,
           timestamp: nowTime(),
@@ -207,21 +232,28 @@ const AppInner: React.FC = () => {
     [appendLog, nowTime],
   );
 
-  const handleCancelJob = async () => {
-    if (!activeJobId) return;
+  const handleCancelJob = async (jobId?: string) => {
+    const targetId = jobId ?? runningJobsRef.current[runningJobsRef.current.length - 1]?.jobId;
+    if (!targetId) return;
     appendLog("warn", t.common.cancellingJobLog);
     try {
-      await cancelActiveJob(activeJobId);
+      await cancelActiveJob(targetId);
     } catch {
       // ignore if already finished
     }
   };
 
+  const activeExportPaths = React.useMemo(
+    () => runningJobs.flatMap((j) => j.outputPaths),
+    [runningJobs],
+  );
+
   const sharedProps = {
     onStartJob: handleStartJob,
     onJobEvent: handleJobEvent,
     onFinishJob: handleFinishJob,
-    busy: activeJobId !== null,
+    busy: false,
+    activeExportPaths,
     defaultExportDir,
   };
 
@@ -233,9 +265,8 @@ const AppInner: React.FC = () => {
       <WorkbenchShell
         activeTool={activeTool}
         onSelectTool={setActiveTool}
-        activeJobId={activeJobId}
-        progress={progress}
-        onCancelJob={() => void handleCancelJob()}
+        runningJobs={runningJobs}
+        onCancelJob={(jobId) => void handleCancelJob(jobId)}
         logs={logs}
         onClearLogs={() => setLogs([])}
         history={history}

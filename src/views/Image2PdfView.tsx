@@ -37,7 +37,11 @@ import { useThumbnailQueue } from "../hooks/useThumbnailQueue";
 import { useVirtualizedGrid } from "../hooks/useVirtualizedGrid";
 import { useI18n } from "../i18n";
 import { buildPageBookmarkMap, remapBookmarksAfterPageRemoval } from "../lib/bookmarks";
-import { useExportFilenameCheck } from "../lib/exportPath";
+import {
+  findActiveExportConflicts,
+  resolveUniqueNonActiveExportPath,
+  useExportFilenameCheck,
+} from "../lib/exportPath";
 import { estimateImage2PdfOutput } from "../lib/sizeEstimate";
 import {
   hitTestGridInsertIndex,
@@ -67,8 +71,8 @@ import {
   renderImageThumbBase64,
   renderImageThumbFile,
   renderPageDraftPreviewFile,
-  resolveUniqueExportPath,
   scanImagesForPdf,
+  syncAnimatedDrafts,
 } from "../lib/ipc";
 import { usePersistentState } from "../lib/storage";
 import type {
@@ -96,15 +100,18 @@ export interface DroppedBatch {
 }
 
 interface Image2PdfViewProps {
-  onStartJob: (jobId: string, label: string) => void;
-  onJobEvent: (ev: JobEvent) => void;
+  onStartJob: (jobId: string, label: string, outputPaths?: string[]) => void;
+  onJobEvent: (ev: JobEvent, jobId?: string) => void;
   onFinishJob: (
     title: string,
     outputs: string[],
     summary: string,
     status: "success" | "error" | "cancelled",
+    heading?: string,
+    jobId?: string,
   ) => void;
   busy: boolean;
+  activeExportPaths?: string[];
   droppedBatch?: DroppedBatch | null;
   defaultExportDir?: string;
 }
@@ -117,6 +124,7 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
   onJobEvent,
   onFinishJob,
   busy,
+  activeExportPaths = [],
   droppedBatch,
   defaultExportDir = "",
 }) => {
@@ -131,6 +139,7 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
   const [pendingConflict, setPendingConflict] = React.useState<{
     outPath: string;
     conflicts: string[];
+    lockedByActiveJob: boolean;
   } | null>(null);
 
   const [pages, setPages] = React.useState<PageDraft[]>([]);
@@ -157,6 +166,12 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
     "knit.img2pdf.loadThumbs",
     true,
   );
+  const [prependNewFiles, setPrependNewFiles] = usePersistentState<boolean>(
+    "knit.img2pdf.prependNewFiles",
+    false,
+  );
+  const prependNewFilesRef = React.useRef<boolean>(prependNewFiles);
+  prependNewFilesRef.current = prependNewFiles;
 
   const [layoutMode, setLayoutMode] = usePersistentState<"original_size" | "fit_a4" | "fit_letter">(
     "knit.img2pdf.layoutMode",
@@ -321,7 +336,11 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
       if (!page) return null;
       const sig = pageEditSignature(page);
       const edited = hasPageEdits(page);
-      const thumbPath = edited
+      const needsDraftPreview =
+        edited ||
+        page.source.kind === "animated_frame" ||
+        page.source.path.toLowerCase().endsWith(".svg");
+      const thumbPath = needsDraftPreview
         ? await renderPageDraftPreviewFile(page, 360)
         : await renderImageThumbFile(page.source.path, 360);
       return {
@@ -396,17 +415,20 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
     (page: PageDraft | null): string => {
       if (!page) return "";
       const lower = page.source.path.toLowerCase();
+      if (hiResCache[page.id]) return hiResCache[page.id];
       if (
-        page.source.kind === "animated_frame" ||
-        lower.endsWith(".gif") ||
-        lower.endsWith(".webp") ||
-        lower.endsWith(".apng")
+        page.source.kind !== "animated_frame" &&
+        (lower.endsWith(".gif") || lower.endsWith(".webp") || lower.endsWith(".apng"))
       ) {
         if (isTauriRuntime()) return convertFileSrc(page.source.path);
       }
-      if (hiResCache[page.id]) return hiResCache[page.id];
       if (page.source.kind === "image_file") {
-        if (!lower.endsWith(".avif") && !lower.endsWith(".tiff") && !lower.endsWith(".tif")) {
+        if (
+          !lower.endsWith(".avif") &&
+          !lower.endsWith(".tiff") &&
+          !lower.endsWith(".tif") &&
+          !lower.endsWith(".svg")
+        ) {
           if (isTauriRuntime()) return convertFileSrc(page.source.path);
         }
       }
@@ -421,21 +443,41 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
     const page = pagesByIdRef.current.get(activeId) ?? pages.find((p) => p.id === activeId);
     if (!page || hiResCache[page.id]) return;
     const lower = page.source.path.toLowerCase();
+    const isAnimatedFrame = page.source.kind === "animated_frame";
     const needsRustDecode =
-      page.source.kind === "animated_frame" ||
+      isAnimatedFrame ||
       lower.endsWith(".avif") ||
       lower.endsWith(".tiff") ||
-      lower.endsWith(".tif");
+      lower.endsWith(".tif") ||
+      lower.endsWith(".svg");
     if (!needsRustDecode) return;
 
     let cancelled = false;
-    void renderImageThumbBase64(page.source.path, 1600)
-      .then((b64) => {
-        if (!cancelled) {
-          setHiResCache((prev) => ({ ...prev, [page.id]: `data:image/png;base64,${b64}` }));
-        }
-      })
-      .catch(() => {});
+    if (isAnimatedFrame) {
+      void renderPageDraftPreviewFile(
+        {
+          ...page,
+          rotation_deg: 0,
+          crop: null,
+          annotations: { texts: [], strokes: [] },
+        },
+        1600,
+      )
+        .then((filePath) => {
+          if (!cancelled) {
+            setHiResCache((prev) => ({ ...prev, [page.id]: convertFileSrc(filePath) }));
+          }
+        })
+        .catch(() => {});
+    } else {
+      void renderImageThumbBase64(page.source.path, 1600)
+        .then((b64) => {
+          if (!cancelled) {
+            setHiResCache((prev) => ({ ...prev, [page.id]: `data:image/png;base64,${b64}` }));
+          }
+        })
+        .catch(() => {});
+    }
     return () => {
       cancelled = true;
     };
@@ -519,13 +561,19 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
             nextImportOrderRef.current += 1;
           }
         }
+        const prepend = prependNewFilesRef.current;
+        const offset = pagesStateRef.current.length;
+        if (prepend) {
+          setBookmarks((bPrev) => [
+            ...scan.bookmarks,
+            ...shiftBookmarks(bPrev, scan.pages.length),
+          ]);
+        } else if (scan.bookmarks.length > 0) {
+          const shifted = shiftBookmarks(scan.bookmarks, offset);
+          setBookmarks((bPrev) => [...bPrev, ...shifted]);
+        }
         setPages((prev) => {
-          const offset = prev.length;
-          if (scan.bookmarks.length > 0) {
-            const shifted = shiftBookmarks(scan.bookmarks, offset);
-            setBookmarks((bPrev) => [...bPrev, ...shifted]);
-          }
-          const combined = [...prev, ...scan.pages];
+          const combined = prepend ? [...scan.pages, ...prev] : [...prev, ...scan.pages];
           return sortModeRef.current !== "manual"
             ? sortPageDrafts(
                 combined,
@@ -561,7 +609,19 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
         filters: [
           {
             name: "Images",
-            extensions: ["jpg", "jpeg", "jfif", "png", "webp", "avif", "gif", "bmp", "tiff", "tif"],
+            extensions: [
+              "jpg",
+              "jpeg",
+              "jfif",
+              "png",
+              "webp",
+              "avif",
+              "gif",
+              "bmp",
+              "tiff",
+              "tif",
+              "svg",
+            ],
           },
         ],
       });
@@ -860,6 +920,41 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
     [resetThumbQueue, setLoadThumbs],
   );
 
+  const handleChangeAnimatedPolicy = React.useCallback(
+    async (nextPolicy: AnimatedImagePolicy) => {
+      setAnimatedPolicy(nextPolicy);
+      const currentPages = pagesStateRef.current;
+      if (!isTauriRuntime() || currentPages.length === 0) return;
+      const hasAnimatedCandidate = currentPages.some((p) => {
+        const lower = p.source.path.toLowerCase();
+        return (
+          p.source.kind === "animated_frame" ||
+          lower.endsWith(".gif") ||
+          lower.endsWith(".webp")
+        );
+      });
+      if (!hasAnimatedCandidate) return;
+      try {
+        const synced = await syncAnimatedDrafts(
+          currentPages,
+          bookmarksStateRef.current,
+          nextPolicy,
+        );
+        if (
+          synced.pages.length !== pagesStateRef.current.length ||
+          synced.pages.some((p, i) => p.source.kind !== pagesStateRef.current[i]?.source.kind)
+        ) {
+          pushUndoSnapshot();
+          setPages(synced.pages);
+          setBookmarks(synced.bookmarks);
+        }
+      } catch (e) {
+        setErrorMsg(String(e));
+      }
+    },
+    [pushUndoSnapshot, setAnimatedPolicy],
+  );
+
   const buildPageBackground = (): PageBackground => {
     switch (bgMode) {
       case "transparent":
@@ -874,6 +969,11 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
   };
 
   const executeExportPdf = async (outPath: string) => {
+    const jobId = crypto.randomUUID();
+    const pagesSnapshot = [...pages];
+    const bookmarksSnapshot = [...bookmarks];
+    const emitEvent = (ev: JobEvent) => onJobEvent(ev, jobId);
+
     try {
       const marginPt =
         marginUnit === "mm" ? Math.max(0, marginValue) * PT_PER_MM : Math.max(0, marginValue);
@@ -911,14 +1011,21 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
             : null,
       };
 
-      const jobId = crypto.randomUUID();
-      onStartJob(jobId, t.shell.nav.image2pdf.label);
-      const res = await buildImage2Pdf(jobId, pages, bookmarks, config, onJobEvent);
+      onStartJob(jobId, t.shell.nav.image2pdf.label, [outPath]);
+      const res = await buildImage2Pdf(
+        jobId,
+        pagesSnapshot,
+        bookmarksSnapshot,
+        config,
+        emitEvent,
+      );
       onFinishJob(
         t.shell.nav.image2pdf.label,
         res.output_files,
         t.image2pdf.exportDoneSummary(res.total_pages, res.output_files.length, res.passthrough_pages),
         "success",
+        undefined,
+        jobId,
       );
     } catch (e) {
       const rawMsg = String(e);
@@ -930,6 +1037,8 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
         [],
         msg,
         cancelled ? "cancelled" : "error",
+        undefined,
+        jobId,
       );
     }
   };
@@ -962,10 +1071,16 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
       }
       if (!outPath) return;
 
+      const activeHits = findActiveExportConflicts([outPath], activeExportPaths);
+      if (activeHits.length > 0) {
+        setPendingConflict({ outPath, conflicts: activeHits, lockedByActiveJob: true });
+        return;
+      }
+
       if (defaultTargetPath) {
         const conflicts = await checkExportConflicts([outPath]);
         if (conflicts.length > 0) {
-          setPendingConflict({ outPath, conflicts });
+          setPendingConflict({ outPath, conflicts, lockedByActiveJob: false });
           return;
         }
       }
@@ -979,11 +1094,12 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
     const pending = pendingConflict;
     setPendingConflict(null);
     if (!pending || choice === "cancel") return;
-    if (choice === "overwrite") {
+    if (choice === "overwrite" && !pending.lockedByActiveJob) {
       await executeExportPdf(pending.outPath);
       return;
     }
-    await executeExportPdf(await resolveUniqueExportPath(pending.outPath));
+    const nextPath = await resolveUniqueNonActiveExportPath(pending.outPath, activeExportPaths);
+    await executeExportPdf(nextPath);
   };
 
   const handleCardPointerDown = React.useCallback(
@@ -993,6 +1109,14 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
 
       const targetPage = pagesStateRef.current[idx];
       if (!targetPage) return;
+
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        suppressClickUntilRef.current = performance.now() + 300;
+        handleAttachBookmarkAtPage(targetPage, idx);
+        return;
+      }
 
       const hasModifier = e.ctrlKey || e.metaKey || e.shiftKey;
       const inSelectionMode = selectionModeRef.current;
@@ -1165,11 +1289,19 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
       window.addEventListener("pointerup", onUp);
       window.addEventListener("pointercancel", onUp);
     },
-    [grid.colsRef, grid.rowStrideRef, reorderGroupPages, selectRangeToIndex, toggleSelectionPage],
+    [
+      grid.colsRef,
+      grid.rowStrideRef,
+      handleAttachBookmarkAtPage,
+      reorderGroupPages,
+      selectRangeToIndex,
+      toggleSelectionPage,
+    ],
   );
 
   const handleCardDoubleClick = React.useCallback(
     (e: React.MouseEvent<HTMLDivElement>, pageId: string) => {
+      if (e.altKey) return;
       if ((e.target as HTMLElement).closest("button")) return;
       if (performance.now() < suppressClickUntilRef.current) return;
       setPreviewPageId(pageId);
@@ -1311,7 +1443,6 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
         splitMode={splitMode}
         maxMb={maxMb}
         maxPagesPerFile={maxPagesPerFile}
-        loadThumbs={loadThumbs}
         onChangeLayoutMode={setLayoutMode}
         onChangeDpi={setDpi}
         onChangeMarginValue={setMarginValue}
@@ -1321,12 +1452,33 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
         onChangeExportMode={setExportMode}
         onChangeJpegQuality={setJpegQuality}
         onChangeLosslessPassthrough={setLosslessPassthrough}
-        onChangeAnimatedPolicy={setAnimatedPolicy}
+        onChangeAnimatedPolicy={(p) => void handleChangeAnimatedPolicy(p)}
         onChangeSplitMode={setSplitMode}
         onChangeMaxMb={setMaxMb}
         onChangeMaxPagesPerFile={setMaxPagesPerFile}
-        onChangeLoadThumbs={handleChangeLoadThumbs}
       />
+
+      <div className="knit-card flex flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3">
+        <span className="text-xs font-semibold uppercase text-[#6C757D]">
+          {t.image2pdf.viewAndImportHeading}
+        </span>
+        <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-[#212529]">
+          <input
+            type="checkbox"
+            checked={loadThumbs}
+            onChange={(e) => handleChangeLoadThumbs(e.target.checked)}
+          />
+          <span>{t.image2pdf.loadThumbsLabel}</span>
+        </label>
+        <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-[#212529]">
+          <input
+            type="checkbox"
+            checked={prependNewFiles}
+            onChange={(e) => setPrependNewFiles(e.target.checked)}
+          />
+          <span>{t.image2pdf.prependNewFilesLabel}</span>
+        </label>
+      </div>
 
       <Dropzone
         title={t.image2pdf.dropzoneTitle}
@@ -1680,6 +1832,7 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
 
       <ExportConflictModal
         conflictPaths={pendingConflict?.conflicts ?? []}
+        isLockedByActiveJob={pendingConflict?.lockedByActiveJob}
         onResolve={(c) => void handleConflictResolution(c)}
       />
 

@@ -13,11 +13,14 @@ import {
 } from "../components/ImportFeedbackToast";
 import type { MarkdownCodeEditorHandle } from "../components/MarkdownCodeEditor";
 import type { PdfJsPreviewHandle } from "../components/PdfJsPreview";
-import { PdfPageZoomModal } from "../components/PdfPageZoomModal";
 import { ViewHeader } from "../components/ViewHeader";
 import { useVerticalResize } from "../hooks/useVerticalResize";
 import { useI18n } from "../i18n";
-import { useExportFilenameCheck } from "../lib/exportPath";
+import {
+  findActiveExportConflicts,
+  resolveUniqueNonActiveExportPath,
+  useExportFilenameCheck,
+} from "../lib/exportPath";
 import {
   checkExportConflicts,
   convertDocContentToPdf,
@@ -31,7 +34,6 @@ import {
   pickSaveFile,
   previewDocPdfBytes,
   readDocTextFile,
-  resolveUniqueExportPath,
   writeDocTextFile,
 } from "../lib/ipc";
 import { findAllTextMatches, findMarkdownSourceRange } from "../lib/markdownSearch";
@@ -55,15 +57,18 @@ import { Docs2PdfSettingsCard } from "./docs2pdf/Docs2PdfSettingsCard";
 import { DocsSplitWorkbench } from "./docs2pdf/DocsSplitWorkbench";
 
 interface Docs2PdfViewProps {
-  onStartJob: (jobId: string, label: string) => void;
-  onJobEvent: (ev: JobEvent) => void;
+  onStartJob: (jobId: string, label: string, outputPaths?: string[]) => void;
+  onJobEvent: (ev: JobEvent, jobId?: string) => void;
   onFinishJob: (
     title: string,
     outputs: string[],
     summary: string,
     status: "success" | "error" | "cancelled",
+    heading?: string,
+    jobId?: string,
   ) => void;
   busy: boolean;
+  activeExportPaths?: string[];
   droppedBatch?: DroppedBatch | null;
   defaultExportDir?: string;
 }
@@ -94,6 +99,7 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
   onJobEvent,
   onFinishJob,
   busy,
+  activeExportPaths = [],
   droppedBatch,
   defaultExportDir = "",
 }) => {
@@ -108,10 +114,7 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
   const [pendingConflict, setPendingConflict] = React.useState<{
     outPath: string;
     conflicts: string[];
-  } | null>(null);
-  const [zoomPageModal, setZoomPageModal] = React.useState<{
-    pageNumber: number;
-    imageDataUrl: string;
+    lockedByActiveJob: boolean;
   } | null>(null);
   const [editorText, setEditorText] = React.useState<string>("");
   const [savedText, setSavedText] = React.useState<string>("");
@@ -165,7 +168,7 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
   const { height: liveHeightPx, handlePointerDown: handleStartHeightResize } = useVerticalResize({
     value: workspaceHeightPx,
     min: 320,
-    max: 1200,
+    max: 4000,
     onCommit: setWorkspaceHeightPx,
   });
   const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
@@ -554,29 +557,37 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
     : Boolean(inputPath);
 
   const executeConvert = async (outPath: string) => {
+    const jobId = crypto.randomUUID();
+    const snapEditorText = editorText;
+    const snapDocKind = docKind;
+    const snapInputPath = inputPath;
+    const snapIsEditableText = isEditableText;
+    const snapDocOptions = docOptions;
+    const snapMermaidTheme = mermaidTheme;
+    const emitEvent = (ev: JobEvent) => onJobEvent(ev, jobId);
+
     try {
-      const jobId = crypto.randomUUID();
-      onStartJob(jobId, t.shell.nav.docs2pdf.label);
+      onStartJob(jobId, t.shell.nav.docs2pdf.label, [outPath]);
 
       const mermaidSvgs =
-        docKind === "markdown" && editorText.trim().length > 0
-          ? await renderMermaidSvgs(editorText, mermaidTheme, mermaidCacheRef.current)
+        snapDocKind === "markdown" && snapEditorText.trim().length > 0
+          ? await renderMermaidSvgs(snapEditorText, snapMermaidTheme, mermaidCacheRef.current)
           : {};
-      const finalOptions: DocConvertOptions = { ...docOptions, mermaid_svgs: mermaidSvgs };
+      const finalOptions: DocConvertOptions = { ...snapDocOptions, mermaid_svgs: mermaidSvgs };
 
       const res =
-        isEditableText && editorText.trim().length > 0
+        snapIsEditableText && snapEditorText.trim().length > 0
           ? await convertDocContentToPdf(
               jobId,
-              editorText,
-              docKind,
-              parentDirOf(inputPath),
-              inputPath,
+              snapEditorText,
+              snapDocKind,
+              parentDirOf(snapInputPath),
+              snapInputPath,
               outPath,
               finalOptions,
-              onJobEvent,
+              emitEvent,
             )
-          : await convertDocToPdf(jobId, inputPath!, outPath, finalOptions, onJobEvent);
+          : await convertDocToPdf(jobId, snapInputPath!, outPath, finalOptions, emitEvent);
 
       onFinishJob(
         t.shell.nav.docs2pdf.label,
@@ -587,13 +598,22 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
           res.used_external_engine ? "LibreOffice" : "Typst Native",
         ),
         "success",
+        undefined,
+        jobId,
       );
     } catch (e) {
       const rawMsg = String(e);
       const cancelled = isJobCancelledError(rawMsg);
       const msg = cancelled ? t.common.jobCancelledMsg : rawMsg;
       setErrorMsg(msg);
-      onFinishJob(t.shell.nav.docs2pdf.label, [], msg, cancelled ? "cancelled" : "error");
+      onFinishJob(
+        t.shell.nav.docs2pdf.label,
+        [],
+        msg,
+        cancelled ? "cancelled" : "error",
+        undefined,
+        jobId,
+      );
     }
   };
 
@@ -615,10 +635,16 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
       }
       if (!outPath) return;
 
+      const activeHits = findActiveExportConflicts([outPath], activeExportPaths);
+      if (activeHits.length > 0) {
+        setPendingConflict({ outPath, conflicts: activeHits, lockedByActiveJob: true });
+        return;
+      }
+
       if (defaultTargetPath) {
         const conflicts = await checkExportConflicts([outPath]);
         if (conflicts.length > 0) {
-          setPendingConflict({ outPath, conflicts });
+          setPendingConflict({ outPath, conflicts, lockedByActiveJob: false });
           return;
         }
       }
@@ -632,11 +658,12 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
     const pending = pendingConflict;
     setPendingConflict(null);
     if (!pending || choice === "cancel") return;
-    if (choice === "overwrite") {
+    if (choice === "overwrite" && !pending.lockedByActiveJob) {
       await executeConvert(pending.outPath);
       return;
     }
-    await executeConvert(await resolveUniqueExportPath(pending.outPath));
+    const nextPath = await resolveUniqueNonActiveExportPath(pending.outPath, activeExportPaths);
+    await executeConvert(nextPath);
   };
 
   return (
@@ -831,9 +858,6 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
           onPreviewScrollRatio={handlePreviewScrollRatio}
           onGoToInEditor={handleGoToInEditor}
           onStartHeightResize={handleStartHeightResize}
-          onDoubleClickPreviewPage={(pageNumber, imageDataUrl) =>
-            setZoomPageModal({ pageNumber, imageDataUrl })
-          }
         />
       ) : (
         <div className="knit-card p-4 text-sm text-[#6C757D]">
@@ -841,21 +865,9 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
         </div>
       )}
 
-      <PdfPageZoomModal
-        pdfPath={zoomPageModal ? inputPath : null}
-        imageDataUrl={zoomPageModal?.imageDataUrl ?? null}
-        pageIndex={zoomPageModal ? zoomPageModal.pageNumber - 1 : 0}
-        sourcePageCount={previewTotalPages > 0 ? previewTotalPages : undefined}
-        title={
-          zoomPageModal
-            ? `${(inputPath?.split(/[\\/]/).pop() ?? "Document")} — ${t.pdfOps.zoomModalTitle(zoomPageModal.pageNumber)}`
-            : undefined
-        }
-        onClose={() => setZoomPageModal(null)}
-      />
-
       <ExportConflictModal
         conflictPaths={pendingConflict?.conflicts ?? []}
+        isLockedByActiveJob={pendingConflict?.lockedByActiveJob}
         onResolve={(c) => void handleConflictResolution(c)}
       />
 

@@ -87,6 +87,7 @@ export function hasPageEdits(page: PageDraft): boolean {
 }
 
 export function pageEditSignature(page: PageDraft): string {
+  const framePart = page.source.kind === "animated_frame" ? page.source.frame_index : -1;
   const rot = ((page.rotation_deg % 360) + 360) % 360;
   const cropKey = page.crop
     ? `${page.crop.x.toFixed(4)},${page.crop.y.toFixed(4)},${page.crop.width.toFixed(4)},${page.crop.height.toFixed(4)}`
@@ -105,7 +106,7 @@ export function pageEditSignature(page: PageDraft): string {
         `${t.id}:${t.text}@${t.x.toFixed(3)},${t.y.toFixed(3)}:${t.color_hex}:${t.font_size_ratio.toFixed(4)}`,
     )
     .join(";");
-  return `${rot}|${cropKey}|${strokesKey}|${textsKey}`;
+  return `${framePart}|${rot}|${cropKey}|${strokesKey}|${textsKey}`;
 }
 
 /**

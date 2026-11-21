@@ -3,6 +3,7 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import type {
   AnimatedImagePolicy,
   AppMetrics,
+  ArchiveEntrySpec,
   ArchiveEstimate,
   ArchiveOptions,
   ArchiveSummary,
@@ -240,6 +241,23 @@ export async function renderPdfThumbFile(
   return await invoke("render_pdf_thumb_file", { path, pageIndex, maxWidth });
 }
 
+export async function syncAnimatedDrafts(
+  drafts: PageDraft[],
+  bookmarks: BookmarkNode[],
+  animatedPolicy: AnimatedImagePolicy,
+): Promise<{ pages: PageDraft[]; bookmarks: BookmarkNode[] }> {
+  return await invoke("pdf_sync_animated_drafts", {
+    drafts,
+    bookmarks,
+    animatedPolicy,
+  });
+}
+
+export async function readPdfFileBytes(path: string): Promise<Uint8Array> {
+  const buf = await invoke<ArrayBuffer>("read_pdf_file_bytes", { path });
+  return new Uint8Array(buf);
+}
+
 export async function buildImage2Pdf(
   jobId: string,
   drafts: PageDraft[],
@@ -396,17 +414,31 @@ export async function convertDocContentToPdf(
 }
 
 // --- Archive ---
+export async function collectArchiveEntries(
+  inputs: string[],
+  includeRootDir: boolean,
+  ignoreHidden: boolean,
+): Promise<ArchiveEntrySpec[]> {
+  return await invoke("archive_collect_entries", {
+    inputs,
+    includeRootDir,
+    ignoreHidden,
+  });
+}
+
 export async function estimateArchiveSize(
   inputs: string[],
   includeRootDir: boolean,
   ignoreHidden: boolean,
   options: ArchiveOptions,
+  customEntries?: ArchiveEntrySpec[] | null,
 ): Promise<ArchiveEstimate> {
   return await invoke("archive_estimate_size", {
     inputs,
     includeRootDir,
     ignoreHidden,
     options,
+    customEntries: customEntries ?? null,
   });
 }
 
@@ -422,6 +454,7 @@ export async function createArchive(
   ignoreHidden: boolean,
   options: ArchiveOptions,
   onEvent?: (ev: JobEvent) => void,
+  customEntries?: ArchiveEntrySpec[] | null,
 ): Promise<ArchiveSummary> {
   return await invoke("archive_pack", {
     jobId,
@@ -430,6 +463,7 @@ export async function createArchive(
     includeRootDir,
     ignoreHidden,
     options,
+    customEntries: customEntries ?? null,
     onEvent: makeChannel(onEvent),
   });
 }

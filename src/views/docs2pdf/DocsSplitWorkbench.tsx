@@ -7,7 +7,9 @@ import {
 } from "../../components/MarkdownCodeEditor";
 import { PaneResizeHandle } from "../../components/PaneResizeHandle";
 import { PdfJsPreview, type PdfJsPreviewHandle } from "../../components/PdfJsPreview";
+import { useHorizontalRatioResize } from "../../hooks/useHorizontalRatioResize";
 import { useI18n } from "../../i18n";
+import { usePersistentState } from "../../lib/storage";
 
 interface DocsSplitWorkbenchProps {
   isEditableText: boolean;
@@ -51,7 +53,6 @@ interface DocsSplitWorkbenchProps {
   onPreviewScrollRatio: (ratio: number) => void;
   onGoToInEditor: (selectedText: string, occurrenceIndex?: number) => void;
   onStartHeightResize: (e: React.PointerEvent<HTMLElement>) => void;
-  onDoubleClickPreviewPage?: (pageNumber: number, dataUrl: string) => void;
 }
 
 export const DocsSplitWorkbench: React.FC<DocsSplitWorkbenchProps> = ({
@@ -96,24 +97,45 @@ export const DocsSplitWorkbench: React.FC<DocsSplitWorkbenchProps> = ({
   onPreviewScrollRatio,
   onGoToInEditor,
   onStartHeightResize,
-  onDoubleClickPreviewPage,
 }) => {
   const { t } = useI18n();
+  const splitContainerRef = React.useRef<HTMLDivElement | null>(null);
+  const [leftRatio, setLeftRatio] = usePersistentState<number>("knit.docs.leftRatio", 0.5);
+  const { ratio: liveLeftRatio, handlePointerDown: handleStartWidthResize } =
+    useHorizontalRatioResize({
+      value: leftRatio,
+      min: 0.25,
+      max: 0.75,
+      containerRef: splitContainerRef,
+      cssVar: "--docs-left",
+      onCommit: setLeftRatio,
+    });
 
   return (
     <div className="space-y-2">
       <div
-        style={{ height: `${liveHeightPx}px` }}
+        ref={splitContainerRef}
+        style={
+          isEditableText
+            ? ({
+                height: `${liveHeightPx}px`,
+                "--docs-left": `${(liveLeftRatio * 100).toFixed(2)}%`,
+              } as React.CSSProperties)
+            : { height: `${liveHeightPx}px` }
+        }
         className={`grid min-h-[320px] grid-cols-1 gap-4 ${
-          isEditableText ? "lg:grid-cols-2" : "lg:grid-cols-1"
+          isEditableText
+            ? "lg:gap-2 lg:[grid-template-columns:var(--docs-left)_12px_minmax(0,1fr)]"
+            : "lg:grid-cols-1"
         }`}
       >
         {/* Left: Live Markdown Editor */}
         {isEditableText && (
-          <div
-            ref={editorPaneRef}
-            className="knit-card flex min-h-0 flex-col overflow-hidden"
-          >
+          <>
+            <div
+              ref={editorPaneRef}
+              className="knit-card flex min-h-0 flex-col overflow-hidden"
+            >
             <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-[#DEE2E6] bg-[#F8F9FA] px-3.5 py-2">
               <div className="flex items-center gap-2 text-sm font-bold text-[#343A40]">
                 <FileCode2 className="h-4 w-4 text-[#007BFF]" />
@@ -178,6 +200,13 @@ export const DocsSplitWorkbench: React.FC<DocsSplitWorkbenchProps> = ({
               placeholder={t.docs2pdf.newDocPlaceholder}
             />
           </div>
+          <PaneResizeHandle
+            orientation="vertical"
+            title={t.pdfOps.resizeWidthTitle}
+            ariaLabel={t.pdfOps.resizeWidthTitle}
+            onPointerDown={handleStartWidthResize}
+          />
+          </>
         )}
 
         {/* Right: Live PDF Preview via pdfjs-dist */}
@@ -264,7 +293,6 @@ export const DocsSplitWorkbench: React.FC<DocsSplitWorkbenchProps> = ({
               onGoToInEditor={isEditableText ? onGoToInEditor : undefined}
               onScrollRatioChange={onPreviewScrollRatio}
               onOpenFind={onOpenPreviewFind}
-              onDoubleClickPage={onDoubleClickPreviewPage}
             />
           </div>
         </div>

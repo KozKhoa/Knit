@@ -28,7 +28,11 @@ import { NumberInput } from "../components/NumberInput";
 import { Select } from "../components/Select";
 import { useVerticalResize } from "../hooks/useVerticalResize";
 import { useI18n } from "../i18n";
-import { useExportFilenameCheck } from "../lib/exportPath";
+import {
+  findActiveExportConflicts,
+  resolveUniqueNonActiveExportPath,
+  useExportFilenameCheck,
+} from "../lib/exportPath";
 import {
   checkExportConflicts,
   formatBytes,
@@ -37,7 +41,6 @@ import {
   packMangaStories,
   pickDirectory,
   readDocTextFile,
-  resolveUniqueExportPath,
   scanMangaFolder,
   writeDocTextFile,
 } from "../lib/ipc";
@@ -59,15 +62,18 @@ import type {
 import type { DroppedBatch } from "./Image2PdfView";
 
 interface MangaPackViewProps {
-  onStartJob: (jobId: string, label: string) => void;
-  onJobEvent: (ev: JobEvent) => void;
+  onStartJob: (jobId: string, label: string, outputPaths?: string[]) => void;
+  onJobEvent: (ev: JobEvent, jobId?: string) => void;
   onFinishJob: (
     title: string,
     outputs: string[],
     summary: string,
     status: "success" | "error" | "cancelled",
+    heading?: string,
+    jobId?: string,
   ) => void;
   busy: boolean;
+  activeExportPaths?: string[];
   droppedBatch?: DroppedBatch | null;
   defaultExportDir?: string;
 }
@@ -77,6 +83,7 @@ export const MangaPackView: React.FC<MangaPackViewProps> = ({
   onJobEvent,
   onFinishJob,
   busy,
+  activeExportPaths = [],
   droppedBatch,
   defaultExportDir = "",
 }) => {
@@ -92,6 +99,7 @@ export const MangaPackView: React.FC<MangaPackViewProps> = ({
     outDir: string;
     fileName: string;
     conflicts: string[];
+    lockedByActiveJob: boolean;
   } | null>(null);
   const [mangamentMode, setMangamentMode] = usePersistentState<boolean>(
     "knit.manga.mangamentMode",
@@ -168,20 +176,25 @@ export const MangaPackView: React.FC<MangaPackViewProps> = ({
   };
 
   const executePack = async (outDir: string, fileName: string) => {
+    const jobId = crypto.randomUUID();
+    const sep = outDir.includes("\\") && !outDir.includes("/") ? "\\" : "/";
+    const expectedPath = `${outDir.replace(/[\\/]+$/, "")}${sep}${fileName}`;
+    const snapStories = [...stories];
+    const emitEvent = (ev: JobEvent) => onJobEvent(ev, jobId);
+
     try {
       const options: MangaPackOptions = {
         mangament_package_mode: mangamentMode,
         image_compression: imageCompression,
         max_gb: maxGb,
       };
-      const jobId = crypto.randomUUID();
-      onStartJob(jobId, t.shell.nav.mangaPack.label);
+      onStartJob(jobId, t.shell.nav.mangaPack.label, [expectedPath]);
       const summary = await packMangaStories(
         jobId,
-        stories,
+        snapStories,
         outDir,
         options,
-        onJobEvent,
+        emitEvent,
         fileName,
       );
       onFinishJob(
@@ -194,13 +207,22 @@ export const MangaPackView: React.FC<MangaPackViewProps> = ({
           summary.created_files.length,
         ),
         "success",
+        undefined,
+        jobId,
       );
     } catch (e) {
       const rawMsg = String(e);
       const cancelled = isJobCancelledError(rawMsg);
       const msg = cancelled ? t.common.jobCancelledMsg : rawMsg;
       setErrorMsg(msg);
-      onFinishJob(t.shell.nav.mangaPack.label, [], msg, cancelled ? "cancelled" : "error");
+      onFinishJob(
+        t.shell.nav.mangaPack.label,
+        [],
+        msg,
+        cancelled ? "cancelled" : "error",
+        undefined,
+        jobId,
+      );
     }
   };
 
@@ -216,9 +238,25 @@ export const MangaPackView: React.FC<MangaPackViewProps> = ({
 
       const sep = outDir.includes("\\") && !outDir.includes("/") ? "\\" : "/";
       const targetPath = `${outDir.replace(/[\\/]+$/, "")}${sep}${effectiveFilename}`;
+      const activeHits = findActiveExportConflicts([targetPath], activeExportPaths);
+      if (activeHits.length > 0) {
+        setPendingConflict({
+          outDir,
+          fileName: effectiveFilename,
+          conflicts: activeHits,
+          lockedByActiveJob: true,
+        });
+        return;
+      }
+
       const conflicts = await checkExportConflicts([targetPath]);
       if (conflicts.length > 0) {
-        setPendingConflict({ outDir, fileName: effectiveFilename, conflicts });
+        setPendingConflict({
+          outDir,
+          fileName: effectiveFilename,
+          conflicts,
+          lockedByActiveJob: false,
+        });
         return;
       }
 
@@ -232,13 +270,13 @@ export const MangaPackView: React.FC<MangaPackViewProps> = ({
     const pending = pendingConflict;
     setPendingConflict(null);
     if (!pending || choice === "cancel") return;
-    if (choice === "overwrite") {
+    if (choice === "overwrite" && !pending.lockedByActiveJob) {
       await executePack(pending.outDir, pending.fileName);
       return;
     }
     const sep = pending.outDir.includes("\\") && !pending.outDir.includes("/") ? "\\" : "/";
     const candidate = `${pending.outDir.replace(/[\\/]+$/, "")}${sep}${pending.fileName}`;
-    const uniquePath = await resolveUniqueExportPath(candidate);
+    const uniquePath = await resolveUniqueNonActiveExportPath(candidate, activeExportPaths);
     const uniqueName = uniquePath.split(/[\\/]/).pop() ?? pending.fileName;
     await executePack(pending.outDir, uniqueName);
   };
@@ -524,6 +562,7 @@ export const MangaPackView: React.FC<MangaPackViewProps> = ({
 
       <ExportConflictModal
         conflictPaths={pendingConflict?.conflicts ?? []}
+        isLockedByActiveJob={pendingConflict?.lockedByActiveJob}
         onResolve={(c) => void handleConflictResolution(c)}
       />
 

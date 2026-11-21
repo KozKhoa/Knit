@@ -45,14 +45,15 @@ import { RenamerPreviewTable } from "./renamer/RenamerPreviewTable";
 import { RenamerRuleCard } from "./renamer/RenamerRuleCard";
 
 interface RenamerViewProps {
-  onStartJob: (jobId: string, label: string) => void;
-  onJobEvent: (ev: JobEvent) => void;
+  onStartJob: (jobId: string, label: string, outputPaths?: string[]) => void;
+  onJobEvent: (ev: JobEvent, jobId?: string) => void;
   onFinishJob: (
     title: string,
     outputs: string[],
     summary: string,
     status: "success" | "error" | "cancelled",
     heading?: string,
+    jobId?: string,
   ) => void;
   busy: boolean;
   droppedBatch?: DroppedBatch | null;
@@ -371,10 +372,10 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
   const handleApply = async () => {
     if (selectedPending === 0 || conflicts > 0 || busy) return;
     setErrorMsg(null);
+    const jobId = crypto.randomUUID();
     try {
-      const jobId = crypto.randomUUID();
       onStartJob(jobId, t.shell.nav.renamer.label);
-      const res = await applyBatchRename(jobId, plan, onJobEvent);
+      const res = await applyBatchRename(jobId, plan, (ev) => onJobEvent(ev, jobId));
       setUndoReady(res.undo_available);
       onFinishJob(
         t.shell.nav.renamer.label,
@@ -382,12 +383,13 @@ export const RenamerView: React.FC<RenamerViewProps> = ({
         t.renamer.doneSummary(res.renamed_count, res.skipped_count, res.error_count),
         res.error_count > 0 ? "error" : "success",
         t.renamer.renameSuccessTitle,
+        jobId,
       );
       await refreshPreview(roots);
     } catch (e) {
       const msg = String(e);
       setErrorMsg(msg);
-      onFinishJob(t.shell.nav.renamer.label, [], msg, "error");
+      onFinishJob(t.shell.nav.renamer.label, [], msg, "error", undefined, jobId);
     }
   };
 

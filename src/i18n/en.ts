@@ -34,6 +34,11 @@ export const en: Translations = {
       paths.length === 1
         ? `The following file already exists at the destination:\n${paths[0]}`
         : `${paths.length} output files already exist at the destination:`,
+    exportActiveJobConflictTitle: "Output file is currently being exported",
+    exportActiveJobConflictDesc: (paths) =>
+      paths.length === 1
+        ? `Another running export job is currently writing to:\n${paths[0]}\nPlease auto-append a suffix or go back and choose another filename.`
+        : `${paths.length} output path(s) are currently being written by another running job. Please auto-append a suffix or choose another filename:`,
     exportOverwriteBtn: "Overwrite existing",
     exportAutoRenameBtn: "Auto-append suffix (_1, _2)",
     exportRenameBtn: "Go back & rename",
@@ -102,6 +107,9 @@ export const en: Translations = {
     animatedHeading: "Animated Images (GIF / WebP)",
     animatedFirstFrame: "First frame only",
     animatedUnpackAll: "Unpack all frames (/Dur)",
+    animatedEmbedRichMedia: "Embed animation stream (/RichMedia & /Screen)",
+    viewAndImportHeading: "Display & Import Order",
+    prependNewFilesLabel: "Add newly imported images to top of list (instead of bottom)",
     splitMbHeading: "Split Output PDF (optional)",
     splitMbPlaceholder: "e.g. 50 (MB)",
     splitModeNone: "Single file (no split)",
@@ -451,6 +459,15 @@ export const en: Translations = {
     pickFolderDialog: "Select folder to pack",
     saveArchiveDialog: "Save archive",
     inputListLabel: (count) => `Input items (${count})`,
+    treeTitle: "Preview Archive Folder Structure",
+    treeSummary: (files, size) => `${files} file(s) · ${size}`,
+    treeDragHint: "Drag rows to reorder or move between folders (drop onto a folder's grip icon to nest inside) · Click trash to exclude",
+    treeEmptyHint: "No files left in archive. Add files/folders above or click Undo.",
+    deleteNodeTitle: "Exclude from archive",
+    expandAllBtn: "Expand all",
+    collapseAllBtn: "Collapse",
+    undoBtn: "Undo",
+    undoTooltip: "Undo archive tree edit (Ctrl+Z)",
     doneSummary: (files, inSize, outSize) => `Packed ${files} files (${inSize} -> ${outSize}).`,
   },
   mangaPack: {

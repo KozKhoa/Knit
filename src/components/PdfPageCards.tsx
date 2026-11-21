@@ -70,6 +70,7 @@ export const MergePageCard: React.FC<MergePageCardProps> = React.memo(
 
     const handleDoubleClick = React.useCallback(
       (e: React.MouseEvent<HTMLDivElement>) => {
+        if (e.altKey) return;
         if ((e.target as HTMLElement).closest("button")) return;
         onDoubleClickCard(idx);
       },
@@ -585,6 +586,7 @@ export const MergeFileCard: React.FC<MergeFileCardProps> = React.memo(
 
     const handleDoubleClick = React.useCallback(
       (e: React.MouseEvent<HTMLDivElement>) => {
+        if (e.altKey) return;
         if ((e.target as HTMLElement).closest("button")) return;
         onDoubleClickCard(fileIndex);
       },

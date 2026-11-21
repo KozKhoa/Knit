@@ -34,6 +34,11 @@ export const vi: Translations = {
       paths.length === 1
         ? `Tệp sau đã tồn tại tại thư mục đích:\n${paths[0]}`
         : `Phát hiện ${paths.length} tệp đã tồn tại tại thư mục đích:`,
+    exportActiveJobConflictTitle: "Tệp đầu ra đang được tiến trình khác xuất",
+    exportActiveJobConflictDesc: (paths) =>
+      paths.length === 1
+        ? `Tệp sau đang được một tiến trình khác ghi dở:\n${paths[0]}\nVui lòng tự động thêm hậu tố hoặc quay lại đổi sang tên khác.`
+        : `Phát hiện ${paths.length} tệp đang được tiến trình khác xuất dở. Vui lòng tự động thêm hậu tố hoặc đổi tên khác:`,
     exportOverwriteBtn: "Ghi đè tệp cũ",
     exportAutoRenameBtn: "Tự thêm hậu tố (_1, _2)",
     exportRenameBtn: "Quay lại đổi tên",
@@ -102,6 +107,9 @@ export const vi: Translations = {
     animatedHeading: "Ảnh động (GIF / WebP)",
     animatedFirstFrame: "Chỉ lấy khung hình đầu tiên",
     animatedUnpackAll: "Tách tất cả khung hình (/Dur)",
+    animatedEmbedRichMedia: "Nhúng luồng Animation (/RichMedia & /Screen)",
+    viewAndImportHeading: "Hiển thị & Thứ tự thêm tệp",
+    prependNewFilesLabel: "Thêm ảnh mới vào đầu danh sách (thay vì cuối danh sách)",
     splitMbHeading: "Chia tệp PDF đầu ra (tùy chọn)",
     splitMbPlaceholder: "VD: 50 (MB)",
     splitModeNone: "Không chia (1 tệp)",
@@ -452,6 +460,15 @@ export const vi: Translations = {
     pickFolderDialog: "Chọn thư mục cần nén",
     saveArchiveDialog: "Lưu tệp nén",
     inputListLabel: (count) => `Danh sách đầu vào (${count})`,
+    treeTitle: "Xem trước cấu trúc thư mục nén",
+    treeSummary: (files, size) => `${files} tệp · ${size}`,
+    treeDragHint: "Kéo thả để sắp xếp/chuyển thư mục (thả vào biểu tượng kéo của thư mục để đưa vào trong) · Bấm thùng rác để loại khỏi gói nén",
+    treeEmptyHint: "Không còn tệp nào trong gói nén. Thêm tệp/thư mục mới ở trên hoặc bấm Hoàn tác.",
+    deleteNodeTitle: "Loại khỏi gói nén",
+    expandAllBtn: "Mở hết",
+    collapseAllBtn: "Thu gọn",
+    undoBtn: "Hoàn tác",
+    undoTooltip: "Hoàn tác chỉnh sửa cấu trúc nén (Ctrl+Z)",
     doneSummary: (files, inSize, outSize) => `Đã nén ${files} tệp (${inSize} -> ${outSize}).`,
   },
   mangaPack: {

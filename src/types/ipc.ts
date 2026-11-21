@@ -105,7 +105,10 @@ export type PageLayoutPolicy =
   | { mode: "fit_a4"; margin_pt: number; background: PageBackground }
   | { mode: "fit_letter"; margin_pt: number; background: PageBackground };
 
-export type AnimatedImagePolicy = "first_frame_only" | "unpack_all_frames";
+export type AnimatedImagePolicy =
+  | "first_frame_only"
+  | "unpack_all_frames"
+  | "embed_rich_media";
 
 export type PdfExportMode = "fast" | "balanced" | "safe";
 
@@ -291,6 +294,21 @@ export interface ArchiveEstimate {
   files_count: number;
   input_bytes: number;
   estimated_output_bytes: number;
+}
+
+export interface ArchiveEntrySpec {
+  source_path: string;
+  archive_path: string;
+  size_bytes: number;
+  compression_override?: CompressionLevel | null;
+}
+
+export interface RunningJobInfo {
+  jobId: string;
+  tool: ToolId;
+  label: string;
+  outputPaths: string[];
+  progress: JobProgress;
 }
 
 // --- knit-manga ---

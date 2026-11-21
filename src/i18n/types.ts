@@ -41,6 +41,8 @@ export interface Translations {
     exportUsingDefaultDir: (dir: string) => string;
     exportConflictTitle: string;
     exportConflictDesc: (paths: string[]) => string;
+    exportActiveJobConflictTitle: string;
+    exportActiveJobConflictDesc: (paths: string[]) => string;
     exportOverwriteBtn: string;
     exportAutoRenameBtn: string;
     exportRenameBtn: string;
@@ -108,6 +110,9 @@ export interface Translations {
     animatedHeading: string;
     animatedFirstFrame: string;
     animatedUnpackAll: string;
+    animatedEmbedRichMedia: string;
+    viewAndImportHeading: string;
+    prependNewFilesLabel: string;
     splitMbHeading: string;
     splitMbPlaceholder: string;
     splitModeNone: string;
@@ -405,6 +410,15 @@ export interface Translations {
     pickFolderDialog: string;
     saveArchiveDialog: string;
     inputListLabel: (count: number) => string;
+    treeTitle: string;
+    treeSummary: (files: number, size: string) => string;
+    treeDragHint: string;
+    treeEmptyHint: string;
+    deleteNodeTitle: string;
+    expandAllBtn: string;
+    collapseAllBtn: string;
+    undoBtn: string;
+    undoTooltip: string;
     doneSummary: (files: number, inSize: string, outSize: string) => string;
   };
   mangaPack: {

@@ -1,12 +1,19 @@
 import React from "react";
 import { Archive, Lock, Trash2 } from "lucide-react";
+import { ArchiveTreeEditor } from "../components/ArchiveTreeEditor";
 import { Dropzone } from "../components/Dropzone";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { Select } from "../components/Select";
 import { ViewHeader } from "../components/ViewHeader";
 import { useI18n } from "../i18n";
 import {
+  buildArchiveTreeFromEntries,
+  flattenArchiveTreeToEntries,
+  type ArchiveTreeNode,
+} from "../lib/archiveTree";
+import {
   checkExportConflicts,
+  collectArchiveEntries,
   createArchive,
   estimateArchiveSize,
   formatBytes,
@@ -15,7 +22,6 @@ import {
   pickDirectory,
   pickFiles,
   pickSaveFile,
-  resolveUniqueExportPath,
 } from "../lib/ipc";
 import {
   ExportConflictModal,
@@ -26,7 +32,11 @@ import {
   ImportFeedbackToast,
   useImportFeedback,
 } from "../components/ImportFeedbackToast";
-import { useExportFilenameCheck } from "../lib/exportPath";
+import {
+  findActiveExportConflicts,
+  resolveUniqueNonActiveExportPath,
+  useExportFilenameCheck,
+} from "../lib/exportPath";
 import { usePersistentState } from "../lib/storage";
 import type {
   ArchiveFormat,
@@ -38,15 +48,18 @@ import type {
 import type { DroppedBatch } from "./Image2PdfView";
 
 interface ArchiveViewProps {
-  onStartJob: (jobId: string, label: string) => void;
-  onJobEvent: (ev: JobEvent) => void;
+  onStartJob: (jobId: string, label: string, outputPaths?: string[]) => void;
+  onJobEvent: (ev: JobEvent, jobId?: string) => void;
   onFinishJob: (
     title: string,
     outputs: string[],
     summary: string,
     status: "success" | "error" | "cancelled",
+    heading?: string,
+    jobId?: string,
   ) => void;
   busy: boolean;
+  activeExportPaths?: string[];
   droppedBatch?: DroppedBatch | null;
   defaultExportDir?: string;
 }
@@ -56,6 +69,7 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
   onJobEvent,
   onFinishJob,
   busy,
+  activeExportPaths = [],
   droppedBatch,
   defaultExportDir = "",
 }) => {
@@ -89,15 +103,65 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
   const [pendingConflict, setPendingConflict] = React.useState<{
     outPath: string;
     conflicts: string[];
+    lockedByActiveJob: boolean;
   } | null>(null);
+  const [treeNodes, setTreeNodes] = React.useState<ArchiveTreeNode[]>([]);
+  const [loadingTree, setLoadingTree] = React.useState(false);
+  const collectSeqRef = React.useRef(0);
   const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
   const [estimatedBytes, setEstimatedBytes] = React.useState<number | null>(null);
   const [estimating, setEstimating] = React.useState(false);
   const lastHandledDropSeq = React.useRef<number>(0);
 
+  React.useEffect(() => {
+    if (inputs.length === 0) {
+      collectSeqRef.current += 1;
+      setTreeNodes([]);
+      setLoadingTree(false);
+      return;
+    }
+    if (!isTauriRuntime()) {
+      setTreeNodes(
+        buildArchiveTreeFromEntries(
+          inputs.map((p) => ({
+            source_path: p,
+            archive_path: p.split(/[\\/]/).pop() ?? p,
+            size_bytes: 0,
+          })),
+        ),
+      );
+      return;
+    }
+
+    const seq = ++collectSeqRef.current;
+    setLoadingTree(true);
+    void collectArchiveEntries(inputs, includeRootDir, ignoreHidden)
+      .then((entries) => {
+        if (collectSeqRef.current === seq) {
+          setTreeNodes(buildArchiveTreeFromEntries(entries));
+        }
+      })
+      .catch((e) => {
+        if (collectSeqRef.current === seq) {
+          setErrorMsg(String(e));
+          setTreeNodes([]);
+        }
+      })
+      .finally(() => {
+        if (collectSeqRef.current === seq) {
+          setLoadingTree(false);
+        }
+      });
+  }, [inputs, includeRootDir, ignoreHidden]);
+
+  const customEntries = React.useMemo(
+    () => flattenArchiveTreeToEntries(treeNodes),
+    [treeNodes],
+  );
+
   // Low-priority async size estimation in background (never blocks export)
   React.useEffect(() => {
-    if (inputs.length === 0 || !isTauriRuntime()) {
+    if (inputs.length === 0 || customEntries.length === 0 || !isTauriRuntime()) {
       setEstimatedBytes(null);
       setEstimating(false);
       return;
@@ -111,11 +175,17 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
           : encryptionKind === "aes256"
             ? { kind: "aes256", password }
             : { kind: "zip_crypto", password };
-      void estimateArchiveSize(inputs, includeRootDir, ignoreHidden, {
-        format,
-        compression,
-        encryption,
-      })
+      void estimateArchiveSize(
+        inputs,
+        includeRootDir,
+        ignoreHidden,
+        {
+          format,
+          compression,
+          encryption,
+        },
+        customEntries,
+      )
         .then((est) => {
           if (!cancelled) {
             setEstimatedBytes(est.estimated_output_bytes);
@@ -135,7 +205,16 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [inputs, includeRootDir, ignoreHidden, format, compression, encryptionKind, password]);
+  }, [
+    inputs,
+    customEntries,
+    includeRootDir,
+    ignoreHidden,
+    format,
+    compression,
+    encryptionKind,
+    password,
+  ]);
 
   const extForFormat = React.useCallback((fmt: ArchiveFormat) => {
     switch (fmt) {
@@ -211,6 +290,13 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
   };
 
   const executePack = async (outPath: string) => {
+    const jobId = crypto.randomUUID();
+    const snapInputs = [...inputs];
+    const snapIncludeRoot = includeRootDir;
+    const snapIgnoreHidden = ignoreHidden;
+    const snapEntries = customEntries.length > 0 ? [...customEntries] : null;
+    const emitEvent = (ev: JobEvent) => onJobEvent(ev, jobId);
+
     try {
       const encryption: ZipEncryption =
         format !== "zip" || encryptionKind === "none"
@@ -220,16 +306,16 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
             : { kind: "zip_crypto", password };
 
       const options: ArchiveOptions = { format, compression, encryption };
-      const jobId = crypto.randomUUID();
-      onStartJob(jobId, t.shell.nav.archive.label);
+      onStartJob(jobId, t.shell.nav.archive.label, [outPath]);
       const res = await createArchive(
         jobId,
-        inputs,
+        snapInputs,
         outPath,
-        includeRootDir,
-        ignoreHidden,
+        snapIncludeRoot,
+        snapIgnoreHidden,
         options,
-        onJobEvent,
+        emitEvent,
+        snapEntries,
       );
       onFinishJob(
         t.shell.nav.archive.label,
@@ -240,18 +326,27 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
           formatBytes(res.output_bytes),
         ),
         "success",
+        undefined,
+        jobId,
       );
     } catch (e) {
       const rawMsg = String(e);
       const cancelled = isJobCancelledError(rawMsg);
       const msg = cancelled ? t.common.jobCancelledMsg : rawMsg;
       setErrorMsg(msg);
-      onFinishJob(t.shell.nav.archive.label, [], msg, cancelled ? "cancelled" : "error");
+      onFinishJob(
+        t.shell.nav.archive.label,
+        [],
+        msg,
+        cancelled ? "cancelled" : "error",
+        undefined,
+        jobId,
+      );
     }
   };
 
   const handlePack = async () => {
-    if (inputs.length === 0 || busy) return;
+    if (inputs.length === 0 || (!loadingTree && customEntries.length === 0) || busy) return;
     setErrorMsg(null);
     if (format === "zip" && encryptionKind !== "none" && password.trim() === "") {
       setErrorMsg(t.archive.passwordRequiredError);
@@ -268,10 +363,16 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
       }
       if (!outPath) return;
 
+      const activeHits = findActiveExportConflicts([outPath], activeExportPaths);
+      if (activeHits.length > 0) {
+        setPendingConflict({ outPath, conflicts: activeHits, lockedByActiveJob: true });
+        return;
+      }
+
       if (defaultTargetPath) {
         const conflicts = await checkExportConflicts([outPath]);
         if (conflicts.length > 0) {
-          setPendingConflict({ outPath, conflicts });
+          setPendingConflict({ outPath, conflicts, lockedByActiveJob: false });
           return;
         }
       }
@@ -285,13 +386,16 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
     const pending = pendingConflict;
     setPendingConflict(null);
     if (!pending || choice === "cancel") return;
-    if (choice === "overwrite") {
+    if (choice === "overwrite" && !pending.lockedByActiveJob) {
       await executePack(pending.outPath);
       return;
     }
-    const uniquePath = await resolveUniqueExportPath(pending.outPath);
+    const uniquePath = await resolveUniqueNonActiveExportPath(pending.outPath, activeExportPaths);
     await executePack(uniquePath);
   };
+
+  const packDisabled =
+    inputs.length === 0 || loadingTree || customEntries.length === 0 || busy;
 
   return (
     <div className="space-y-4">
@@ -301,7 +405,7 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
         actions={
           <button
             type="button"
-            disabled={inputs.length === 0 || busy}
+            disabled={packDisabled}
             onClick={() => void handlePack()}
             className="knit-control knit-btn-primary flex items-center gap-1.5 px-4 text-sm disabled:opacity-50"
           >
@@ -462,8 +566,17 @@ export const ArchiveView: React.FC<ArchiveViewProps> = ({
         </div>
       )}
 
+      {inputs.length > 0 && (
+        <ArchiveTreeEditor
+          nodes={treeNodes}
+          onChange={setTreeNodes}
+          loading={loadingTree}
+        />
+      )}
+
       <ExportConflictModal
         conflictPaths={pendingConflict?.conflicts ?? []}
+        isLockedByActiveJob={pendingConflict?.lockedByActiveJob}
         onResolve={(c) => void handleConflictResolution(c)}
       />
 

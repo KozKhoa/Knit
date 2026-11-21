@@ -6,11 +6,13 @@ export type ConflictResolution = "overwrite" | "auto_rename" | "cancel";
 
 interface ExportConflictModalProps {
   conflictPaths: string[];
+  isLockedByActiveJob?: boolean;
   onResolve: (choice: ConflictResolution) => void;
 }
 
 export const ExportConflictModal: React.FC<ExportConflictModalProps> = ({
   conflictPaths,
+  isLockedByActiveJob = false,
   onResolve,
 }) => {
   const { t } = useI18n();
@@ -40,7 +42,11 @@ export const ExportConflictModal: React.FC<ExportConflictModalProps> = ({
         <div className="flex items-center justify-between border-b border-[#DEE2E6] bg-[#FFF3CD] px-4 py-3">
           <div className="flex items-center gap-2 text-sm font-bold text-[#856404]">
             <AlertTriangle className="h-4 w-4 shrink-0" />
-            <span>{t.common.exportConflictTitle}</span>
+            <span>
+              {isLockedByActiveJob
+                ? t.common.exportActiveJobConflictTitle
+                : t.common.exportConflictTitle}
+            </span>
           </div>
           <button
             type="button"
@@ -53,7 +59,11 @@ export const ExportConflictModal: React.FC<ExportConflictModalProps> = ({
         </div>
 
         <div className="space-y-3 p-4 text-sm text-[#212529]">
-          <p className="whitespace-pre-line">{t.common.exportConflictDesc(conflictPaths)}</p>
+          <p className="whitespace-pre-line">
+            {isLockedByActiveJob
+              ? t.common.exportActiveJobConflictDesc(conflictPaths)
+              : t.common.exportConflictDesc(conflictPaths)}
+          </p>
           {conflictPaths.length > 1 && (
             <ul className="max-h-40 space-y-1 overflow-y-auto rounded-[4px] border border-[#DEE2E6] bg-[#F8F9FA] p-2.5 font-mono-code text-xs text-[#343A40]">
               {conflictPaths.map((p) => (
@@ -80,13 +90,15 @@ export const ExportConflictModal: React.FC<ExportConflictModalProps> = ({
           >
             {t.common.exportAutoRenameBtn}
           </button>
-          <button
-            type="button"
-            onClick={() => onResolve("overwrite")}
-            className="knit-control-sm rounded-[4px] bg-[#DC3545] px-3 text-xs font-semibold text-white hover:bg-[#C82333]"
-          >
-            {t.common.exportOverwriteBtn}
-          </button>
+          {!isLockedByActiveJob && (
+            <button
+              type="button"
+              onClick={() => onResolve("overwrite")}
+              className="knit-control-sm rounded-[4px] bg-[#DC3545] px-3 text-xs font-semibold text-white hover:bg-[#C82333]"
+            >
+              {t.common.exportOverwriteBtn}
+            </button>
+          )}
         </div>
       </div>
     </div>

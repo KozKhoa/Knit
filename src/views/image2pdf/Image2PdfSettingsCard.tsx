@@ -22,7 +22,6 @@ interface Image2PdfSettingsCardProps {
   splitMode: "none" | "max_mb" | "max_pages_per_file";
   maxMb: string;
   maxPagesPerFile: number;
-  loadThumbs: boolean;
   onChangeLayoutMode: (val: "original_size" | "fit_a4" | "fit_letter") => void;
   onChangeDpi: (val: number) => void;
   onChangeMarginValue: (val: number) => void;
@@ -36,7 +35,6 @@ interface Image2PdfSettingsCardProps {
   onChangeSplitMode: (mode: "none" | "max_mb" | "max_pages_per_file") => void;
   onChangeMaxMb: (val: string) => void;
   onChangeMaxPagesPerFile: (val: number) => void;
-  onChangeLoadThumbs: (checked: boolean) => void;
 }
 
 export const Image2PdfSettingsCard: React.FC<Image2PdfSettingsCardProps> = React.memo(({
@@ -53,7 +51,6 @@ export const Image2PdfSettingsCard: React.FC<Image2PdfSettingsCardProps> = React
   splitMode,
   maxMb,
   maxPagesPerFile,
-  loadThumbs,
   onChangeLayoutMode,
   onChangeDpi,
   onChangeMarginValue,
@@ -67,7 +64,6 @@ export const Image2PdfSettingsCard: React.FC<Image2PdfSettingsCardProps> = React
   onChangeSplitMode,
   onChangeMaxMb,
   onChangeMaxPagesPerFile,
-  onChangeLoadThumbs,
 }) => {
   const { t } = useI18n();
   const exportModeHint =
@@ -220,6 +216,7 @@ export const Image2PdfSettingsCard: React.FC<Image2PdfSettingsCardProps> = React
           options={[
             { value: "first_frame_only", label: t.image2pdf.animatedFirstFrame },
             { value: "unpack_all_frames", label: t.image2pdf.animatedUnpackAll },
+            { value: "embed_rich_media", label: t.image2pdf.animatedEmbedRichMedia },
           ]}
         />
       </div>
@@ -276,14 +273,6 @@ export const Image2PdfSettingsCard: React.FC<Image2PdfSettingsCardProps> = React
             )}
           </>
         )}
-        <label className="flex cursor-pointer items-center gap-2 pt-1 text-sm font-medium text-[#212529]">
-          <input
-            type="checkbox"
-            checked={loadThumbs}
-            onChange={(e) => onChangeLoadThumbs(e.target.checked)}
-          />
-          <span>{t.image2pdf.loadThumbsLabel}</span>
-        </label>
       </div>
     </div>
   );

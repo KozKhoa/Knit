@@ -583,6 +583,28 @@ export const PdfJsPreview = React.forwardRef<PdfJsPreviewHandle, PdfJsPreviewPro
 
     const activeScale = zoomMode === "fit" ? fitScale : manualScale;
     const zoomPct = Math.round(activeScale * 100);
+    const zoomModeRef = React.useRef(zoomMode);
+    zoomModeRef.current = zoomMode;
+    const fitScaleRef = React.useRef(fitScale);
+    fitScaleRef.current = fitScale;
+
+    React.useEffect(() => {
+      const el = scrollRef.current;
+      if (!el) return;
+      const onWheel = (e: WheelEvent) => {
+        if (!(e.ctrlKey || e.metaKey)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const step = e.deltaY < 0 ? 0.12 : -0.12;
+        setZoomMode("manual");
+        setManualScale((prev) => {
+          const base = zoomModeRef.current === "fit" ? fitScaleRef.current : prev;
+          return Number(Math.min(3.0, Math.max(0.4, base + step)).toFixed(2));
+        });
+      };
+      el.addEventListener("wheel", onWheel, { passive: false });
+      return () => el.removeEventListener("wheel", onWheel);
+    }, []);
 
     const handleZoomOut = () => {
       setZoomMode("manual");

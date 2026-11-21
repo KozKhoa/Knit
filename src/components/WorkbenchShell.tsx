@@ -29,6 +29,7 @@ import type {
   JobHistoryItem,
   JobLogEntry,
   JobProgress,
+  RunningJobInfo,
   ToolId,
 } from "../types/ipc";
 
@@ -50,9 +51,10 @@ const NAV_META: NavMeta[] = [
 interface WorkbenchShellProps {
   activeTool: ToolId;
   onSelectTool: (id: ToolId) => void;
-  activeJobId: string | null;
-  progress: JobProgress | null;
-  onCancelJob: () => void;
+  runningJobs?: RunningJobInfo[];
+  activeJobId?: string | null;
+  progress?: JobProgress | null;
+  onCancelJob: (jobId?: string) => void;
   logs: JobLogEntry[];
   onClearLogs: () => void;
   history: JobHistoryItem[];
@@ -64,8 +66,9 @@ interface WorkbenchShellProps {
 export const WorkbenchShell: React.FC<WorkbenchShellProps> = ({
   activeTool,
   onSelectTool,
-  activeJobId,
-  progress,
+  runningJobs,
+  activeJobId = null,
+  progress = null,
   onCancelJob,
   logs,
   onClearLogs,
@@ -147,16 +150,38 @@ export const WorkbenchShell: React.FC<WorkbenchShellProps> = ({
     }
   }, [nativeDialogOpen]);
 
-  const pct = React.useMemo(() => {
-    if (!progress) return 0;
-    if (progress.bytes_total > 0) {
-      return Math.min(100, Math.round((progress.bytes_done / progress.bytes_total) * 100));
+  const effectiveRunningJobs = React.useMemo<RunningJobInfo[]>(() => {
+    if (runningJobs && runningJobs.length > 0) return runningJobs;
+    if (activeJobId || progress) {
+      return [
+        {
+          jobId: activeJobId ?? "active",
+          tool: activeTool,
+          label: t.common.processing,
+          outputPaths: [],
+          progress: progress ?? {
+            phase: "start",
+            done: 0,
+            total: 1,
+            bytes_done: 0,
+            bytes_total: 0,
+            current_item: t.common.processing,
+          },
+        },
+      ];
     }
-    if (progress.total > 0) {
-      return Math.min(100, Math.round((progress.done / progress.total) * 100));
+    return [];
+  }, [runningJobs, activeJobId, progress, activeTool, t.common.processing]);
+
+  const computePct = (p: JobProgress): number => {
+    if (p.bytes_total > 0) {
+      return Math.min(100, Math.round((p.bytes_done / p.bytes_total) * 100));
+    }
+    if (p.total > 0) {
+      return Math.min(100, Math.round((p.done / p.total) * 100));
     }
     return 0;
-  }, [progress]);
+  };
 
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-[#F8F9FA] text-[#212529]">
@@ -344,35 +369,43 @@ export const WorkbenchShell: React.FC<WorkbenchShellProps> = ({
 
         {/* Main Content Column */}
         <div className="flex min-w-0 flex-1 flex-col">
-          {/* Active Progress Bar Banner */}
-          {(activeJobId || progress) && (
-            <div className="flex items-center gap-3 border-b border-[#DEE2E6] bg-white px-5 py-2.5">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="truncate font-semibold text-[#343A40]">
-                    {progress?.current_item || t.common.processing}
-                  </span>
-                  <span className="ml-2 shrink-0 font-mono-code text-xs text-[#007BFF]">
-                    {pct}% ({progress?.done ?? 0}/{progress?.total ?? 0})
-                  </span>
-                </div>
-                <div className="mt-1.5 h-2 w-full overflow-hidden rounded-[4px] bg-[#E9ECEF]">
-                  <div
-                    className="h-full bg-[#007BFF] transition-all duration-150"
-                    style={{ width: `${pct}%` }}
-                  />
-                </div>
-              </div>
-              {activeJobId && (
-                <button
-                  type="button"
-                  onClick={onCancelJob}
-                  className="flex shrink-0 items-center gap-1.5 rounded-[4px] border border-[#DC3545] bg-white px-3 py-1.5 text-xs font-semibold text-[#DC3545] hover:bg-[#DC3545] hover:text-white"
-                >
-                  <XCircle className="h-4 w-4" />
-                  {t.common.cancelJob}
-                </button>
-              )}
+          {/* Active Progress Bar Banner(s) */}
+          {effectiveRunningJobs.length > 0 && (
+            <div className="divide-y divide-[#DEE2E6] border-b border-[#DEE2E6] bg-white">
+              {effectiveRunningJobs.map((job) => {
+                const jobPct = computePct(job.progress);
+                return (
+                  <div key={job.jobId} className="flex items-center gap-3 px-5 py-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between text-xs sm:text-sm">
+                        <span className="truncate font-semibold text-[#343A40]">
+                          <span className="mr-1.5 rounded-[4px] bg-[#E7F1FF] px-1.5 py-0.5 text-[11px] font-bold text-[#0056B3]">
+                            {job.label}
+                          </span>
+                          {job.progress.current_item || t.common.processing}
+                        </span>
+                        <span className="ml-2 shrink-0 font-mono-code text-xs text-[#007BFF]">
+                          {jobPct}% ({job.progress.done}/{job.progress.total})
+                        </span>
+                      </div>
+                      <div className="mt-1 h-1.5 w-full overflow-hidden rounded-[4px] bg-[#E9ECEF]">
+                        <div
+                          className="h-full bg-[#007BFF] transition-all duration-150"
+                          style={{ width: `${jobPct}%` }}
+                        />
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => onCancelJob(job.jobId)}
+                      className="flex shrink-0 items-center gap-1 rounded-[4px] border border-[#DC3545] bg-white px-2.5 py-1 text-xs font-semibold text-[#DC3545] hover:bg-[#DC3545] hover:text-white"
+                    >
+                      <XCircle className="h-3.5 w-3.5" />
+                      {t.common.cancelJob}
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           )}
 

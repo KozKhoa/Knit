@@ -13,6 +13,7 @@ import {
   ImportFeedbackToast,
   useImportFeedback,
 } from "../components/ImportFeedbackToast";
+import { PdfFilePreviewModal } from "../components/PdfFilePreviewModal";
 import { PdfPageZoomModal } from "../components/PdfPageZoomModal";
 import { ViewHeader } from "../components/ViewHeader";
 import { useThumbnailQueue } from "../hooks/useThumbnailQueue";
@@ -28,11 +29,15 @@ import {
   pickFiles,
   pickSaveFile,
   renderPdfThumbFile,
-  resolveUniqueExportPath,
   splitMultiPdfFiles,
   splitPdfFile,
 } from "../lib/ipc";
-import { joinDirAndFile, useExportFilenameCheck } from "../lib/exportPath";
+import {
+  findActiveExportConflicts,
+  joinDirAndFile,
+  resolveUniqueNonActiveExportPath,
+  useExportFilenameCheck,
+} from "../lib/exportPath";
 import type { CardSizePreset } from "../lib/imageGrid";
 import { estimatePdfMergeOutput, estimatePdfSplitOutput } from "../lib/sizeEstimate";
 import { usePersistentState } from "../lib/storage";
@@ -65,15 +70,18 @@ import {
 } from "./pdf-ops/pdfOpsTypes";
 
 interface PdfOpsViewProps {
-  onStartJob: (jobId: string, label: string) => void;
-  onJobEvent: (ev: JobEvent) => void;
+  onStartJob: (jobId: string, label: string, outputPaths?: string[]) => void;
+  onJobEvent: (ev: JobEvent, jobId?: string) => void;
   onFinishJob: (
     title: string,
     outputs: string[],
     summary: string,
     status: "success" | "error" | "cancelled",
+    heading?: string,
+    jobId?: string,
   ) => void;
   busy: boolean;
+  activeExportPaths?: string[];
   droppedBatch?: DroppedBatch | null;
   defaultExportDir?: string;
 }
@@ -83,6 +91,7 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
   onJobEvent,
   onFinishJob,
   busy,
+  activeExportPaths = [],
   droppedBatch,
   defaultExportDir = "",
 }) => {
@@ -158,9 +167,10 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
     outputPageIndex?: number;
     fallbackThumbSrc?: string;
   } | null>(null);
+  const [previewFileTarget, setPreviewFileTarget] = React.useState<PdfInfo | null>(null);
   const [contextMenu, setContextMenu] = React.useState<PdfContextMenuTarget | null>(null);
   const [pendingConflict, setPendingConflict] = React.useState<
-    | { kind: "merge"; outPath: string; conflicts: string[] }
+    | { kind: "merge"; outPath: string; conflicts: string[]; lockedByActiveJob: boolean }
     | {
         kind: "split";
         inputs: string[];
@@ -168,6 +178,7 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
         outDir: string;
         rule: PdfSplitRule;
         conflicts: string[];
+        lockedByActiveJob: boolean;
       }
     | null
   >(null);
@@ -642,13 +653,45 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
     [],
   );
 
-  const handleDoubleClickMergeFile = React.useCallback(
-    (fileIndex: number) => {
-      const src = filesRef.current[fileIndex];
-      if (!src) return;
-      openZoomModal(src.path, 0, 0);
+  const handleDoubleClickMergeFile = React.useCallback((fileIndex: number) => {
+    const src = filesRef.current[fileIndex];
+    if (!src) return;
+    setPreviewFileTarget(src);
+  }, []);
+
+  const handleAttachBookmarkAtMergePageIdx = React.useCallback(
+    (idx: number) => {
+      const sel = selectionsRef.current[idx];
+      if (!sel) return;
+      const srcPath = filesRef.current[sel.file_index]?.path;
+      if (!srcPath) return;
+      handleAttachMergeBookmark(idx, srcPath, sel.page_index);
     },
-    [openZoomModal],
+    [handleAttachMergeBookmark],
+  );
+
+  const handleAttachBookmarkAtMergeFileOrderIdx = React.useCallback(
+    (orderIdx: number) => {
+      const fileIdx = effectiveMergeFileOrder[orderIdx];
+      if (fileIdx === undefined) return;
+      const src = filesRef.current[fileIdx];
+      if (!src) return;
+      const firstSelIdx = selectionsRef.current.findIndex((s) => s.file_index === fileIdx);
+      const targetPageIdx = firstSelIdx >= 0 ? firstSelIdx : 0;
+      const fileName = src.path.split(/[\\/]/).pop() ?? src.path;
+      const shortName = fileName.replace(/\.pdf$/i, "");
+      setPreserveBookmarks(true);
+      setShowMergeBookmarks(true);
+      setMergeBookmarks((prev) => [
+        ...prev,
+        {
+          title: shortName,
+          target_page_index: targetPageIdx,
+          children: [],
+        },
+      ]);
+    },
+    [effectiveMergeFileOrder, setPreserveBookmarks, setShowMergeBookmarks],
   );
 
   const handleContextMenuMergeFile = React.useCallback(
@@ -938,32 +981,47 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
   }, []);
 
   const executeMerge = async (outPath: string) => {
+    const jobId = crypto.randomUUID();
+    const snapInputs = files.map((f) => f.path);
+    const snapSelections = [...selections];
+    const snapPreserve = preserveBookmarks;
+    const snapCustomBookmarks = preserveBookmarks ? [...mergeBookmarks] : null;
+    const emitEvent = (ev: JobEvent) => onJobEvent(ev, jobId);
+
     try {
-      const jobId = crypto.randomUUID();
-      onStartJob(jobId, t.pdfOps.mergeJobTitle);
+      onStartJob(jobId, t.pdfOps.mergeJobTitle, [outPath]);
       const res = await mergePdfFiles(
         jobId,
         {
-          inputs: files.map((f) => f.path),
-          selected_pages: selections,
+          inputs: snapInputs,
+          selected_pages: snapSelections,
           output_path: outPath,
-          preserve_bookmarks: preserveBookmarks,
-          custom_bookmarks: preserveBookmarks ? mergeBookmarks : null,
+          preserve_bookmarks: snapPreserve,
+          custom_bookmarks: snapCustomBookmarks,
         },
-        onJobEvent,
+        emitEvent,
       );
       onFinishJob(
         t.pdfOps.mergeJobTitle,
         res.output_files,
         t.pdfOps.mergeDoneSummary(res.total_pages, formatBytes(res.total_bytes)),
         "success",
+        undefined,
+        jobId,
       );
     } catch (e) {
       const rawMsg = String(e);
       const cancelled = isJobCancelledError(rawMsg);
       const msg = cancelled ? t.common.jobCancelledMsg : rawMsg;
       setErrorMsg(msg);
-      onFinishJob(t.pdfOps.mergeJobTitle, [], msg, cancelled ? "cancelled" : "error");
+      onFinishJob(
+        t.pdfOps.mergeJobTitle,
+        [],
+        msg,
+        cancelled ? "cancelled" : "error",
+        undefined,
+        jobId,
+      );
     }
   };
 
@@ -981,10 +1039,26 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
       }
       if (!outPath) return;
 
+      const activeHits = findActiveExportConflicts([outPath], activeExportPaths);
+      if (activeHits.length > 0) {
+        setPendingConflict({
+          kind: "merge",
+          outPath,
+          conflicts: activeHits,
+          lockedByActiveJob: true,
+        });
+        return;
+      }
+
       if (defaultMergeTargetPath) {
         const conflicts = await checkExportConflicts([outPath]);
         if (conflicts.length > 0) {
-          setPendingConflict({ kind: "merge", outPath, conflicts });
+          setPendingConflict({
+            kind: "merge",
+            outPath,
+            conflicts,
+            lockedByActiveJob: false,
+          });
           return;
         }
       }
@@ -1008,27 +1082,39 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
     stems: string[],
     outDir: string,
     rule: PdfSplitRule,
+    expectedOutputs: string[] = [],
   ) => {
     if (inputs.length === 0) return;
+    const jobId = crypto.randomUUID();
+    const emitEvent = (ev: JobEvent) => onJobEvent(ev, jobId);
+
     try {
-      const jobId = crypto.randomUUID();
-      onStartJob(jobId, t.pdfOps.splitJobTitle);
+      onStartJob(jobId, t.pdfOps.splitJobTitle, expectedOutputs);
       const res =
         inputs.length === 1 && rule.rule !== "custom_groups"
-          ? await splitPdfFile(jobId, inputs[0], outDir, stems[0] ?? "split", rule, onJobEvent)
-          : await splitMultiPdfFiles(jobId, inputs, stems, outDir, rule, onJobEvent);
+          ? await splitPdfFile(jobId, inputs[0], outDir, stems[0] ?? "split", rule, emitEvent)
+          : await splitMultiPdfFiles(jobId, inputs, stems, outDir, rule, emitEvent);
       onFinishJob(
         t.pdfOps.splitJobTitle,
         res.output_files,
         t.pdfOps.splitDoneSummary(res.output_files.length, res.total_pages),
         "success",
+        undefined,
+        jobId,
       );
     } catch (e) {
       const rawMsg = String(e);
       const cancelled = isJobCancelledError(rawMsg);
       const msg = cancelled ? t.common.jobCancelledMsg : rawMsg;
       setErrorMsg(msg);
-      onFinishJob(t.pdfOps.splitJobTitle, [], msg, cancelled ? "cancelled" : "error");
+      onFinishJob(
+        t.pdfOps.splitJobTitle,
+        [],
+        msg,
+        cancelled ? "cancelled" : "error",
+        undefined,
+        jobId,
+      );
     }
   };
 
@@ -1108,14 +1194,35 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
         rule,
       );
       if (candidates.length > 0) {
+        const activeHits = findActiveExportConflicts(candidates, activeExportPaths);
+        if (activeHits.length > 0) {
+          setPendingConflict({
+            kind: "split",
+            inputs,
+            stems,
+            outDir,
+            rule,
+            conflicts: activeHits,
+            lockedByActiveJob: true,
+          });
+          return;
+        }
         const conflicts = await checkExportConflicts(candidates);
         if (conflicts.length > 0) {
-          setPendingConflict({ kind: "split", inputs, stems, outDir, rule, conflicts });
+          setPendingConflict({
+            kind: "split",
+            inputs,
+            stems,
+            outDir,
+            rule,
+            conflicts,
+            lockedByActiveJob: false,
+          });
           return;
         }
       }
 
-      await executeSplit(inputs, stems, outDir, rule);
+      await executeSplit(inputs, stems, outDir, rule, candidates);
     } catch (e) {
       setErrorMsg(String(e));
     }
@@ -1126,37 +1233,46 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
     setPendingConflict(null);
     if (!pending || choice === "cancel") return;
     if (pending.kind === "merge") {
-      if (choice === "overwrite") {
+      if (choice === "overwrite" && !pending.lockedByActiveJob) {
         await executeMerge(pending.outPath);
       } else {
-        await executeMerge(await resolveUniqueExportPath(pending.outPath));
+        await executeMerge(
+          await resolveUniqueNonActiveExportPath(pending.outPath, activeExportPaths),
+        );
       }
       return;
     }
 
-    if (choice === "overwrite") {
+    if (choice === "overwrite" && !pending.lockedByActiveJob) {
       await executeSplit(pending.inputs, pending.stems, pending.outDir, pending.rule);
       return;
     }
 
     if (pending.rule.rule === "custom_groups") {
-      const renamedGroups = await Promise.all(
-        pending.rule.groups.map(async (g, idx) => {
-          const base =
-            g.name.trim().replace(/\.pdf$/i, "") ||
-            `section_${String(idx + 1).padStart(2, "0")}`;
-          const uniquePath = await resolveUniqueExportPath(
-            joinDirAndFile(pending.outDir, `${base}.pdf`),
-          );
-          const uniqueName =
-            uniquePath.split(/[\\/]/).pop()?.replace(/\.pdf$/i, "") || base;
-          return { ...g, name: uniqueName };
-        }),
+      const usedPaths = [...activeExportPaths];
+      const renamedGroups = [];
+      for (let idx = 0; idx < pending.rule.groups.length; idx++) {
+        const g = pending.rule.groups[idx];
+        const base =
+          g.name.trim().replace(/\.pdf$/i, "") ||
+          `section_${String(idx + 1).padStart(2, "0")}`;
+        const uniquePath = await resolveUniqueNonActiveExportPath(
+          joinDirAndFile(pending.outDir, `${base}.pdf`),
+          usedPaths,
+        );
+        usedPaths.push(uniquePath);
+        const uniqueName =
+          uniquePath.split(/[\\/]/).pop()?.replace(/\.pdf$/i, "") || base;
+        renamedGroups.push({ ...g, name: uniqueName });
+      }
+      const nextRule: PdfSplitRule = { rule: "custom_groups", groups: renamedGroups };
+      await executeSplit(
+        pending.inputs,
+        pending.stems,
+        pending.outDir,
+        nextRule,
+        renamedGroups.map((g) => joinDirAndFile(pending.outDir, `${g.name}.pdf`)),
       );
-      await executeSplit(pending.inputs, pending.stems, pending.outDir, {
-        rule: "custom_groups",
-        groups: renamedGroups,
-      });
     } else {
       const suffix = Date.now().toString().slice(-4);
       const uniqueStems = pending.stems.map((s) => `${s}_${suffix}`);
@@ -1285,7 +1401,7 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
         mergeBookmarks={mergeBookmarks}
         preserveBookmarks={preserveBookmarks}
         showMergeBookmarks={showMergeBookmarks}
-        bookmarksDisabled={busy || isPopulatingSections}
+        bookmarksDisabled={false}
         mergeGridCols={mergeGridCols}
         mergeCardSize={mergeCardSize}
         thumbs={thumbQueue.thumbs}
@@ -1304,6 +1420,8 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
         onDoubleClickFile={handleDoubleClickMergeFile}
         onContextMenuPage={handleContextMenuMergePage}
         onContextMenuFile={handleContextMenuMergeFile}
+        onAttachBookmarkAtPage={handleAttachBookmarkAtMergePageIdx}
+        onAttachBookmarkAtFile={handleAttachBookmarkAtMergeFileOrderIdx}
         onRegisterThumbRef={registerThumbCardRef}
         onEnqueueWindow={thumbQueue.enqueueWindow}
       />
@@ -1378,6 +1496,11 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
         onClose={() => setZoomTarget(null)}
       />
 
+      <PdfFilePreviewModal
+        pdfInfo={previewFileTarget}
+        onClose={() => setPreviewFileTarget(null)}
+      />
+
       <PdfPageContextMenu
         target={contextMenu}
         onClose={() => setContextMenu(null)}
@@ -1448,6 +1571,7 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
 
       <ExportConflictModal
         conflictPaths={pendingConflict?.conflicts ?? []}
+        isLockedByActiveJob={pendingConflict?.lockedByActiveJob}
         onResolve={(c) => void handleConflictResolution(c)}
       />
 

@@ -3,12 +3,15 @@ import { GripVertical, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { BookmarkTreeEditor } from "../../components/BookmarkTreeEditor";
 import { CardSizeSelector } from "../../components/CardSizeSelector";
 import { GridColumnSelector } from "../../components/GridColumnSelector";
+import { PaneResizeHandle } from "../../components/PaneResizeHandle";
 import { MergeFileCard, MergePageCard } from "../../components/PdfPageCards";
+import { useHorizontalRatioResize } from "../../hooks/useHorizontalRatioResize";
 import { useVirtualizedGrid } from "../../hooks/useVirtualizedGrid";
 import { useI18n } from "../../i18n";
 import { buildPageBookmarkMap } from "../../lib/bookmarks";
 import { hitTestGridInsertIndex, type CardSizePreset } from "../../lib/imageGrid";
 import { formatBytes } from "../../lib/ipc";
+import { usePersistentState } from "../../lib/storage";
 import type { BookmarkNode, PageSelection, PdfInfo } from "../../types/ipc";
 import { PDF_GRID_COL_OPTIONS, sourceKey, type PdfMergeMode } from "./pdfOpsTypes";
 
@@ -40,6 +43,8 @@ interface PdfMergePaneProps {
   onDoubleClickFile: (fileIndex: number) => void;
   onContextMenuPage: (e: React.MouseEvent<HTMLDivElement>, idx: number) => void;
   onContextMenuFile: (e: React.MouseEvent<HTMLDivElement>, fileIndex: number) => void;
+  onAttachBookmarkAtPage?: (idx: number) => void;
+  onAttachBookmarkAtFile?: (orderIdx: number) => void;
   onRegisterThumbRef: (key: string, el: HTMLDivElement | null) => void;
   onEnqueueWindow: (keys: string[]) => void;
 }
@@ -72,10 +77,30 @@ export const PdfMergePane: React.FC<PdfMergePaneProps> = ({
   onDoubleClickFile,
   onContextMenuPage,
   onContextMenuFile,
+  onAttachBookmarkAtPage,
+  onAttachBookmarkAtFile,
   onRegisterThumbRef,
   onEnqueueWindow,
 }) => {
   const { t } = useI18n();
+  const [mergeLeftRatio, setMergeLeftRatio] = usePersistentState<number>(
+    "knit.pdfops.mergeLeftRatio",
+    0.66,
+  );
+  const mergeSplitContainerRef = React.useRef<HTMLDivElement | null>(null);
+  const {
+    ratio: liveMergeLeftRatio,
+    isResizing: isResizingWidth,
+    handlePointerDown: handleMergeWidthResize,
+  } = useHorizontalRatioResize({
+    value: mergeLeftRatio,
+    min: 0.35,
+    max: 0.82,
+    containerRef: mergeSplitContainerRef,
+    cssVar: "--merge-left",
+    onCommit: setMergeLeftRatio,
+  });
+
   const [mergeDragIdx, setMergeDragIdx] = React.useState<number | null>(null);
   const [mergeInsertAt, setMergeInsertAt] = React.useState<number | null>(null);
   const mergeInsertAtRef = React.useRef<number | null>(null);
@@ -113,7 +138,7 @@ export const PdfMergePane: React.FC<PdfMergePaneProps> = ({
     gapPx: 12,
     initialRowStridePx: mergeRowStridePx,
     overscanRows: 3,
-    enabled: active && totalGridItems > 0,
+    enabled: active && !isResizingWidth && totalGridItems > 0,
     extraDeps: [mergeCardSize, mergeMode],
     onVisibleWindowChange: (startIdx, endExcl) => {
       if (!active) return;
@@ -137,6 +162,17 @@ export const PdfMergePane: React.FC<PdfMergePaneProps> = ({
     (e: React.PointerEvent<HTMLDivElement>, idx: number) => {
       if (e.button !== 0) return;
       if ((e.target as HTMLElement).closest("button")) return;
+
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (mergeModeRef.current === "per_file") {
+          onAttachBookmarkAtFile?.(idx);
+        } else {
+          onAttachBookmarkAtPage?.(idx);
+        }
+        return;
+      }
 
       const startX = e.clientX;
       const startY = e.clientY;
@@ -246,7 +282,14 @@ export const PdfMergePane: React.FC<PdfMergePaneProps> = ({
       window.addEventListener("pointerup", finish);
       window.addEventListener("pointercancel", finish);
     },
-    [grid.colsRef, grid.rowStrideRef, onReorderFileOrder, onReorderSelection],
+    [
+      grid.colsRef,
+      grid.rowStrideRef,
+      onAttachBookmarkAtFile,
+      onAttachBookmarkAtPage,
+      onReorderFileOrder,
+      onReorderSelection,
+    ],
   );
 
   if (!active || (isPerFile ? mergeFileOrder.length === 0 : selections.length === 0)) return null;
@@ -342,15 +385,19 @@ export const PdfMergePane: React.FC<PdfMergePaneProps> = ({
       </div>
 
       <div
-        className={`grid grid-cols-1 items-start gap-4 ${
-          preserveBookmarks && showMergeBookmarks ? "lg:grid-cols-3" : ""
-        }`}
+        ref={mergeSplitContainerRef}
+        style={
+          preserveBookmarks && showMergeBookmarks
+            ? ({ "--merge-left": `${(liveMergeLeftRatio * 100).toFixed(2)}%` } as React.CSSProperties)
+            : undefined
+        }
+        className={
+          preserveBookmarks && showMergeBookmarks
+            ? "grid grid-cols-1 items-start gap-4 lg:gap-2 lg:[grid-template-columns:var(--merge-left)_12px_minmax(0,1fr)]"
+            : "grid grid-cols-1 gap-4"
+        }
       >
-        <div
-          className={`space-y-2 ${
-            preserveBookmarks && showMergeBookmarks ? "lg:col-span-2" : ""
-          }`}
-        >
+        <div className="min-w-0 space-y-2">
           <div className="knit-card flex items-center gap-2 px-3.5 py-2 text-xs text-[#6C757D]">
             <GripVertical className="h-4 w-4 text-[#007BFF]" />
             <span>{isPerFile ? t.pdfOps.mergePerFileHint : t.pdfOps.mergeDragHint}</span>
@@ -498,15 +545,23 @@ export const PdfMergePane: React.FC<PdfMergePaneProps> = ({
         </div>
 
         {preserveBookmarks && showMergeBookmarks && (
-          <div className="lg:sticky lg:top-0 lg:col-span-1 lg:self-start">
-            <BookmarkTreeEditor
-              nodes={mergeBookmarks}
-              totalPages={selections.length}
-              disabled={bookmarksDisabled}
-              enableGlobalUndoShortcut={true}
-              onChange={onChangeBookmarks}
+          <>
+            <PaneResizeHandle
+              orientation="vertical"
+              title={t.pdfOps.resizeWidthTitle}
+              ariaLabel={t.pdfOps.resizeWidthTitle}
+              onPointerDown={handleMergeWidthResize}
             />
-          </div>
+            <div className="min-w-0 lg:sticky lg:top-0 lg:self-start">
+              <BookmarkTreeEditor
+                nodes={mergeBookmarks}
+                totalPages={selections.length}
+                disabled={bookmarksDisabled}
+                enableGlobalUndoShortcut={true}
+                onChange={onChangeBookmarks}
+              />
+            </div>
+          </>
         )}
       </div>
     </div>

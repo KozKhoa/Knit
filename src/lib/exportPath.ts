@@ -1,5 +1,43 @@
 import React from "react";
-import { checkExportConflicts, isTauriRuntime } from "./ipc";
+import { checkExportConflicts, isTauriRuntime, resolveUniqueExportPath } from "./ipc";
+
+export function normalizeComparePath(p: string): string {
+  return p.replace(/[\\/]+/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
+export function findActiveExportConflicts(
+  candidatePaths: string[],
+  activeExportPaths: readonly string[],
+): string[] {
+  if (candidatePaths.length === 0 || activeExportPaths.length === 0) return [];
+  const activeSet = new Set(activeExportPaths.map(normalizeComparePath));
+  return candidatePaths.filter((p) => activeSet.has(normalizeComparePath(p)));
+}
+
+export async function resolveUniqueNonActiveExportPath(
+  basePath: string,
+  activeExportPaths: readonly string[],
+): Promise<string> {
+  const activeSet = new Set(activeExportPaths.map(normalizeComparePath));
+  let candidate = await resolveUniqueExportPath(basePath);
+  if (!activeSet.has(normalizeComparePath(candidate))) {
+    return candidate;
+  }
+  const slashIdx = Math.max(basePath.lastIndexOf("/"), basePath.lastIndexOf("\\"));
+  const dir = slashIdx >= 0 ? basePath.slice(0, slashIdx + 1) : "";
+  const file = slashIdx >= 0 ? basePath.slice(slashIdx + 1) : basePath;
+  const dotIdx = file.lastIndexOf(".");
+  const stem = dotIdx > 0 ? file.slice(0, dotIdx) : file;
+  const ext = dotIdx > 0 ? file.slice(dotIdx) : "";
+  for (let n = 1; n < 1000; n++) {
+    const attempt = `${dir}${stem}_${n}${ext}`;
+    if (activeSet.has(normalizeComparePath(attempt))) continue;
+    const diskConflicts = await checkExportConflicts([attempt]);
+    if (diskConflicts.length === 0) return attempt;
+  }
+  candidate = `${dir}${stem}_${Date.now()}${ext}`;
+  return candidate;
+}
 
 export function joinDirAndFile(dir: string, fileName: string): string {
   const trimmedDir = dir.trim().replace(/[\\/]+$/, "");

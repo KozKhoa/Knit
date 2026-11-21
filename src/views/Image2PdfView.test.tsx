@@ -19,6 +19,7 @@ const ipcMocks = vi.hoisted(() => ({
   renderPageDraftPreviewFile: vi.fn(),
   resolveUniqueExportPath: vi.fn(),
   scanImagesForPdf: vi.fn(),
+  syncAnimatedDrafts: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -44,6 +45,7 @@ vi.mock("../lib/ipc", () => ({
   renderPageDraftPreviewFile: ipcMocks.renderPageDraftPreviewFile,
   resolveUniqueExportPath: ipcMocks.resolveUniqueExportPath,
   scanImagesForPdf: ipcMocks.scanImagesForPdf,
+  syncAnimatedDrafts: ipcMocks.syncAnimatedDrafts,
 }));
 
 import { Image2PdfView } from "./Image2PdfView";
@@ -72,6 +74,7 @@ function makePointer(
     shiftKey?: boolean;
     ctrlKey?: boolean;
     metaKey?: boolean;
+    altKey?: boolean;
     timeStamp?: number;
   } = {},
 ): MouseEvent {
@@ -84,6 +87,7 @@ function makePointer(
     shiftKey: opts.shiftKey ?? false,
     ctrlKey: opts.ctrlKey ?? false,
     metaKey: opts.metaKey ?? false,
+    altKey: opts.altKey ?? false,
   });
   if (opts.timeStamp !== undefined) {
     Object.defineProperty(ev, "timeStamp", { value: opts.timeStamp });
@@ -322,5 +326,56 @@ describe("Image2PdfView functional automation (Layer 2)", () => {
 
     expect(screen.getByText("Đã sửa")).toBeTruthy();
     expect(screen.queryByTestId("zoom-pan-viewport")).toBeNull();
+  });
+
+  it("Review 1.16: prependNewFiles inserts new imports at top and Alt+Click attaches bookmark", async () => {
+    const firstCtx = await importFourPages([
+      { title: "ExistingChap", target_page_index: 0, children: [] },
+    ]);
+
+    // Separate display & import order card is rendered
+    expect(screen.getByText("Hiển thị & Thứ tự thêm tệp")).toBeTruthy();
+    const prependCheckbox = screen.getByRole("checkbox", {
+      name: "Thêm ảnh mới vào đầu danh sách (thay vì cuối danh sách)",
+    });
+    fireEvent.click(prependCheckbox);
+
+    // Import one new page -> prepended at start (5 pages total, 0.jpg is first)
+    ipcMocks.scanImagesForPdf.mockResolvedValueOnce({
+      pages: [makeDraft("p0", "0.jpg")],
+      bookmarks: [{ title: "PrependedChap", target_page_index: 0, children: [] }],
+      warnings: [],
+    });
+    firstCtx.rerender(
+      <I18nProvider>
+        <Image2PdfView
+          onStartJob={firstCtx.onStartJob}
+          onJobEvent={firstCtx.onJobEvent}
+          onFinishJob={firstCtx.onFinishJob}
+          busy={false}
+          droppedBatch={{ seq: 2, paths: ["/0.jpg"] }}
+        />
+      </I18nProvider>,
+    );
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const cards = Array.from(firstCtx.container.querySelectorAll("[data-page-id]"));
+    expect(cards.map((el) => el.getAttribute("data-page-id"))).toEqual([
+      "p0",
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+    ]);
+
+    // Alt+Click on card p3 attaches bookmark "3" at page index 3
+    const card3 = firstCtx.container.querySelector('[data-page-id="p3"]') as HTMLElement;
+    act(() => {
+      card3.dispatchEvent(makePointer("pointerdown", { altKey: true }));
+    });
+    expect((screen.getByDisplayValue("3") as HTMLInputElement).value).toBe("3");
   });
 });
