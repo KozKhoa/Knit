@@ -164,6 +164,22 @@ impl<W: Write> StreamingPdfWriter<W> {
         Ok(())
     }
 
+    pub(crate) fn write_lopdf_stream_with_slice(
+        &mut self,
+        id: u32,
+        mut dict: lopdf::Dictionary,
+        slice: &[u8],
+    ) -> Result<()> {
+        dict.set("Length", lopdf::Object::Integer(slice.len() as i64));
+        self.begin_obj(id)?;
+        lopdf::Writer::write_object(&mut self.w, &lopdf::Object::Dictionary(dict))
+            .map_err(|e| KnitError::InvalidInput(format!("Loi ghi PDF dict {id}: {e}")))?;
+        self.w.write_all(b"\nstream\n")?;
+        self.w.write_all(slice)?;
+        self.w.write_all(b"\nendstream\nendobj\n")?;
+        Ok(())
+    }
+
     fn write_page(
         &mut self,
         image: PreparedImage,

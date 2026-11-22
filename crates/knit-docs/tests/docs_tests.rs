@@ -435,3 +435,126 @@ fn repeated_page_numbering_updates_evict_cache_and_honor_cancellation() {
     );
     assert!(matches!(cancelled_res, Err(knit_core::KnitError::Cancelled)));
 }
+
+#[test]
+fn html_with_adjacent_inline_tags_and_multiline_heading_compiles_typst_without_unclosed_delimiter() {
+    let html = r#"<!DOCTYPE html>
+<html>
+<head><style>body { color: #fff; background: #1C2644; }</style></head>
+<body>
+<h1 class="hero">
+  Microservices, Containers, Kubernetes
+  &amp; Istio Service Mesh
+</h1>
+<p>Phân tích kiến trúc<strong>polyglot-service</strong>với<em>low-latency</em>mesh và <strong>unclosed <b>nested</b> inline</strong></p>
+<p>Thẻ đóng thừa: </strong></b> và mở thiếu cuối đoạn: <strong>Cảnh báo</p>
+</body>
+</html>"#;
+
+    let typ = html_to_typst(html, &DocConvertOptions::default());
+    assert!(!typ.contains("KNITTOK"));
+    assert!(!typ.contains("KNITHDR"));
+    let (typst_bytes, pages) =
+        knit_docs::compile_typst_to_pdf(&typ, None, &std::collections::HashMap::new()).unwrap();
+    assert!(pages >= 1);
+    assert!(typst_bytes.starts_with(b"%PDF-"));
+
+    // Real HTML slide fixture check if present on developer machine
+    let slides = std::path::Path::new("/home/khoa/Documents/Four years/Kiến trúc phần mềm/Giữa kỳ/Microservice Architecture, Containers (Docker), Container Orchestration (Kubernetes), và Service Mesh (Istio)/slides/index.html");
+    if slides.is_file() {
+        let raw = knit_docs::read_utf8_text(slides).unwrap();
+        let slide_typ = html_to_typst(&raw, &DocConvertOptions::default());
+        assert!(!slide_typ.contains("KNITTOK"));
+        let (fallback_bytes, fallback_pages) =
+            knit_docs::compile_typst_to_pdf(&slide_typ, None, &std::collections::HashMap::new()).unwrap();
+        assert!(fallback_pages >= 1);
+        assert!(fallback_bytes.starts_with(b"%PDF-"));
+    }
+}
+
+#[test]
+fn epub_css_dropcap_gif_and_chapter_classes_render_into_pdf() {
+    use std::io::Write;
+    let tmp = tempdir().unwrap();
+    let epub_path = tmp.path().join("sample_dropcap.epub");
+
+    let mut gif_bytes = Vec::new();
+    let img = image::RgbaImage::from_fn(40, 60, |x, y| {
+        if (x + y) % 4 == 0 {
+            image::Rgba([20, 30, 40, 255])
+        } else {
+            image::Rgba([245, 245, 240, 255])
+        }
+    });
+    image::DynamicImage::ImageRgba8(img)
+        .write_to(&mut std::io::Cursor::new(&mut gif_bytes), image::ImageFormat::Gif)
+        .unwrap();
+
+    {
+        let file = std::fs::File::create(&epub_path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let stored = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        let deflated = zip::write::SimpleFileOptions::default();
+
+        zip.start_file("mimetype", stored).unwrap();
+        zip.write_all(b"application/epub+zip").unwrap();
+
+        zip.start_file("META-INF/container.xml", deflated).unwrap();
+        zip.write_all(
+            br#"<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>"#,
+        )
+        .unwrap();
+
+        zip.start_file("OEBPS/content.opf", deflated).unwrap();
+        zip.write_all(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Truyện Mẫu</dc:title>
+    <dc:language>vi</dc:language>
+  </metadata>
+  <manifest>
+    <item id="css" href="css/style.css" media-type="text/css"/>
+    <item id="tgif" href="images/T.gif" media-type="image/gif"/>
+    <item id="c1" href="text/ch1.html" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine><itemref idref="c1"/></spine>
+</package>"#
+                .as_bytes(),
+        )
+        .unwrap();
+
+        zip.start_file("OEBPS/css/style.css", deflated).unwrap();
+        zip.write_all(b".dropcap_T { background-image: url(../images/T.gif); }\nspan.hidden { color: white; }\n")
+            .unwrap();
+
+        zip.start_file("OEBPS/images/T.gif", deflated).unwrap();
+        zip.write_all(&gif_bytes).unwrap();
+
+        zip.start_file("OEBPS/text/ch1.html", deflated).unwrap();
+        zip.write_all(
+            r#"<html xmlns="http://www.w3.org/1999/xhtml"><head><link href="../css/style.css" rel="stylesheet"/></head><body>
+<div class='ms_chapter'>Chương 1: Mở đầu</div>
+<div class='ms_text'><div id='dropcap' class='dropcap_T'><span class='hidden'>T</span></div>ôi vừa trở về nhà sau chuyến đi dài.</div>
+</body></html>"#
+                .as_bytes(),
+        )
+        .unwrap();
+        zip.finish().unwrap();
+    }
+
+    let (pdf_bytes, pages) = knit_docs::compile_epub_to_pdf_bytes(
+        &epub_path,
+        &DocConvertOptions::default(),
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+    assert!(pages >= 1);
+    assert!(pdf_bytes.starts_with(b"%PDF-"));
+    knit_docs::clear_epub_cache();
+}

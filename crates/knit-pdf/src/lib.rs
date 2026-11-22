@@ -18,8 +18,8 @@ pub use models::{
     StrokeAnnotation, TextAnnotation,
 };
 pub use ops::{
-    clear_pdf_reader_cache, inspect_pdf, merge_pdfs, parse_page_ranges,
-    render_pdf_bytes_thumbnails, render_pdf_thumbnail, render_pdf_thumbnail_jpeg,
-    split_multi_pdf, split_pdf,
+    clear_pdf_reader_cache, evict_pdf_reader_cache_paths, inspect_pdf, merge_pdfs,
+    parse_page_ranges, render_pdf_bytes_thumbnails, render_pdf_thumbnail,
+    render_pdf_thumbnail_jpeg, split_multi_pdf, split_pdf,
 };
 pub use packer::build_pdf_from_drafts;

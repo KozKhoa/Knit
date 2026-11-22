@@ -4,6 +4,9 @@ use crate::models::{
 };
 use crate::packer::{part_temp_path, trim_heap_if_supported, StreamingPdfWriter, TempFilesGuard};
 use hayro::hayro_interpret::InterpreterSettings;
+use hayro::hayro_syntax::object::{
+    Array as HayroArray, Dict as HayroDict, ObjectIdentifier as HayroObjId, String as HayroString,
+};
 use hayro::hayro_syntax::Pdf;
 use hayro::vello_cpu::color::palette::css::WHITE;
 use hayro::{PixmapSettings, RenderCache, RenderSettings};
@@ -11,6 +14,7 @@ use knit_core::{
     ensure_disk_space, CancellationToken, JobProgress, JobReporter, JobReporterExt, KnitError,
     Result,
 };
+use lopdf::xref::XrefEntry;
 use lopdf::{Document, LoadOptions, Object, ObjectId};
 use memmap2::Mmap;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -34,11 +38,26 @@ fn hayro_pdf_cache() -> &'static Mutex<Vec<(PdfCacheKey, Arc<Pdf>)>> {
     CACHE.get_or_init(|| Mutex::new(Vec::with_capacity(HAYRO_CACHE_CAP)))
 }
 
-/// Giải phóng cache `hayro::Pdf` đã parse (khi người dùng dọn cache hoặc xóa file).
+/// Giải phóng toàn bộ cache `hayro::Pdf` đã parse và trả bộ nhớ arena về OS.
 pub fn clear_pdf_reader_cache() {
     if let Ok(mut guard) = hayro_pdf_cache().lock() {
         guard.clear();
     }
+    trim_heap_if_supported();
+}
+
+/// Giải phóng cache `hayro::Pdf` theo danh sách đường dẫn cụ thể (nếu `paths` rỗng thì chỉ trim heap).
+pub fn evict_pdf_reader_cache_paths(paths: &[PathBuf]) {
+    if !paths.is_empty() {
+        if let Ok(mut guard) = hayro_pdf_cache().lock() {
+            let targets: Vec<PathBuf> = paths
+                .iter()
+                .map(|p| p.canonicalize().unwrap_or_else(|_| p.to_path_buf()))
+                .collect();
+            guard.retain(|(key, _)| !targets.contains(&key.canonical));
+        }
+    }
+    trim_heap_if_supported();
 }
 
 fn load_cached_hayro_pdf(path: &Path) -> Result<Arc<Pdf>> {
@@ -93,6 +112,8 @@ fn mmap_pdf_readonly(path: &Path) -> Result<Mmap> {
     unsafe { Mmap::map(&file) }.map_err(KnitError::Io)
 }
 
+const KNIT_DEFERRED_STREAM_LEN_KEY: &str = "KnitOrigLen";
+
 fn filter_inspect_objects(id: ObjectId, obj: &mut Object) -> Option<(ObjectId, Object)> {
     if let Object::Stream(ref stream) = obj {
         // Giữ nguyên ObjStm để lopdf giải nén các object cấu trúc; bỏ qua stream ảnh/nội dung nặng.
@@ -100,7 +121,259 @@ fn filter_inspect_objects(id: ObjectId, obj: &mut Object) -> Option<(ObjectId, O
             return None;
         }
     }
-    Some((id, std::mem::replace(obj, Object::Null)))
+    Some((id, obj.clone()))
+}
+
+/// Với `merge_pdfs` / `split_pdf`, giải phóng ngay `stream.content` của các stream lớn (>16KB)
+/// để tránh giữ toàn bộ payload GB+ trong heap Rust; độ dài gốc được giữ trong `KnitOrigLen`
+/// và dữ liệu gốc sẽ được cắt trực tiếp từ `mmap` khi ghi ra ổ đĩa.
+fn filter_deferred_heavy_streams(id: ObjectId, obj: &mut Object) -> Option<(ObjectId, Object)> {
+    if let Object::Stream(ref mut stream) = obj {
+        if !stream.dict.has_type(b"ObjStm") && stream.content.len() > 16 * 1024 {
+            let orig_len = stream.content.len() as i64;
+            stream
+                .dict
+                .set(KNIT_DEFERRED_STREAM_LEN_KEY, Object::Integer(orig_len));
+            // Thay thế bằng 1 byte để không kích hoạt zero_length_streams của lopdf.
+            stream.content = vec![0];
+        }
+    }
+    Some((id, obj.clone()))
+}
+
+fn find_stream_data_slice(pdf_buf: &[u8], obj_offset: usize, expected_len: usize) -> Option<&[u8]> {
+    if obj_offset >= pdf_buf.len() {
+        return None;
+    }
+    let mut i = obj_offset;
+    let len = pdf_buf.len();
+
+    let skip_ws_and_comments = |mut p: usize| -> usize {
+        while p < len {
+            let b = pdf_buf[p];
+            if b == b'%' {
+                while p < len && pdf_buf[p] != b'\n' && pdf_buf[p] != b'\r' {
+                    p += 1;
+                }
+            } else if b" \t\n\r\0\x0C".contains(&b) {
+                p += 1;
+            } else {
+                break;
+            }
+        }
+        p
+    };
+
+    // Bỏ qua `<obj_num> <gen_num> obj` nếu có
+    i = skip_ws_and_comments(i);
+    if i < len && pdf_buf[i].is_ascii_digit() {
+        while i < len && pdf_buf[i].is_ascii_digit() {
+            i += 1;
+        }
+        i = skip_ws_and_comments(i);
+        while i < len && pdf_buf[i].is_ascii_digit() {
+            i += 1;
+        }
+        i = skip_ws_and_comments(i);
+        if pdf_buf[i..].starts_with(b"obj") {
+            i += 3;
+        }
+        i = skip_ws_and_comments(i);
+    }
+
+    if !pdf_buf[i..].starts_with(b"<<") {
+        return None;
+    }
+
+    let mut depth = 0i32;
+    while i < len {
+        match pdf_buf[i] {
+            b'<' if i + 1 < len && pdf_buf[i + 1] == b'<' => {
+                depth += 1;
+                i += 2;
+            }
+            b'>' if i + 1 < len && pdf_buf[i + 1] == b'>' => {
+                depth -= 1;
+                i += 2;
+                if depth <= 0 {
+                    break;
+                }
+            }
+            b'(' => {
+                // Literal string: hỗ trợ ngoặc lồng và escape backslash
+                i += 1;
+                let mut paren_depth = 1i32;
+                while i < len && paren_depth > 0 {
+                    match pdf_buf[i] {
+                        b'\\' => i += 2,
+                        b'(' => {
+                            paren_depth += 1;
+                            i += 1;
+                        }
+                        b')' => {
+                            paren_depth -= 1;
+                            i += 1;
+                        }
+                        _ => i += 1,
+                    }
+                }
+            }
+            b'<' => {
+                // Hex string
+                i += 1;
+                while i < len && pdf_buf[i] != b'>' {
+                    i += 1;
+                }
+                if i < len {
+                    i += 1;
+                }
+            }
+            b'%' => {
+                while i < len && pdf_buf[i] != b'\n' && pdf_buf[i] != b'\r' {
+                    i += 1;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+
+    if depth != 0 {
+        return None;
+    }
+
+    i = skip_ws_and_comments(i);
+    if !pdf_buf[i..].starts_with(b"stream") {
+        return None;
+    }
+    i += 6;
+    while i < len && (pdf_buf[i] == b' ' || pdf_buf[i] == b'\t') {
+        i += 1;
+    }
+    if i + 1 < len && pdf_buf[i] == b'\r' && pdf_buf[i + 1] == b'\n' {
+        i += 2;
+    } else if i < len && (pdf_buf[i] == b'\n' || pdf_buf[i] == b'\r') {
+        i += 1;
+    } else {
+        return None;
+    }
+
+    let data_end = i.checked_add(expected_len)?;
+    if data_end > len {
+        return None;
+    }
+
+    let mut tail = data_end;
+    if tail + 1 < len && pdf_buf[tail] == b'\r' && pdf_buf[tail + 1] == b'\n' {
+        tail += 2;
+    } else if tail < len && (pdf_buf[tail] == b'\n' || pdf_buf[tail] == b'\r') {
+        tail += 1;
+    }
+    if !pdf_buf[tail..].starts_with(b"endstream") && !pdf_buf[data_end..].starts_with(b"endstream") {
+        return None;
+    }
+
+    Some(&pdf_buf[i..data_end])
+}
+
+fn decode_hayro_pdf_string(raw: &[u8]) -> String {
+    if raw.starts_with(&[0xFE, 0xFF]) && raw.len() >= 2 {
+        let u16s: Vec<u16> = raw[2..]
+            .chunks_exact(2)
+            .map(|c| u16::from_be_bytes([c[0], c[1]]))
+            .collect();
+        String::from_utf16_lossy(&u16s)
+    } else if raw.starts_with(&[0xFF, 0xFE]) && raw.len() >= 2 {
+        let u16s: Vec<u16> = raw[2..]
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        String::from_utf16_lossy(&u16s)
+    } else {
+        String::from_utf8_lossy(raw).into_owned()
+    }
+}
+
+fn read_outlines_hayro(pdf: &Pdf) -> Vec<BookmarkNode> {
+    let page_map: HashMap<HayroObjId, usize> = pdf
+        .pages()
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, p)| p.raw().obj_id().map(|id| (id, idx)))
+        .collect();
+
+    let Some(catalog) = pdf.xref().get::<HayroDict>(pdf.xref().root_id()) else {
+        return Vec::new();
+    };
+    let Some(outlines_dict) = catalog.get::<HayroDict>(b"Outlines") else {
+        return Vec::new();
+    };
+    let Some(first_ref) = outlines_dict.get_ref(b"First") else {
+        return Vec::new();
+    };
+
+    let mut visited = HashSet::new();
+    read_hayro_outline_siblings(pdf, first_ref.into(), &page_map, &mut visited, 0)
+}
+
+fn read_hayro_outline_siblings(
+    pdf: &Pdf,
+    first_id: HayroObjId,
+    page_map: &HashMap<HayroObjId, usize>,
+    visited: &mut HashSet<HayroObjId>,
+    depth: usize,
+) -> Vec<BookmarkNode> {
+    if depth > 64 {
+        return Vec::new();
+    }
+    let mut nodes = Vec::new();
+    let mut curr = Some(first_id);
+
+    while let Some(obj_id) = curr {
+        if !visited.insert(obj_id) {
+            break;
+        }
+        let Some(dict) = pdf.xref().get::<HayroDict>(obj_id) else {
+            break;
+        };
+
+        let title = dict
+            .get::<HayroString>(b"Title")
+            .map(|s| decode_hayro_pdf_string(s.as_bytes()))
+            .unwrap_or_else(|| "Bookmark".to_string());
+
+        let children = match dict.get_ref(b"First") {
+            Some(child_first) => {
+                read_hayro_outline_siblings(pdf, child_first.into(), page_map, visited, depth + 1)
+            }
+            None => Vec::new(),
+        };
+
+        let target = resolve_hayro_outline_target(&dict, page_map)
+            .or_else(|| children.first().map(|c| c.target_page_index))
+            .unwrap_or(0);
+
+        nodes.push(BookmarkNode {
+            title,
+            target_page_index: target,
+            children,
+        });
+
+        curr = dict.get_ref(b"Next").map(Into::into);
+    }
+
+    nodes
+}
+
+fn resolve_hayro_outline_target(
+    dict: &HayroDict<'_>,
+    page_map: &HashMap<HayroObjId, usize>,
+) -> Option<usize> {
+    let dest_arr = dict
+        .get::<HayroArray>(b"Dest")
+        .or_else(|| dict.get::<HayroDict>(b"A").and_then(|a| a.get::<HayroArray>(b"D")))?;
+    let page_ref = dest_arr.raw_iter().next()?.as_obj_ref()?;
+    let oid: HayroObjId = page_ref.into();
+    page_map.get(&oid).copied()
 }
 
 pub fn inspect_pdf(path: &Path) -> Result<PdfInfo> {
@@ -108,7 +381,42 @@ pub fn inspect_pdf(path: &Path) -> Result<PdfInfo> {
         return Err(KnitError::NotFound(path.display().to_string()));
     }
     let meta = fs::metadata(path)?;
+
+    // Đọc cấu trúc & mục lục zero-copy qua hayro (Mmap) để không bao giờ cấp phát payload stream vào RAM.
+    if let Ok(pdf) = load_cached_hayro_pdf(path) {
+        let page_count = pdf.pages().len();
+        let bookmarks = read_outlines_hayro(&pdf);
+        return Ok(PdfInfo {
+            path: path.to_path_buf(),
+            page_count,
+            file_size_bytes: meta.len(),
+            bookmarks,
+        });
+    }
+
     let mmap = mmap_pdf_readonly(path)?;
+    if let Ok(pdf_meta) = Document::load_metadata_mem(&mmap) {
+        let page_count = pdf_meta.page_count as usize;
+        let has_outlines = mmap.windows(9).any(|w| w == b"/Outlines");
+        let bookmarks = if has_outlines {
+            let filtered =
+                Document::load_mem_with_options(&mmap, LoadOptions::with_filter(filter_inspect_objects));
+            match filtered {
+                Ok(d) => read_outlines(&d),
+                Err(_) => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
+        drop(mmap);
+        trim_heap_if_supported();
+        return Ok(PdfInfo {
+            path: path.to_path_buf(),
+            page_count,
+            file_size_bytes: meta.len(),
+            bookmarks,
+        });
+    }
 
     let filtered = Document::load_mem_with_options(&mmap, LoadOptions::with_filter(filter_inspect_objects));
     let doc = match filtered {
@@ -121,6 +429,8 @@ pub fn inspect_pdf(path: &Path) -> Result<PdfInfo> {
 
     let page_count = doc.get_pages().len();
     let bookmarks = read_outlines(&doc);
+    drop(doc);
+    trim_heap_if_supported();
     Ok(PdfInfo {
         path: path.to_path_buf(),
         page_count,
@@ -377,10 +687,14 @@ pub fn merge_pdfs(
         ));
 
         let mmap = mmap_pdf_readonly(path)?;
-        let mut doc = Document::load_mem(&mmap).map_err(|e| {
-            KnitError::InvalidInput(format!("Failed to load PDF {}: {e}", path.display()))
-        })?;
-        drop(mmap);
+        let pdf_start = mmap.windows(5).position(|w| w == b"%PDF-").unwrap_or(0);
+        let pdf_buf = &mmap[pdf_start..];
+        let mut doc = Document::load_mem_with_options(
+            pdf_buf,
+            LoadOptions::with_filter(filter_deferred_heavy_streams),
+        )
+        .map_err(|e| KnitError::InvalidInput(format!("Failed to load PDF {}: {e}", path.display())))?;
+        trim_heap_if_supported();
 
         if config.preserve_bookmarks && config.custom_bookmarks.is_none() {
             per_doc_bookmarks[file_idx] = read_outlines(&doc);
@@ -402,6 +716,7 @@ pub fn merge_pdfs(
 
         if file_items.is_empty() {
             drop(doc);
+            drop(mmap);
             continue;
         }
 
@@ -441,6 +756,7 @@ pub fn merge_pdfs(
 
         let written_pairs = stream_doc_occurrences_to_writer(
             &mut doc,
+            Some(pdf_buf),
             &unique_orig_pages,
             &occurrences,
             true,
@@ -459,6 +775,7 @@ pub fn merge_pdfs(
         }
 
         drop(doc);
+        drop(mmap);
         trim_heap_if_supported();
         reporter.on_progress(JobProgress {
             phase: "merge".into(),
@@ -1025,6 +1342,7 @@ fn stream_subset_pdf_with_writer<W: Write>(
 
     let written_pairs = stream_doc_occurrences_to_writer(
         doc,
+        None,
         &unique_orig_pages,
         &occurrences,
         false,
@@ -1041,9 +1359,11 @@ fn stream_subset_pdf_with_writer<W: Write>(
 
 /// Ghi các trang được chọn + toàn bộ object con cháu (Fonts, XObjects, Contents, Resources...) của 1 `Document`
 /// thẳng vào `StreamingPdfWriter`. Nếu `consume_doc == true` (dùng trong `merge_pdfs`), mỗi object ghi xong sẽ bị gỡ
-/// khỏi `doc.objects` và giải phóng ngay khỏi RAM.
+/// khỏi `doc.objects` và giải phóng ngay khỏi RAM. Khi `pdf_buf` được truyền vào, các stream nặng có gắn `KnitOrigLen`
+/// sẽ được cắt slice trực tiếp từ mmap ghi thẳng xuống đĩa không qua cấp phát bộ nhớ heap.
 fn stream_doc_occurrences_to_writer<W: Write>(
     doc: &mut Document,
+    pdf_buf: Option<&[u8]>,
     unique_orig_pages: &[ObjectId],
     occurrences: &[(usize, ObjectId, i32)],
     consume_doc: bool,
@@ -1078,13 +1398,40 @@ fn stream_doc_occurrences_to_writer<W: Write>(
         };
         if let Some(mut obj) = opt_obj {
             rewrite_object_refs(&mut obj, &id_map);
-            if let Object::Stream(ref mut stream) = obj {
-                stream
-                    .dict
-                    .set("Length", Object::Integer(stream.content.len() as i64));
-            }
             let new_id = id_map[&old_id].0;
-            writer.write_lopdf_object(new_id, &obj)?;
+            let mut deferred_len: Option<usize> = None;
+            let mut streamed_from_mmap = false;
+            if let (Some(buf), Object::Stream(ref mut stream)) = (pdf_buf, &mut obj) {
+                if let Some(Object::Integer(orig_len)) =
+                    stream.dict.remove(KNIT_DEFERRED_STREAM_LEN_KEY.as_bytes())
+                {
+                    let expected_len = usize::try_from(orig_len).map_err(|_| {
+                        KnitError::InvalidInput("Invalid deferred PDF stream length".into())
+                    })?;
+                    deferred_len = Some(expected_len);
+                    if let Some(XrefEntry::Normal { offset, .. }) = doc.reference_table.get(old_id.0) {
+                        if let Some(raw_slice) = find_stream_data_slice(buf, *offset as usize, expected_len) {
+                            let dict = std::mem::take(&mut stream.dict);
+                            writer.write_lopdf_stream_with_slice(new_id, dict, raw_slice)?;
+                            streamed_from_mmap = true;
+                        }
+                    }
+                }
+            }
+            if !streamed_from_mmap {
+                if deferred_len.is_some() {
+                    return Err(KnitError::InvalidInput(format!(
+                        "Khong the doc stream goc tu mmap cho object {:?}",
+                        old_id
+                    )));
+                }
+                if let Object::Stream(ref mut stream) = obj {
+                    stream
+                        .dict
+                        .set("Length", Object::Integer(stream.content.len() as i64));
+                }
+                writer.write_lopdf_object(new_id, &obj)?;
+            }
         }
     }
 

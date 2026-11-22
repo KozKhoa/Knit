@@ -10,19 +10,20 @@ use knit_core::{
     JobProgress, JobReporter, LogVerbosity, NoopReporter,
 };
 use knit_docs::{
-    clear_epub_cache, compile_epub_to_pdf_bytes, compile_text_to_pdf_bytes,
-    compile_text_to_pdf_bytes_with_cancel, convert_document_to_pdf, convert_text_to_pdf,
-    detect_libreoffice, evict_typst_cache, read_utf8_text, write_utf8_text, DocConvertOptions,
-    DocConvertResult, DocInputKind, EngineStatus,
+    clear_epub_cache, clear_office_cache, compile_epub_to_pdf_bytes, compile_office_to_pdf_bytes,
+    compile_text_to_pdf_bytes, compile_text_to_pdf_bytes_with_cancel, convert_document_to_pdf,
+    convert_text_to_pdf, detect_libreoffice, evict_typst_cache, read_utf8_text, write_utf8_text,
+    DocConvertOptions, DocConvertResult, DocInputKind, EngineStatus,
 };
 use knit_manga::{default_output_name, pack_stories, scan_stories, MangaPackOptions, MangaPackSummary, MangaScanMode, Story};
 use knit_pdf::{
-    build_pdf_from_drafts, clear_pdf_reader_cache, expand_drafts_for_animated_policy, inspect_pdf,
-    merge_pdfs, render_image_thumbnail, render_image_thumbnail_jpeg,
-    render_page_draft_preview_jpeg, render_pdf_bytes_thumbnails, render_pdf_thumbnail,
-    render_pdf_thumbnail_jpeg, scan_image_files_with_reporter, scan_image_folder_with_reporter,
-    split_multi_pdf, split_pdf, AnimatedImagePolicy, BookmarkNode, Image2PdfConfig,
-    ImageScanResult, PageDraft, PageSource, PdfBuildResult, PdfInfo, PdfMergeConfig, PdfSplitRule,
+    build_pdf_from_drafts, clear_pdf_reader_cache, evict_pdf_reader_cache_paths,
+    expand_drafts_for_animated_policy, inspect_pdf, merge_pdfs, render_image_thumbnail,
+    render_image_thumbnail_jpeg, render_page_draft_preview_jpeg, render_pdf_bytes_thumbnails,
+    render_pdf_thumbnail, render_pdf_thumbnail_jpeg, scan_image_files_with_reporter,
+    scan_image_folder_with_reporter, split_multi_pdf, split_pdf, AnimatedImagePolicy,
+    BookmarkNode, Image2PdfConfig, ImageScanResult, PageDraft, PageSource, PdfBuildResult,
+    PdfInfo, PdfMergeConfig, PdfSplitRule,
 };
 use knit_renamer::{
     apply_rename_plan, build_rename_plan, compile_rule, recompute_collisions, scan_items,
@@ -187,6 +188,7 @@ async fn clear_image_preview_cache() -> Result<(), String> {
         }
         clear_pdf_reader_cache();
         clear_epub_cache();
+        clear_office_cache();
         evict_typst_cache();
         trim_process_heap();
         Ok(())
@@ -893,6 +895,17 @@ async fn read_pdf_file_bytes(path: PathBuf) -> Result<tauri::ipc::Response, Stri
 }
 
 #[tauri::command]
+async fn pdf_release_cached_files(paths: Vec<PathBuf>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        evict_pdf_reader_cache_paths(&paths);
+        trim_process_heap();
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 async fn pdf_build_from_images(
     job_id: String,
     drafts: Vec<PageDraft>,
@@ -1080,6 +1093,13 @@ async fn docs_preview_pdf_bytes(
                 compile_epub_to_pdf_bytes(&path, &options, &token, &NoopReporter)
                     .map_err(|e| e.to_string())
             }
+            DocInputKind::Docx | DocInputKind::Pptx => {
+                let path = input_path
+                    .ok_or_else(|| "Missing Office path for preview".to_string())?;
+                compile_office_to_pdf_bytes(&path, &token, &NoopReporter)
+                    .map(|bytes| (bytes, 0))
+                    .map_err(|e| e.to_string())
+            }
             DocInputKind::Markdown | DocInputKind::PlainText | DocInputKind::Html => {
                 let text = content.unwrap_or_default();
                 compile_text_to_pdf_bytes_with_cancel(
@@ -1091,10 +1111,6 @@ async fn docs_preview_pdf_bytes(
                 )
                 .map_err(|e| e.to_string())
             }
-            _ => Err(
-                "PDF live preview is only supported for Markdown, Plain Text, HTML, and EPUB"
-                    .to_string(),
-            ),
         };
         trim_process_heap();
         let (pdf_bytes, _) = res?;
@@ -1712,6 +1728,7 @@ pub fn run() {
             dialog_save_path,
             pdf_scan_images,
             pdf_sync_animated_drafts,
+            pdf_release_cached_files,
             read_pdf_file_bytes,
             render_image_thumb,
             render_image_thumb_file,

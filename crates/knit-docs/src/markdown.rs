@@ -282,7 +282,20 @@ fn insert_wrap_opportunities(input: &str) -> String {
 pub(crate) fn escape_typst_text(input: &str) -> String {
     let wrappable = insert_wrap_opportunities(input);
     let mut out = String::with_capacity(wrappable.len() + 8);
-    for ch in wrappable.chars() {
+    let mut chars = wrappable.chars().peekable();
+    let mut prev_slash = false;
+    while let Some(ch) = chars.next() {
+        if ch == '/' {
+            let next_slash = chars.peek() == Some(&'/');
+            if prev_slash || next_slash {
+                out.push_str("\\/");
+            } else {
+                out.push('/');
+            }
+            prev_slash = true;
+            continue;
+        }
+        prev_slash = false;
         match ch {
             '\\' | '#' | '$' | '@' | '*' | '_' | '`' | '<' | '>' | '[' | ']' | '=' | '~' => {
                 out.push('\\');

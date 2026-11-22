@@ -5,14 +5,18 @@ pub mod office;
 pub mod world;
 
 pub use html_epub::{
-    clear_epub_cache, compile_epub_to_pdf_bytes, convert_epub_to_pdf, html_to_typst,
+    clear_epub_cache, compile_epub_to_pdf_bytes, convert_epub_to_pdf, html_fragment_to_typst,
+    html_to_typst,
 };
 pub use markdown::{markdown_to_typst, markdown_to_typst_with_assets, txt_to_typst};
 pub use models::{
     DocConvertOptions, DocConvertResult, DocFont, DocInputKind, DocTheme, EngineStatus,
     PageNumberFormat, PageNumberPosition, PageNumberingOptions, PageOrientation, PageSizePreset,
 };
-pub use office::{convert_office_to_pdf, detect_libreoffice};
+pub use office::{
+    clear_office_cache, compile_html_via_browser_to_pdf_bytes, compile_office_to_pdf_bytes,
+    convert_office_to_pdf, detect_chromium_browser, detect_libreoffice,
+};
 pub use world::{
     compile_typst_to_pdf, compile_typst_to_pdf_with_toc,
     compile_typst_to_pdf_with_toc_cancellable, evict_typst_cache,
@@ -63,6 +67,24 @@ pub fn compile_text_to_pdf_bytes_with_cancel(
             return Err(KnitError::Cancelled);
         }
     }
+    if kind == DocInputKind::Html {
+        let cancel_tok = cancel.cloned().unwrap_or_default();
+        if let Some(browser_res) =
+            compile_html_via_browser_to_pdf_bytes(Some(content), None, base_dir, opts, &cancel_tok)?
+        {
+            return Ok(browser_res);
+        }
+    }
+    compile_text_via_typst_only(content, kind, base_dir, opts, cancel)
+}
+
+fn compile_text_via_typst_only(
+    content: &str,
+    kind: DocInputKind,
+    base_dir: Option<&Path>,
+    opts: &DocConvertOptions,
+    cancel: Option<&CancellationToken>,
+) -> Result<(Vec<u8>, usize)> {
     let (markup, assets) = build_typst_markup_with_assets(content, kind, opts)?;
     let effective_base = match kind {
         DocInputKind::Markdown | DocInputKind::Html => base_dir,
@@ -103,9 +125,28 @@ pub fn convert_text_to_pdf(
         "Compiling document ({:?}, paper {:?}, orientation {:?})",
         kind, opts.page_size, opts.orientation
     ));
-    let (pdf_bytes, pages) = compile_text_to_pdf_bytes(content, kind, base_dir, opts)?;
+    let cancel_token = cancel;
+    let (pdf_bytes, pages, used_external) = if kind == DocInputKind::Html {
+        if let Some((b, p)) = compile_html_via_browser_to_pdf_bytes(
+            Some(content),
+            input_path,
+            base_dir,
+            opts,
+            cancel_token,
+        )? {
+            (b, p, true)
+        } else {
+            let (b, p) =
+                compile_text_via_typst_only(content, kind, base_dir, opts, Some(cancel))?;
+            (b, p, false)
+        }
+    } else {
+        let (b, p) =
+            compile_text_via_typst_only(content, kind, base_dir, opts, Some(cancel))?;
+        (b, p, false)
+    };
     reporter.detailed(format!(
-        "Typst compilation complete: {} pages ({} bytes) -> {}",
+        "PDF compilation complete: {} pages ({} bytes) -> {}",
         pages,
         pdf_bytes.len(),
         output_path.display()
@@ -127,7 +168,7 @@ pub fn convert_text_to_pdf(
         kind,
         page_count: Some(pages),
         bytes_written: pdf_bytes.len() as u64,
-        used_external_engine: false,
+        used_external_engine: used_external,
     })
 }
 

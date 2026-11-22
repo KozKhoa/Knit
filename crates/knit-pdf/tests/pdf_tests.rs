@@ -1630,3 +1630,90 @@ fn svg_to_pdf_and_animated_gif_unpack_and_richmedia() {
     let poster_thumb = render_pdf_thumbnail(&rich_pdf, 0, 80).unwrap();
     assert!(!poster_thumb.is_empty());
 }
+
+#[test]
+fn merge_deferred_large_streams_and_evict_pdf_cache() {
+    let tmp = tempdir().unwrap();
+    // 200x200 random noise PNG > 16KB stream so filter_deferred_heavy_streams exercises mmap slice streaming
+    let noise_path = tmp.path().join("noise.png");
+    let noise = RgbaImage::from_fn(200, 200, |x, y| {
+        let v = ((x.wrapping_mul(73) ^ y.wrapping_mul(151)) & 0xFF) as u8;
+        let v2 = ((x.wrapping_mul(29) + y.wrapping_mul(97)) & 0xFF) as u8;
+        Rgba([v, v2, v ^ v2, 255])
+    });
+    DynamicImage::ImageRgba8(noise)
+        .write_to(&mut std::fs::File::create(&noise_path).unwrap(), ImageFormat::Png)
+        .unwrap();
+    assert!(std::fs::metadata(&noise_path).unwrap().len() > 20 * 1024);
+
+    let pdf_a = tmp.path().join("src_a.pdf");
+    let pdf_b = tmp.path().join("src_b.pdf");
+    let make_src = |p: &std::path::Path, title: &str| {
+        let draft = PageDraft {
+            id: title.into(),
+            source: PageSource::ImageFile {
+                path: noise_path.clone(),
+            },
+            rotation_deg: 0,
+            crop: None,
+            annotations: AnnotationLayer::default(),
+            duration_ms: None,
+            label: title.into(),
+            width_px: 200,
+            height_px: 200,
+            file_size_bytes: 0,
+        };
+        build_pdf_from_drafts(
+            &[draft],
+            &[BookmarkNode {
+                title: title.into(),
+                target_page_index: 0,
+                children: vec![],
+            }],
+            &Image2PdfConfig {
+                output_path: p.to_path_buf(),
+                layout: PageLayoutPolicy::OriginalSize { dpi: 72.0 },
+                jpeg_quality: 90,
+                lossless_passthrough: true,
+                animated_policy: AnimatedImagePolicy::FirstFrameOnly,
+                export_mode: PdfExportMode::Balanced,
+                max_mb: None,
+                max_pages_per_file: None,
+            },
+            &CancellationToken::new(),
+            &NoopReporter,
+        )
+        .unwrap();
+    };
+    make_src(&pdf_a, "Part A");
+    make_src(&pdf_b, "Part B");
+
+    let info_a = inspect_pdf(&pdf_a).unwrap();
+    assert_eq!(info_a.page_count, 1);
+    assert_eq!(info_a.bookmarks.len(), 1);
+    assert_eq!(info_a.bookmarks[0].title, "Part A");
+
+    let merged = tmp.path().join("merged_deferred.pdf");
+    let res = merge_pdfs(
+        &PdfMergeConfig {
+            inputs: vec![pdf_a.clone(), pdf_b.clone()],
+            selected_pages: None,
+            output_path: merged.clone(),
+            preserve_bookmarks: true,
+            custom_bookmarks: None,
+        },
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+    assert_eq!(res.total_pages, 2);
+
+    let merged_info = inspect_pdf(&merged).unwrap();
+    assert_eq!(merged_info.page_count, 2);
+    assert_eq!(merged_info.bookmarks.len(), 2);
+
+    let thumb_0 = render_pdf_thumbnail(&merged, 0, 100).unwrap();
+    assert!(!thumb_0.is_empty());
+
+    knit_pdf::evict_pdf_reader_cache_paths(&[pdf_a, pdf_b, merged]);
+}
