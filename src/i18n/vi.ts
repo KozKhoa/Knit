@@ -303,6 +303,7 @@ export const vi: Translations = {
     resizeSectionHeightTitle: "Kéo để chỉnh chiều cao section này",
     sectionItemDragHint: "Kéo thả để sắp xếp hoặc chuyển giữa các section · Nháy đúp xem lớn",
     duplicateNameBadge: "Trùng tên",
+    duplicateFileBadge: "Trùng tệp",
     quickAddToSectionTitle: "Thêm vào section đang chọn",
     populatingSectionsBtn: "Đang tạo section...",
     ctxSourceFileInfo: (fileIdx, fileName, sourcePage) =>

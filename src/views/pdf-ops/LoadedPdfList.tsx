@@ -1,6 +1,7 @@
 import React from "react";
-import { AlertTriangle, Trash2 } from "lucide-react";
+import { Info, Trash2 } from "lucide-react";
 import { useI18n } from "../../i18n";
+import { normalizeComparePath } from "../../lib/exportPath";
 import { formatBytes } from "../../lib/ipc";
 import type { PdfInfo } from "../../types/ipc";
 
@@ -19,17 +20,24 @@ export const LoadedPdfList: React.FC<LoadedPdfListProps> = ({
 }) => {
   const { t } = useI18n();
 
-  const duplicateNames = React.useMemo(() => {
-    const counts = new Map<string, number>();
+  const { sameNameSet, exactDuplicatePaths } = React.useMemo(() => {
+    const nameCounts = new Map<string, number>();
+    const pathCounts = new Map<string, number>();
     for (const f of files) {
       const name = (f.path.split(/[\\/]/).pop() ?? f.path).toLowerCase();
-      counts.set(name, (counts.get(name) ?? 0) + 1);
+      nameCounts.set(name, (nameCounts.get(name) ?? 0) + 1);
+      const normPath = normalizeComparePath(f.path);
+      pathCounts.set(normPath, (pathCounts.get(normPath) ?? 0) + 1);
     }
-    const dups = new Set<string>();
-    for (const [name, c] of counts.entries()) {
-      if (c > 1) dups.add(name);
+    const sameNames = new Set<string>();
+    for (const [name, c] of nameCounts.entries()) {
+      if (c > 1) sameNames.add(name);
     }
-    return dups;
+    const exactDups = new Set<string>();
+    for (const [normPath, c] of pathCounts.entries()) {
+      if (c > 1) exactDups.add(normPath);
+    }
+    return { sameNameSet: sameNames, exactDuplicatePaths: exactDups };
   }, [files]);
 
   if (files.length === 0) return null;
@@ -56,7 +64,8 @@ export const LoadedPdfList: React.FC<LoadedPdfListProps> = ({
       </div>
       {files.map((f, idx) => {
         const baseName = f.path.split(/[\\/]/).pop() ?? f.path;
-        const isDuplicate = duplicateNames.has(baseName.toLowerCase());
+        const isSameName = sameNameSet.has(baseName.toLowerCase());
+        const isExactDuplicate = exactDuplicatePaths.has(normalizeComparePath(f.path));
 
         return (
           <div
@@ -64,40 +73,36 @@ export const LoadedPdfList: React.FC<LoadedPdfListProps> = ({
             className={`flex items-center justify-between gap-2 rounded-[4px] border px-3 py-2 text-xs transition-colors duration-300 ${
               highlighted
                 ? "border-[#A3CFBB] bg-[#E9F7EF]"
-                : isDuplicate
-                  ? "border-[#FFC107] bg-[#FFF8E1]/50"
-                  : "border-[#E9ECEF] bg-[#F8F9FA]"
+                : "border-[#E9ECEF] bg-[#F8F9FA]"
             }`}
           >
-            <div className="min-w-0 flex-1">
-              <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
-                <div className="flex min-w-0 items-center gap-2">
-                  <span className="font-mono-code truncate font-semibold text-[#212529]">
-                    {idx + 1}. {baseName}
-                  </span>
-                  {isDuplicate && (
-                    <span
-                      data-testid={`duplicate-pdf-badge-${idx}`}
-                      className="inline-flex shrink-0 items-center gap-1 rounded-[4px] border border-[#FFC107] bg-[#FFF3CD] px-1.5 py-0.5 text-[10px] font-semibold text-[#856404]"
-                    >
-                      <AlertTriangle className="h-3 w-3 shrink-0 text-[#D39E00]" />
-                      {t.pdfOps.duplicateNameBadge}
-                    </span>
-                  )}
-                </div>
-                <span className="shrink-0 text-[#6C757D]">
-                  {t.pdfOps.docMeta(f.page_count, formatBytes(f.file_size_bytes), f.bookmarks.length)}
+            <div className="flex min-w-0 flex-1 items-center justify-between gap-2">
+              <div className="flex min-w-0 flex-1 items-center gap-2">
+                <span className="font-mono-code shrink-0 font-semibold text-[#212529]">
+                  {idx + 1}. {baseName}
                 </span>
+                {isExactDuplicate && (
+                  <span
+                    data-testid={`duplicate-pdf-badge-${idx}`}
+                    className="inline-flex shrink-0 items-center gap-1 rounded-[4px] border border-[#B8DAFF] bg-[#E7F1FF] px-1.5 py-0.5 text-[10px] font-semibold text-[#0056B3]"
+                  >
+                    <Info className="h-3 w-3 shrink-0 text-[#007BFF]" />
+                    {t.pdfOps.duplicateFileBadge}
+                  </span>
+                )}
+                {isSameName && (
+                  <span
+                    data-testid={`duplicate-pdf-path-${idx}`}
+                    title={f.path}
+                    className="font-mono-code min-w-0 truncate rounded-[4px] bg-[#E9ECEF] px-1.5 py-0.5 text-[11px] text-[#495057]"
+                  >
+                    {f.path}
+                  </span>
+                )}
               </div>
-              {isDuplicate && (
-                <div
-                  data-testid={`duplicate-pdf-path-${idx}`}
-                  title={f.path}
-                  className="font-mono-code mt-0.5 truncate text-[11px] text-[#495057]"
-                >
-                  {f.path}
-                </div>
-              )}
+              <span className="shrink-0 text-[#6C757D]">
+                {t.pdfOps.docMeta(f.page_count, formatBytes(f.file_size_bytes), f.bookmarks.length)}
+              </span>
             </div>
             <button
               type="button"

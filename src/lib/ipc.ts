@@ -258,6 +258,11 @@ export async function readPdfFileBytes(path: string): Promise<Uint8Array> {
   return new Uint8Array(buf);
 }
 
+export async function releasePdfCachedFiles(paths: string[]): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("pdf_release_cached_files", { paths });
+}
+
 export async function buildImage2Pdf(
   jobId: string,
   drafts: PageDraft[],

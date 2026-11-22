@@ -20,6 +20,7 @@ import { useThumbnailQueue } from "../hooks/useThumbnailQueue";
 import { useI18n } from "../i18n";
 import {
   checkExportConflicts,
+  clearImagePreviewCache,
   formatBytes,
   inspectPdfFile,
   isJobCancelledError,
@@ -28,6 +29,7 @@ import {
   pickDirectory,
   pickFiles,
   pickSaveFile,
+  releasePdfCachedFiles,
   renderPdfThumbFile,
   splitMultiPdfFiles,
   splitPdfFile,
@@ -715,6 +717,7 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
     const removeIdx = pendingRemoveFileIdx;
     setPendingRemoveFileIdx(null);
     if (removeIdx === null || removeIdx < 0 || removeIdx >= files.length) return;
+    const removedPath = files[removeIdx]?.path;
 
     const oldIndexToNewIndex = new Map<number, number>();
     let nextMergedIdx = 0;
@@ -767,7 +770,10 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
         parsed.fileIndex > removeIdx ? parsed.fileIndex - 1 : parsed.fileIndex;
       return sourceKey(remappedFile, parsed.pageIndex);
     });
-  }, [pendingRemoveFileIdx, files.length, selections, thumbQueue]);
+    if (removedPath) {
+      void releasePdfCachedFiles([removedPath]);
+    }
+  }, [pendingRemoveFileIdx, files, selections, thumbQueue]);
 
   const handlePopulateSectionsFromRule = async () => {
     if (files.length === 0 || isPopulatingSections) return;
@@ -1565,6 +1571,7 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
           setMergeBookmarks([]);
           setSplitSections([]);
           setSplitSourceFilterIdx("all");
+          void clearImagePreviewCache();
         }}
         onCancel={() => setPendingClearAll(false)}
       />

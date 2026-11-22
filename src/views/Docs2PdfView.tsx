@@ -207,8 +207,11 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
   const docKind = detectDocKind(inputPath);
   const isEditableText =
     docKind === "markdown" || docKind === "plain_text" || docKind === "html";
-  const isPreviewableDoc = isEditableText || (docKind === "epub" && Boolean(inputPath));
   const isOfficeFile = docKind === "docx" || docKind === "pptx";
+  const isPreviewableDoc =
+    isEditableText ||
+    (docKind === "epub" && Boolean(inputPath)) ||
+    (isOfficeFile && Boolean(inputPath));
   const isDirty = isEditableText && editorText !== savedText;
 
   React.useEffect(() => {
@@ -448,6 +451,12 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
 
   const runLivePreview = React.useCallback(async () => {
     if (!isTauriRuntime() || !isPreviewableDoc) return;
+    if (isOfficeFile && engineStatus?.libreoffice_available === false) {
+      setPreviewPdfBytes(null);
+      setPreviewTotalPages(0);
+      setPreviewError(t.docs2pdf.libreMissing);
+      return;
+    }
     if (isEditableText && editorText.trim().length === 0) {
       setPreviewPdfBytes(null);
       setPreviewTotalPages(0);
@@ -466,7 +475,7 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
       if (previewSeqRef.current !== seq) return;
       const pdfBytes = await previewDocPdfBytes({
         content: isEditableText ? editorText : null,
-        inputPath: docKind === "epub" ? inputPath : null,
+        inputPath: !isEditableText ? inputPath : null,
         inputKind: docKind,
         baseDir: parentDirOf(inputPath),
         options: { ...docOptions, mermaid_svgs: mermaidSvgs },
@@ -481,7 +490,18 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
     } finally {
       if (previewSeqRef.current === seq) setPreviewLoading(false);
     }
-  }, [docKind, docOptions, editorText, inputPath, isEditableText, isPreviewableDoc, mermaidTheme]);
+  }, [
+    docKind,
+    docOptions,
+    editorText,
+    engineStatus?.libreoffice_available,
+    inputPath,
+    isEditableText,
+    isOfficeFile,
+    isPreviewableDoc,
+    mermaidTheme,
+    t.docs2pdf.libreMissing,
+  ]);
 
   React.useEffect(() => {
     if (!isTauriRuntime() || !isPreviewableDoc) return;
@@ -493,7 +513,7 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
     }
     const timer = window.setTimeout(() => {
       void runLivePreview();
-    }, docKind === "epub" ? 400 : 600);
+    }, docKind === "epub" || isOfficeFile ? 350 : 600);
     return () => window.clearTimeout(timer);
   }, [
     editorText,
@@ -595,7 +615,11 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
         t.docs2pdf.doneSummary(
           String(res.page_count ?? "?"),
           formatBytes(res.bytes_written),
-          res.used_external_engine ? "LibreOffice" : "Typst Native",
+          res.used_external_engine
+            ? snapDocKind === "html"
+              ? "Chromium"
+              : "LibreOffice"
+            : "Typst Native",
         ),
         "success",
         undefined,
@@ -768,6 +792,7 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
       />
 
       <Docs2PdfSettingsCard
+        disabled={isOfficeFile}
         theme={theme}
         pdfFont={pdfFont}
         mermaidTheme={mermaidTheme}

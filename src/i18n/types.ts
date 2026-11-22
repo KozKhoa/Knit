@@ -296,6 +296,7 @@ export interface Translations {
     resizeSectionHeightTitle: string;
     sectionItemDragHint: string;
     duplicateNameBadge: string;
+    duplicateFileBadge: string;
     quickAddToSectionTitle: string;
     populatingSectionsBtn: string;
     ctxSourceFileInfo: (fileIdx: number, fileName: string, sourcePage: number) => string;

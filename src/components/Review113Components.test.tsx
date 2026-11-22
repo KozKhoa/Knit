@@ -19,10 +19,11 @@ describe("Review 1.13 UI components", () => {
     expect(badge.className).not.toContain("bg-[#FFF3CD]");
   });
 
-  it("shows duplicate filename badge and full path in LoadedPdfList", () => {
+  it("shows inline path for same-name files without warning and Info badge only for exact duplicate path in LoadedPdfList", () => {
     const files: PdfInfo[] = [
       { path: "/docs/a/report.pdf", page_count: 5, file_size_bytes: 10240, bookmarks: [] },
       { path: "/docs/b/report.pdf", page_count: 8, file_size_bytes: 20480, bookmarks: [] },
+      { path: "/docs/a/report.pdf", page_count: 5, file_size_bytes: 10240, bookmarks: [] },
       { path: "/docs/unique.pdf", page_count: 3, file_size_bytes: 4096, bookmarks: [] },
     ];
 
@@ -35,11 +36,17 @@ describe("Review 1.13 UI components", () => {
       />,
     );
 
+    // Same name + same exact path (idx 0 and 2) show Info badge "Duplicate file" / "Trùng tệp"
     expect(screen.getByTestId("duplicate-pdf-badge-0")).toBeTruthy();
-    expect(screen.getByTestId("duplicate-pdf-badge-1")).toBeTruthy();
-    expect(screen.queryByTestId("duplicate-pdf-badge-2")).toBeNull();
+    expect(screen.getByTestId("duplicate-pdf-badge-2")).toBeTruthy();
+    // Same name in different directory (idx 1) has NO duplicate badge
+    expect(screen.queryByTestId("duplicate-pdf-badge-1")).toBeNull();
+    expect(screen.queryByTestId("duplicate-pdf-badge-3")).toBeNull();
+    // Same-name files show their paths inline next to the filename
     expect(screen.getByTestId("duplicate-pdf-path-0").textContent).toBe("/docs/a/report.pdf");
     expect(screen.getByTestId("duplicate-pdf-path-1").textContent).toBe("/docs/b/report.pdf");
+    expect(screen.getByTestId("duplicate-pdf-path-2").textContent).toBe("/docs/a/report.pdf");
+    expect(screen.queryByTestId("duplicate-pdf-path-3")).toBeNull();
   });
 
   it("displays bookmark order warning badges and wide 6-digit page input in BookmarkTreeEditor", () => {

@@ -1762,14 +1762,6 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
                   onPointerDown={handleSplitWidthResize}
                 />
                 <div className="min-w-0 space-y-2 lg:sticky lg:-top-3 lg:self-start">
-                  <label className="knit-card flex cursor-pointer items-center gap-2 px-3 py-2 text-xs font-medium text-[#212529]">
-                    <input
-                      type="checkbox"
-                      checked={autoUpdateBookmarksOnDelete}
-                      onChange={(e) => setAutoUpdateBookmarksOnDelete(e.target.checked)}
-                    />
-                    <span>{t.image2pdf.autoUpdateBookmarksLabel}</span>
-                  </label>
                   <BookmarkTreeEditor
                     nodes={bookmarks}
                     totalPages={pages.length}

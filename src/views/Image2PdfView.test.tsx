@@ -377,5 +377,10 @@ describe("Image2PdfView functional automation (Layer 2)", () => {
       card3.dispatchEvent(makePointer("pointerdown", { altKey: true }));
     });
     expect((screen.getByDisplayValue("3") as HTMLInputElement).value).toBe("3");
+
+    // Review 1.17 Item 2: Only ONE "Auto-update bookmarks when deleting pages" checkbox should exist
+    expect(
+      screen.getAllByRole("checkbox", { name: "Tự động cập nhật mục lục khi xóa ảnh" }),
+    ).toHaveLength(1);
   });
 });

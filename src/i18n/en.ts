@@ -303,6 +303,7 @@ export const en: Translations = {
     resizeSectionHeightTitle: "Drag to resize this section height",
     sectionItemDragHint: "Drag cards to reorder or move between sections · Double-click to zoom",
     duplicateNameBadge: "Duplicate name",
+    duplicateFileBadge: "Duplicate file",
     quickAddToSectionTitle: "Add to active section",
     populatingSectionsBtn: "Populating sections...",
     ctxSourceFileInfo: (fileIdx, fileName, sourcePage) =>

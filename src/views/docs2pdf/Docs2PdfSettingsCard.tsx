@@ -33,6 +33,7 @@ const PDF_FONTS: DocFont[] = [
 ];
 
 interface Docs2PdfSettingsCardProps {
+  disabled?: boolean;
   theme: DocTheme;
   pdfFont: DocFont;
   mermaidTheme: MermaidTheme;
@@ -69,6 +70,7 @@ interface Docs2PdfSettingsCardProps {
 }
 
 export const Docs2PdfSettingsCard: React.FC<Docs2PdfSettingsCardProps> = ({
+  disabled = false,
   theme,
   pdfFont,
   mermaidTheme,
@@ -106,7 +108,13 @@ export const Docs2PdfSettingsCard: React.FC<Docs2PdfSettingsCardProps> = ({
   const { t } = useI18n();
 
   return (
-    <div className="knit-card space-y-3.5 p-4">
+    <div className="knit-card p-4">
+      <fieldset
+        disabled={disabled}
+        className={`space-y-3.5 border-0 p-0 m-0 min-w-0 ${
+          disabled ? "opacity-55 pointer-events-none select-none" : ""
+        }`}
+      >
       <div className="grid grid-cols-1 gap-3.5 md:grid-cols-4 xl:grid-cols-8">
         <div>
           <label className="block text-xs font-semibold uppercase text-[#6C757D]">
@@ -362,6 +370,7 @@ export const Docs2PdfSettingsCard: React.FC<Docs2PdfSettingsCardProps> = ({
           )}
         </div>
       </div>
+      </fieldset>
     </div>
   );
 };
