@@ -141,14 +141,17 @@ export const Docs2PdfSettingsCard: React.FC<Docs2PdfSettingsCardProps> = ({
   const { t } = useI18n();
 
   return (
-    <div className="knit-card p-4">
+    <div data-testid="docs2pdf-settings-card" className="knit-card @container p-4">
       <fieldset
         disabled={disabled}
         className={`space-y-3.5 border-0 p-0 m-0 min-w-0 ${
           disabled ? "opacity-55 pointer-events-none select-none" : ""
         }`}
       >
-      <div className="grid grid-cols-1 gap-3.5 md:grid-cols-4 xl:grid-cols-8">
+      <div
+        data-testid="docs2pdf-settings-main-grid"
+        className="grid grid-cols-1 items-end gap-3.5 @[380px]:grid-cols-2 @[720px]:grid-cols-4 @[1060px]:grid-cols-8"
+      >
         <div>
           <label className="block text-xs font-semibold uppercase text-[#6C757D]">
             {t.docs2pdf.themeLabel}
@@ -268,8 +271,8 @@ export const Docs2PdfSettingsCard: React.FC<Docs2PdfSettingsCardProps> = ({
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-3.5 border-t border-[#E9ECEF] pt-3 lg:grid-cols-12">
-        <div className="space-y-2 lg:col-span-5">
+      <div className="grid grid-cols-1 gap-3.5 border-t border-[#E9ECEF] pt-3 @[900px]:grid-cols-12">
+        <div className="space-y-2 @[900px]:col-span-5">
           <label className="block text-xs font-semibold uppercase text-[#6C757D]">
             {t.docs2pdf.titleAndTocLabel}
           </label>
@@ -308,7 +311,7 @@ export const Docs2PdfSettingsCard: React.FC<Docs2PdfSettingsCardProps> = ({
           </div>
         </div>
 
-        <div className="space-y-2 lg:col-span-7">
+        <div className="space-y-2 @[900px]:col-span-7">
           <div className="flex flex-wrap items-center gap-3">
             <span className="text-xs font-semibold uppercase text-[#6C757D]">
               {t.docs2pdf.pageNumberingLabel}
@@ -324,7 +327,7 @@ export const Docs2PdfSettingsCard: React.FC<Docs2PdfSettingsCardProps> = ({
           </div>
 
           {pageNumEnabled && (
-            <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+            <div className="grid grid-cols-2 gap-2.5 @[640px]:grid-cols-4">
               <div>
                 <label className="block text-[11px] font-medium text-[#6C757D]">
                   {t.docs2pdf.pageNumberPosLabel}

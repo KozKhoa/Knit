@@ -1,0 +1,1 @@
+- Trong tool docs to pdf, khi chỉ có pdf preview bên cột trái thì cột phải bị như ảnh (do widht không đủ nên nén lại làm cho nội dung trong select box bị nén lai không biết đang chọn cái gì). Cho xuống thành nhiều dòng đi.
