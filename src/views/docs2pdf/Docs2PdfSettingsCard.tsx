@@ -429,8 +429,8 @@ export const Docs2PdfSettingsCard: React.FC<Docs2PdfSettingsCardProps> = ({
           </div>
 
           {htmlRenderMode === "slide_step" && onChangeHtmlStepKind && (
-            <div className="grid grid-cols-1 gap-3 rounded-[4px] border border-[#DEE2E6] bg-[#F8F9FA] p-3 md:grid-cols-12">
-              <div className="md:col-span-4">
+            <div className="grid grid-cols-1 gap-3 rounded-[4px] border border-[#DEE2E6] bg-[#F8F9FA] p-3 @[720px]:grid-cols-12">
+              <div className="@[720px]:col-span-4">
                 <label className="block text-[11px] font-semibold uppercase text-[#6C757D]">
                   {t.docs2pdf.htmlStepKindLabel}
                 </label>
@@ -450,7 +450,7 @@ export const Docs2PdfSettingsCard: React.FC<Docs2PdfSettingsCardProps> = ({
               </div>
 
               {htmlStepKind === "key" && onChangeHtmlStepKey && (
-                <div className="flex flex-wrap items-end gap-2 md:col-span-8">
+                <div className="flex flex-wrap items-end gap-2 @[720px]:col-span-8">
                   <div className="min-w-[160px] flex-1">
                     <label className="block text-[11px] font-semibold uppercase text-[#6C757D]">
                       {t.docs2pdf.htmlStepKeyLabel}
@@ -502,7 +502,7 @@ export const Docs2PdfSettingsCard: React.FC<Docs2PdfSettingsCardProps> = ({
               )}
 
               {htmlStepKind === "click_selector" && onChangeHtmlStepSelector && (
-                <div className="md:col-span-8">
+                <div className="@[720px]:col-span-8">
                   <label className="block text-[11px] font-semibold uppercase text-[#6C757D]">
                     {t.docs2pdf.htmlStepSelectorLabel}
                   </label>
@@ -520,7 +520,7 @@ export const Docs2PdfSettingsCard: React.FC<Docs2PdfSettingsCardProps> = ({
               {htmlStepKind === "click_point" &&
                 onChangeHtmlStepClickX &&
                 onChangeHtmlStepClickY && (
-                  <div className="flex flex-wrap items-end gap-2.5 md:col-span-8">
+                  <div className="flex flex-wrap items-end gap-2.5 @[720px]:col-span-8">
                     <div className="w-28">
                       <label className="block text-[11px] font-semibold uppercase text-[#6C757D]">
                         {t.docs2pdf.htmlStepClickXLabel}
