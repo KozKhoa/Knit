@@ -254,6 +254,7 @@ fn compile_typst_doc(
 ) -> Result<PagedDocument> {
     let world = KnitTypstWorld::new(markup, base_dir, Arc::clone(virtual_files));
     let warned = typst::compile::<PagedDocument>(&world);
+    drop(world);
     warned.output.map_err(|errs| {
         let msgs: Vec<String> = errs.iter().map(|e| e.message.to_string()).collect();
         KnitError::InvalidInput(format!("Loi bien dich Typst: {}", msgs.join("; ")))
@@ -403,6 +404,7 @@ pub(crate) fn compile_typst_with_prepared_assets(
             query_label_pages(&candidate_doc, "knit-toc").first(),
         ) {
             if toc_actual > target_page && pos > 0 {
+                drop(candidate_doc);
                 split_pos = Some(pos - 1);
                 candidate_markup = build_with_split(split_pos.map(|i| pages_of_blocks[i].0));
                 candidate_doc =
@@ -429,6 +431,7 @@ pub(crate) fn compile_typst_with_prepared_assets(
             let msgs: Vec<String> = errs.iter().map(|e| e.message.to_string()).collect();
             KnitError::InvalidInput(format!("Loi xuat PDF tu Typst: {}", msgs.join("; ")))
         })?;
+    drop(final_doc);
     Ok((pdf_bytes, pages))
 }
 

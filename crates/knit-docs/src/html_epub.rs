@@ -20,7 +20,7 @@ struct CachedEpubPayload {
     file_len: u64,
     mtime_nanos: u128,
     title: Option<String>,
-    body_markup: String,
+    chapters: Vec<String>,
     prepared_virtual: Arc<HashMap<String, Bytes>>,
 }
 
@@ -628,8 +628,7 @@ fn load_or_parse_epub(
         }
     }
 
-    let mut raw_body = String::new();
-    let mut blk_idx = 0usize;
+    let mut raw_chapters: Vec<String> = Vec::new();
     let num_chapters = doc.get_num_chapters();
 
     for i in 0..num_chapters {
@@ -654,12 +653,7 @@ fn load_or_parse_epub(
             let converted =
                 html_fragment_to_typst_with_css(&xhtml, chapter_dir.as_deref(), Some(&css_rules));
             if !converted.trim().is_empty() {
-                if blk_idx > 0 {
-                    raw_body.push_str("\n#pagebreak(weak: true)\n");
-                }
-                let _ = writeln!(raw_body, "#metadata({blk_idx}) <knit-blk>");
-                blk_idx += 1;
-                let _ = writeln!(raw_body, "{converted}\n");
+                raw_chapters.push(converted);
             }
         }
     }
@@ -668,13 +662,23 @@ fn load_or_parse_epub(
         return Err(KnitError::Cancelled);
     }
 
-    let body_markup = prepare_typst_images(&raw_body, None, &mut virtual_files);
+    let joined = raw_chapters.join("\x1E");
+    drop(raw_chapters);
+    let prepared_joined = prepare_typst_images(&joined, None, &mut virtual_files);
+    drop(joined);
+    let chapters: Vec<String> = if prepared_joined.is_empty() {
+        Vec::new()
+    } else {
+        prepared_joined.split('\x1E').map(|s| s.to_string()).collect()
+    };
+    drop(prepared_joined);
+
     let payload = Arc::new(CachedEpubPayload {
         path: input_path.to_path_buf(),
         file_len,
         mtime_nanos,
         title,
-        body_markup,
+        chapters,
         prepared_virtual: Arc::new(virtual_files),
     });
 
@@ -704,17 +708,35 @@ pub fn compile_epub_to_pdf_bytes(
         effective_opts.title = cached.title.clone();
     }
 
-    let preamble = typst_preamble(&effective_opts);
-    let mut markup = String::with_capacity(preamble.len() + cached.body_markup.len());
-    markup.push_str(&preamble);
-    markup.push_str(&cached.body_markup);
-
-    reporter.info("Compiling EPUB to PDF (Typst)");
     let toc_target = if effective_opts.include_toc && effective_opts.toc_page > 1 {
         Some(effective_opts.toc_page)
     } else {
         None
     };
+    let needs_blk = toc_target.is_some();
+    let chapter_limit = opts
+        .preview_max_chapters
+        .filter(|&n| n > 0)
+        .unwrap_or(cached.chapters.len())
+        .min(cached.chapters.len());
+    let selected = &cached.chapters[..chapter_limit];
+
+    let preamble = typst_preamble(&effective_opts);
+    let estimated_body: usize = selected.iter().map(|c| c.len() + 36).sum();
+    let mut markup = String::with_capacity(preamble.len() + estimated_body);
+    markup.push_str(&preamble);
+    for (idx, chapter_typst) in selected.iter().enumerate() {
+        if idx > 0 {
+            markup.push_str("\n#pagebreak(weak: true)\n");
+        }
+        if needs_blk {
+            let _ = writeln!(markup, "#metadata({idx}) <knit-blk>");
+        }
+        markup.push_str(chapter_typst);
+        markup.push('\n');
+    }
+
+    reporter.info("Compiling EPUB to PDF (Typst)");
     compile_typst_with_prepared_assets(
         &markup,
         None,

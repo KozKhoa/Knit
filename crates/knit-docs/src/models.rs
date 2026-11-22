@@ -18,7 +18,9 @@ impl DocInputKind {
         let ext = path.extension()?.to_string_lossy().to_ascii_lowercase();
         match ext.as_str() {
             "md" | "markdown" => Some(Self::Markdown),
-            "txt" | "log" | "rst" => Some(Self::PlainText),
+            "txt" | "log" | "rst" | "css" | "js" | "mjs" | "cjs" | "ts" | "jsx" | "tsx" => {
+                Some(Self::PlainText)
+            }
             "html" | "htm" | "xhtml" => Some(Self::Html),
             "epub" => Some(Self::Epub),
             "docx" => Some(Self::Docx),
@@ -133,6 +135,39 @@ impl Default for PageNumberingOptions {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HtmlRenderMode {
+    #[default]
+    Auto,
+    DocumentPrint,
+    SlideStep,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HtmlStepKind {
+    #[default]
+    AutoKey,
+    Key,
+    ClickSelector,
+    ClickPoint,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct HtmlStepTrigger {
+    #[serde(default)]
+    pub kind: HtmlStepKind,
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub selector: Option<String>,
+    #[serde(default)]
+    pub click_x: Option<f32>,
+    #[serde(default)]
+    pub click_y: Option<f32>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocConvertOptions {
     #[serde(default)]
@@ -159,6 +194,12 @@ pub struct DocConvertOptions {
     pub font: DocFont,
     #[serde(default)]
     pub mermaid_svgs: HashMap<String, String>,
+    #[serde(default)]
+    pub html_render_mode: HtmlRenderMode,
+    #[serde(default)]
+    pub html_step_trigger: HtmlStepTrigger,
+    #[serde(default)]
+    pub preview_max_chapters: Option<usize>,
 }
 
 impl Default for DocConvertOptions {
@@ -176,6 +217,9 @@ impl Default for DocConvertOptions {
             theme: DocTheme::GitHub,
             font: DocFont::Default,
             mermaid_svgs: HashMap::new(),
+            html_render_mode: HtmlRenderMode::Auto,
+            html_step_trigger: HtmlStepTrigger::default(),
+            preview_max_chapters: None,
         }
     }
 }

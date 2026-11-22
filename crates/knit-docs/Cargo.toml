@@ -8,6 +8,7 @@ license.workspace = true
 knit-core = { path = "../knit-core" }
 serde.workspace = true
 serde_json.workspace = true
+base64.workspace = true
 image.workspace = true
 lopdf.workspace = true
 pulldown-cmark.workspace = true

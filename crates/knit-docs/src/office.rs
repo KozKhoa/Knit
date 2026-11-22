@@ -1,5 +1,6 @@
 use crate::models::{
-    DocConvertOptions, DocConvertResult, DocInputKind, EngineStatus, PageOrientation, PageSizePreset,
+    DocConvertOptions, DocConvertResult, DocInputKind, EngineStatus, HtmlRenderMode, PageOrientation,
+    PageSizePreset,
 };
 use knit_core::{
     atomic_write_file, CancellationToken, JobReporter, JobReporterExt, KnitError, Result,
@@ -28,7 +29,7 @@ pub fn clear_office_cache() {
     }
 }
 
-struct TempFileCleanupGuard(Option<PathBuf>);
+pub(crate) struct TempFileCleanupGuard(pub(crate) Option<PathBuf>);
 
 impl Drop for TempFileCleanupGuard {
     fn drop(&mut self) {
@@ -313,7 +314,23 @@ pub fn detect_chromium_browser() -> Option<PathBuf> {
     None
 }
 
+pub(crate) fn sanitize_leading_doctype_junk(raw_html: &str) -> &str {
+    let head_end = raw_html
+        .char_indices()
+        .nth(64)
+        .map(|(idx, _)| idx)
+        .unwrap_or(raw_html.len());
+    if let Some(pos) = raw_html[..head_end].to_ascii_lowercase().find("<!doctype") {
+        let prefix = raw_html[..pos].trim_start_matches('\u{FEFF}').trim();
+        if !prefix.is_empty() && !prefix.contains('<') && prefix.len() <= 16 {
+            return &raw_html[pos..];
+        }
+    }
+    raw_html
+}
+
 fn inject_browser_print_styles(raw_html: &str, opts: &DocConvertOptions) -> String {
+    let raw_html = sanitize_leading_doctype_junk(raw_html);
     let lower = raw_html.to_ascii_lowercase();
     let has_at_page = lower.contains("@page");
 
@@ -337,8 +354,13 @@ fn inject_browser_print_styles(raw_html: &str, opts: &DocConvertOptions) -> Stri
     };
 
     let print_script = "<script data-knit-print>window.alert=function(){};window.confirm=function(){return true;};window.prompt=function(){return null;};</script>";
+    let reveal_rule = if lower.contains(".reveal") && lower.contains(".slide") {
+        " @media print { .slide .reveal { opacity: 1 !important; transform: none !important; transition: none !important; } }"
+    } else {
+        ""
+    };
     let print_style = format!(
-        "<style data-knit-print>{page_rule} *, *::before, *::after {{ -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }}</style>"
+        "<style data-knit-print>{page_rule}{reveal_rule} *, *::before, *::after {{ -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }}</style>"
     );
     let injected = format!("{print_script}{print_style}");
 
@@ -371,6 +393,39 @@ fn inject_browser_print_styles(raw_html: &str, opts: &DocConvertOptions) -> Stri
     }
 }
 
+pub(crate) fn write_html_temp_for_browser(
+    html: &str,
+    input_path: Option<&Path>,
+    base_dir: Option<&Path>,
+    fallback_tmp_dir: &Path,
+) -> Result<(TempFileCleanupGuard, PathBuf)> {
+    let resolved_base = base_dir
+        .filter(|d| d.is_dir())
+        .or_else(|| input_path.and_then(|p| p.parent()).filter(|d| d.is_dir()));
+
+    let mut html_guard = TempFileCleanupGuard(None);
+    let html_file_path = if let Some(dir) = resolved_base {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let cand = dir.join(format!(".knit_html_render_{}_{}.html", std::process::id(), nanos));
+        if std::fs::write(&cand, html.as_bytes()).is_ok() {
+            html_guard.0 = Some(cand.clone());
+            cand
+        } else {
+            let p = fallback_tmp_dir.join("document.html");
+            std::fs::write(&p, html.as_bytes())?;
+            p
+        }
+    } else {
+        let p = fallback_tmp_dir.join("document.html");
+        std::fs::write(&p, html.as_bytes())?;
+        p
+    };
+    Ok((html_guard, html_file_path))
+}
+
 /// Kết xuất HTML sang bytes PDF thông qua trình duyệt Chromium/Chrome/Edge/Brave headless để giữ nguyên CSS/layout trình duyệt.
 /// Trả về `Ok(None)` nếu hệ thống chưa có trình duyệt Chromium hoặc quá trình in headless không thành công (cho phép fallback về Typst).
 pub fn compile_html_via_browser_to_pdf_bytes(
@@ -395,34 +450,40 @@ pub fn compile_html_via_browser_to_pdf_bytes(
         return Ok(None);
     };
 
+    let wants_slide_step = match opts.html_render_mode {
+        HtmlRenderMode::SlideStep => true,
+        HtmlRenderMode::Auto => crate::cdp::should_use_slide_step_auto(&raw_html),
+        HtmlRenderMode::DocumentPrint => false,
+    };
+
+    if wants_slide_step {
+        match crate::cdp::compile_html_via_cdp_slide_step(
+            &raw_html,
+            input_path,
+            base_dir,
+            opts,
+            cancel,
+        ) {
+            Ok(Some(res)) => return Ok(Some(res)),
+            Ok(None) => {
+                if opts.html_render_mode == HtmlRenderMode::SlideStep {
+                    return Ok(None);
+                }
+            }
+            Err(KnitError::Cancelled) => return Err(KnitError::Cancelled),
+            Err(e) => {
+                if opts.html_render_mode == HtmlRenderMode::SlideStep {
+                    return Err(e);
+                }
+            }
+        }
+    }
+
     let styled_html = inject_browser_print_styles(&raw_html, opts);
     let tmp_dir = tempfile::tempdir()?;
     let out_pdf = tmp_dir.path().join("rendered.pdf");
-
-    let resolved_base = base_dir
-        .filter(|d| d.is_dir())
-        .or_else(|| input_path.and_then(|p| p.parent()).filter(|d| d.is_dir()));
-
-    let mut html_guard = TempFileCleanupGuard(None);
-    let html_file_path = if let Some(dir) = resolved_base {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let cand = dir.join(format!(".knit_html_render_{}_{}.html", std::process::id(), nanos));
-        if std::fs::write(&cand, styled_html.as_bytes()).is_ok() {
-            html_guard.0 = Some(cand.clone());
-            cand
-        } else {
-            let p = tmp_dir.path().join("document.html");
-            std::fs::write(&p, styled_html.as_bytes())?;
-            p
-        }
-    } else {
-        let p = tmp_dir.path().join("document.html");
-        std::fs::write(&p, styled_html.as_bytes())?;
-        p
-    };
+    let (_html_guard, html_file_path) =
+        write_html_temp_for_browser(&styled_html, input_path, base_dir, tmp_dir.path())?;
 
     let file_uri = path_to_file_uri(&html_file_path);
     let mut cmd = Command::new(&browser_exe);
@@ -486,7 +547,7 @@ pub fn compile_html_via_browser_to_pdf_bytes(
     Ok(Some((pdf_bytes, pages)))
 }
 
-fn path_to_file_uri(path: &Path) -> String {
+pub(crate) fn path_to_file_uri(path: &Path) -> String {
     let raw = path.to_string_lossy().replace('\\', "/");
     if raw.starts_with('/') {
         format!("file://{raw}")

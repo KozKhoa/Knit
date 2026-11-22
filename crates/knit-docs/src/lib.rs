@@ -1,3 +1,4 @@
+pub mod cdp;
 pub mod html_epub;
 pub mod markdown;
 pub mod models;
@@ -11,7 +12,8 @@ pub use html_epub::{
 pub use markdown::{markdown_to_typst, markdown_to_typst_with_assets, txt_to_typst};
 pub use models::{
     DocConvertOptions, DocConvertResult, DocFont, DocInputKind, DocTheme, EngineStatus,
-    PageNumberFormat, PageNumberPosition, PageNumberingOptions, PageOrientation, PageSizePreset,
+    HtmlRenderMode, HtmlStepKind, HtmlStepTrigger, PageNumberFormat, PageNumberPosition,
+    PageNumberingOptions, PageOrientation, PageSizePreset,
 };
 pub use office::{
     clear_office_cache, compile_html_via_browser_to_pdf_bytes, compile_office_to_pdf_bytes,

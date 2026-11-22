@@ -558,3 +558,255 @@ fn epub_css_dropcap_gif_and_chapter_classes_render_into_pdf() {
     assert!(pdf_bytes.starts_with(b"%PDF-"));
     knit_docs::clear_epub_cache();
 }
+
+#[test]
+fn cdp_slide_step_captures_each_space_navigation_state_as_pdf_page() {
+    if knit_docs::detect_chromium_browser().is_none() {
+        return;
+    }
+
+    let html = r#"<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #1C2644; color: #F0ECE3; }
+  .deck-stage { position: relative; width: 1280px; height: 720px; }
+  .slide { position: absolute; inset: 0; display: none; padding: 64px; font: 48px sans-serif; }
+  .slide.active { display: block; }
+  .slide .reveal { opacity: 0; }
+  .slide.visible .reveal { opacity: 1; }
+  @media print {
+    .slide { display: block !important; page-break-after: always; }
+  }
+</style>
+</head>
+<body>
+  <main class="deck-stage" id="deckStage">
+    <section class="slide active visible"><h1 class="reveal">Slide One</h1></section>
+    <section class="slide"><h1 class="reveal">Slide Two</h1></section>
+    <section class="slide"><h1 class="reveal">Slide Three</h1></section>
+  </main>
+  <script>
+    let idx = 0;
+    const slides = Array.from(document.querySelectorAll('.slide'));
+    function show(n) {
+      idx = Math.max(0, Math.min(slides.length - 1, n));
+      slides.forEach((s, i) => {
+        s.classList.toggle('active', i === idx);
+        s.classList.toggle('visible', i === idx);
+      });
+    }
+    document.addEventListener('keydown', (e) => {
+      if (e.code === 'Space' || e.key === 'ArrowRight') {
+        e.preventDefault();
+        show(idx + 1);
+      }
+    });
+  </script>
+</body>
+</html>"#;
+
+    let opts = DocConvertOptions {
+        html_render_mode: knit_docs::HtmlRenderMode::SlideStep,
+        ..DocConvertOptions::default()
+    };
+    let (pdf_bytes, pages) =
+        compile_text_to_pdf_bytes(html, DocInputKind::Html, None, &opts).unwrap();
+    assert_eq!(pages, 3, "expected 3 slide states captured as 3 PDF pages");
+    assert!(pdf_bytes.starts_with(b"%PDF-"));
+    let meta = lopdf::Document::load_metadata_mem(&pdf_bytes).unwrap();
+    assert_eq!(meta.page_count, 3);
+
+    // Real HTML slide deck check if present on developer machine
+    let slides = std::path::Path::new("/home/khoa/Documents/Four years/Kiến trúc phần mềm/Giữa kỳ/Microservice Architecture, Containers (Docker), Container Orchestration (Kubernetes), và Service Mesh (Istio)/slides/index.html");
+    if slides.is_file() {
+        let raw = knit_docs::read_utf8_text(slides).unwrap();
+        let auto_opts = DocConvertOptions::default();
+        assert!(knit_docs::cdp::should_use_slide_step_auto(&raw));
+        let (deck_bytes, deck_pages) = compile_text_to_pdf_bytes(
+            &raw,
+            DocInputKind::Html,
+            slides.parent(),
+            &auto_opts,
+        )
+        .unwrap();
+        assert_eq!(deck_pages, 9, "expected all 9 Space-stepped slides");
+        assert!(deck_bytes.starts_with(b"%PDF-"));
+        let deck_meta = lopdf::Document::load_metadata_mem(&deck_bytes).unwrap();
+        assert_eq!(deck_meta.page_count, 9);
+    }
+}
+
+#[test]
+fn cdp_slide_step_supports_click_selector_click_point_and_custom_key_events() {
+    if knit_docs::detect_chromium_browser().is_none() {
+        return;
+    }
+
+    let html_click = r#"<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8" />
+<style>
+  html, body { margin: 0; width: 1280px; height: 720px; overflow: hidden; background: #1C2644; color: #F0ECE3; }
+  #view { width: 1280px; height: 720px; display: flex; align-items: center; justify-content: center; font: 48px sans-serif; }
+  #nextBtn { position: fixed; right: 24px; top: 320px; width: 160px; height: 80px; }
+</style>
+</head>
+<body>
+  <div id="view">Page 1</div>
+  <button id="nextBtn" type="button">Next</button>
+  <script>
+    let page = 1;
+    const view = document.getElementById('view');
+    const btn = document.getElementById('nextBtn');
+    btn.addEventListener('click', () => {
+      if (page < 3) {
+        page += 1;
+        view.textContent = 'Page ' + page;
+        if (page === 3) btn.disabled = true;
+      }
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'n' && page < 3) {
+        page += 1;
+        view.textContent = 'Page ' + page;
+      }
+    });
+  </script>
+</body>
+</html>"#;
+
+    // 1. Click CSS selector stops cleanly when #nextBtn becomes disabled on page 3
+    let sel_opts = DocConvertOptions {
+        html_render_mode: knit_docs::HtmlRenderMode::SlideStep,
+        html_step_trigger: knit_docs::HtmlStepTrigger {
+            kind: knit_docs::HtmlStepKind::ClickSelector,
+            selector: Some("#nextBtn".into()),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let (sel_bytes, sel_pages) =
+        compile_text_to_pdf_bytes(html_click, DocInputKind::Html, None, &sel_opts).unwrap();
+    assert_eq!(sel_pages, 3);
+    assert!(sel_bytes.starts_with(b"%PDF-"));
+
+    // 2. Normalized click point on #nextBtn (right=24, width=160 -> center ~ 1176/1280 = 0.918, top=320, h=80 -> 360/720 = 0.5)
+    let pt_opts = DocConvertOptions {
+        html_render_mode: knit_docs::HtmlRenderMode::SlideStep,
+        html_step_trigger: knit_docs::HtmlStepTrigger {
+            kind: knit_docs::HtmlStepKind::ClickPoint,
+            click_x: Some(0.92),
+            click_y: Some(0.5),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let (pt_bytes, pt_pages) =
+        compile_text_to_pdf_bytes(html_click, DocInputKind::Html, None, &pt_opts).unwrap();
+    assert_eq!(pt_pages, 3);
+    assert!(pt_bytes.starts_with(b"%PDF-"));
+
+    // 3. Custom key 'n'
+    let key_opts = DocConvertOptions {
+        html_render_mode: knit_docs::HtmlRenderMode::SlideStep,
+        html_step_trigger: knit_docs::HtmlStepTrigger {
+            kind: knit_docs::HtmlStepKind::Key,
+            key: Some("n".into()),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let (key_bytes, key_pages) =
+        compile_text_to_pdf_bytes(html_click, DocInputKind::Html, None, &key_opts).unwrap();
+    assert_eq!(key_pages, 3);
+    assert!(key_bytes.starts_with(b"%PDF-"));
+}
+
+#[test]
+fn epub_preview_max_chapters_limits_preview_while_full_export_keeps_all_chapters() {
+    use std::io::Write;
+    let tmp = tempdir().unwrap();
+    let epub_path = tmp.path().join("multi_chapter.epub");
+
+    {
+        let file = std::fs::File::create(&epub_path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let stored = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        let deflated = zip::write::SimpleFileOptions::default();
+
+        zip.start_file("mimetype", stored).unwrap();
+        zip.write_all(b"application/epub+zip").unwrap();
+        zip.start_file("META-INF/container.xml", deflated).unwrap();
+        zip.write_all(
+            br#"<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>"#,
+        )
+        .unwrap();
+
+        let manifest_items: String = (1..=10)
+            .map(|i| format!(r#"<item id="c{i}" href="text/ch{i}.html" media-type="application/xhtml+xml"/>"#))
+            .collect::<Vec<_>>()
+            .join("\n    ");
+        let spine_items: String = (1..=10)
+            .map(|i| format!(r#"<itemref idref="c{i}"/>"#))
+            .collect::<Vec<_>>()
+            .join("");
+
+        zip.start_file("OEBPS/content.opf", deflated).unwrap();
+        zip.write_all(
+            format!(
+                r#"<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Book</dc:title></metadata>
+  <manifest>{manifest_items}</manifest>
+  <spine>{spine_items}</spine>
+</package>"#
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+
+        for i in 1..=10 {
+            zip.start_file(format!("OEBPS/text/ch{i}.html"), deflated).unwrap();
+            zip.write_all(
+                format!(
+                    r#"<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Chapter {i}</h1><p>Body for chapter {i}.</p></body></html>"#
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    let preview_opts = DocConvertOptions {
+        preview_max_chapters: Some(3),
+        ..DocConvertOptions::default()
+    };
+    let (preview_bytes, preview_pages) = knit_docs::compile_epub_to_pdf_bytes(
+        &epub_path,
+        &preview_opts,
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+    assert_eq!(preview_pages, 3);
+    assert!(preview_bytes.starts_with(b"%PDF-"));
+
+    let full_opts = DocConvertOptions::default();
+    let (full_bytes, full_pages) = knit_docs::compile_epub_to_pdf_bytes(
+        &epub_path,
+        &full_opts,
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+    assert_eq!(full_pages, 10);
+    assert!(full_bytes.starts_with(b"%PDF-"));
+    knit_docs::clear_epub_cache();
+}
