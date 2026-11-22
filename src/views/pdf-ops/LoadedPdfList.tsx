@@ -70,7 +70,7 @@ export const LoadedPdfList: React.FC<LoadedPdfListProps> = ({
         return (
           <div
             key={`${f.path}-${idx}`}
-            className={`flex items-center justify-between gap-2 rounded-[4px] border px-3 py-2 text-xs transition-colors duration-300 ${
+            className={`flex items-center justify-between gap-2 rounded-[4px] border px-3 py-2 text-sm transition-colors duration-300 ${
               highlighted
                 ? "border-[#A3CFBB] bg-[#E9F7EF]"
                 : "border-[#E9ECEF] bg-[#F8F9FA]"
@@ -84,9 +84,9 @@ export const LoadedPdfList: React.FC<LoadedPdfListProps> = ({
                 {isExactDuplicate && (
                   <span
                     data-testid={`duplicate-pdf-badge-${idx}`}
-                    className="inline-flex shrink-0 items-center gap-1 rounded-[4px] border border-[#B8DAFF] bg-[#E7F1FF] px-1.5 py-0.5 text-[10px] font-semibold text-[#0056B3]"
+                    className="inline-flex shrink-0 items-center gap-1 rounded-[4px] border border-[#B8DAFF] bg-[#E7F1FF] px-1.5 py-0.5 text-sm font-semibold text-[#0056B3]"
                   >
-                    <Info className="h-3 w-3 shrink-0 text-[#007BFF]" />
+                    <Info className="h-3.5 w-3.5 shrink-0 text-[#007BFF]" />
                     {t.pdfOps.duplicateFileBadge}
                   </span>
                 )}
@@ -94,7 +94,7 @@ export const LoadedPdfList: React.FC<LoadedPdfListProps> = ({
                   <span
                     data-testid={`duplicate-pdf-path-${idx}`}
                     title={f.path}
-                    className="font-mono-code min-w-0 truncate rounded-[4px] bg-[#E9ECEF] px-1.5 py-0.5 text-[11px] text-[#495057]"
+                    className="font-mono-code min-w-0 truncate rounded-[4px] bg-[#E9ECEF] px-1.5 py-0.5 text-sm text-[#495057]"
                   >
                     {f.path}
                   </span>

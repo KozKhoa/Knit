@@ -1,4 +1,5 @@
 import React from "react";
+import { Crosshair } from "lucide-react";
 import { NumberInput } from "../../components/NumberInput";
 import { Select } from "../../components/Select";
 import { useI18n } from "../../i18n";
@@ -6,6 +7,8 @@ import { MERMAID_THEMES, type MermaidTheme } from "../../lib/mermaid";
 import type {
   DocFont,
   DocTheme,
+  HtmlRenderMode,
+  HtmlStepKind,
   PageNumberFormat,
   PageNumberPosition,
   PageOrientation,
@@ -34,6 +37,21 @@ const PDF_FONTS: DocFont[] = [
 
 interface Docs2PdfSettingsCardProps {
   disabled?: boolean;
+  isHtmlFile?: boolean;
+  htmlRenderMode?: HtmlRenderMode;
+  onChangeHtmlRenderMode?: (val: HtmlRenderMode) => void;
+  htmlStepKind?: HtmlStepKind;
+  htmlStepKey?: string;
+  htmlStepSelector?: string;
+  htmlStepClickX?: number;
+  htmlStepClickY?: number;
+  pickingClickPoint?: boolean;
+  onChangeHtmlStepKind?: (val: HtmlStepKind) => void;
+  onChangeHtmlStepKey?: (val: string) => void;
+  onChangeHtmlStepSelector?: (val: string) => void;
+  onChangeHtmlStepClickX?: (val: number) => void;
+  onChangeHtmlStepClickY?: (val: number) => void;
+  onTogglePickClickPoint?: () => void;
   theme: DocTheme;
   pdfFont: DocFont;
   mermaidTheme: MermaidTheme;
@@ -71,6 +89,21 @@ interface Docs2PdfSettingsCardProps {
 
 export const Docs2PdfSettingsCard: React.FC<Docs2PdfSettingsCardProps> = ({
   disabled = false,
+  isHtmlFile = false,
+  htmlRenderMode = "auto",
+  onChangeHtmlRenderMode,
+  htmlStepKind = "auto_key",
+  htmlStepKey = "Space",
+  htmlStepSelector = "",
+  htmlStepClickX = 0.85,
+  htmlStepClickY = 0.5,
+  pickingClickPoint = false,
+  onChangeHtmlStepKind,
+  onChangeHtmlStepKey,
+  onChangeHtmlStepSelector,
+  onChangeHtmlStepClickX,
+  onChangeHtmlStepClickY,
+  onTogglePickClickPoint,
   theme,
   pdfFont,
   mermaidTheme,
@@ -370,6 +403,177 @@ export const Docs2PdfSettingsCard: React.FC<Docs2PdfSettingsCardProps> = ({
           )}
         </div>
       </div>
+
+      {isHtmlFile && onChangeHtmlRenderMode && (
+        <div className="space-y-3 border-t border-[#E9ECEF] pt-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="min-w-[260px] flex-1 max-w-md">
+              <label className="block text-xs font-semibold uppercase text-[#6C757D]">
+                {t.docs2pdf.htmlRenderModeLabel}
+              </label>
+              <Select
+                ariaLabel={t.docs2pdf.htmlRenderModeLabel}
+                value={htmlRenderMode}
+                onChange={(val) => onChangeHtmlRenderMode(val as HtmlRenderMode)}
+                className="mt-1 w-full"
+                options={(["auto", "slide_step", "document_print"] as HtmlRenderMode[]).map((m) => ({
+                  value: m,
+                  label: t.docs2pdf.htmlRenderModes[m],
+                }))}
+              />
+            </div>
+            <p className="text-xs text-[#6C757D] mt-4">{t.docs2pdf.htmlRenderModeHint}</p>
+          </div>
+
+          {htmlRenderMode === "slide_step" && onChangeHtmlStepKind && (
+            <div className="grid grid-cols-1 gap-3 rounded-[4px] border border-[#DEE2E6] bg-[#F8F9FA] p-3 md:grid-cols-12">
+              <div className="md:col-span-4">
+                <label className="block text-[11px] font-semibold uppercase text-[#6C757D]">
+                  {t.docs2pdf.htmlStepKindLabel}
+                </label>
+                <Select
+                  ariaLabel={t.docs2pdf.htmlStepKindLabel}
+                  size="sm"
+                  value={htmlStepKind}
+                  onChange={(val) => onChangeHtmlStepKind(val as HtmlStepKind)}
+                  className="mt-1 w-full"
+                  options={(
+                    ["auto_key", "key", "click_selector", "click_point"] as HtmlStepKind[]
+                  ).map((k) => ({
+                    value: k,
+                    label: t.docs2pdf.htmlStepKinds[k],
+                  }))}
+                />
+              </div>
+
+              {htmlStepKind === "key" && onChangeHtmlStepKey && (
+                <div className="flex flex-wrap items-end gap-2 md:col-span-8">
+                  <div className="min-w-[160px] flex-1">
+                    <label className="block text-[11px] font-semibold uppercase text-[#6C757D]">
+                      {t.docs2pdf.htmlStepKeyLabel}
+                    </label>
+                    <Select
+                      ariaLabel={t.docs2pdf.htmlStepKeyLabel}
+                      size="sm"
+                      value={
+                        ["Space", "ArrowRight", "PageDown", "ArrowDown", "Enter"].includes(htmlStepKey)
+                          ? htmlStepKey
+                          : "__custom__"
+                      }
+                      onChange={(val) => {
+                        if (val === "__custom__") {
+                          if (["Space", "ArrowRight", "PageDown", "ArrowDown", "Enter"].includes(htmlStepKey)) {
+                            onChangeHtmlStepKey("n");
+                          }
+                        } else {
+                          onChangeHtmlStepKey(val);
+                        }
+                      }}
+                      className="mt-1 w-full"
+                      options={[
+                        { value: "Space", label: "Space" },
+                        { value: "ArrowRight", label: "ArrowRight" },
+                        { value: "PageDown", label: "PageDown" },
+                        { value: "ArrowDown", label: "ArrowDown" },
+                        { value: "Enter", label: "Enter" },
+                        { value: "__custom__", label: t.docs2pdf.htmlStepKeyCustomLabel },
+                      ]}
+                    />
+                  </div>
+                  {!["Space", "ArrowRight", "PageDown", "ArrowDown", "Enter"].includes(htmlStepKey) && (
+                    <div className="min-w-[160px] flex-1">
+                      <label className="block text-[11px] font-semibold uppercase text-[#6C757D]">
+                        {t.docs2pdf.htmlStepKeyCustomLabel}
+                      </label>
+                      <input
+                        type="text"
+                        aria-label={t.docs2pdf.htmlStepKeyCustomLabel}
+                        placeholder={t.docs2pdf.htmlStepKeyCustomPlaceholder}
+                        value={htmlStepKey}
+                        onChange={(e) => onChangeHtmlStepKey(e.target.value)}
+                        className="knit-control-sm knit-input mt-1 w-full px-2.5 font-mono-code text-xs"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {htmlStepKind === "click_selector" && onChangeHtmlStepSelector && (
+                <div className="md:col-span-8">
+                  <label className="block text-[11px] font-semibold uppercase text-[#6C757D]">
+                    {t.docs2pdf.htmlStepSelectorLabel}
+                  </label>
+                  <input
+                    type="text"
+                    aria-label={t.docs2pdf.htmlStepSelectorLabel}
+                    placeholder={t.docs2pdf.htmlStepSelectorPlaceholder}
+                    value={htmlStepSelector}
+                    onChange={(e) => onChangeHtmlStepSelector(e.target.value)}
+                    className="knit-control-sm knit-input mt-1 w-full px-2.5 font-mono-code text-xs"
+                  />
+                </div>
+              )}
+
+              {htmlStepKind === "click_point" &&
+                onChangeHtmlStepClickX &&
+                onChangeHtmlStepClickY && (
+                  <div className="flex flex-wrap items-end gap-2.5 md:col-span-8">
+                    <div className="w-28">
+                      <label className="block text-[11px] font-semibold uppercase text-[#6C757D]">
+                        {t.docs2pdf.htmlStepClickXLabel}
+                      </label>
+                      <NumberInput
+                        ariaLabel={t.docs2pdf.htmlStepClickXLabel}
+                        size="sm"
+                        min={0}
+                        max={100}
+                        step={0.5}
+                        value={Math.round(htmlStepClickX * 1000) / 10}
+                        onChange={(pct) =>
+                          onChangeHtmlStepClickX(Math.min(1, Math.max(0, pct / 100)))
+                        }
+                        className="mt-1 w-full"
+                      />
+                    </div>
+                    <div className="w-28">
+                      <label className="block text-[11px] font-semibold uppercase text-[#6C757D]">
+                        {t.docs2pdf.htmlStepClickYLabel}
+                      </label>
+                      <NumberInput
+                        ariaLabel={t.docs2pdf.htmlStepClickYLabel}
+                        size="sm"
+                        min={0}
+                        max={100}
+                        step={0.5}
+                        value={Math.round(htmlStepClickY * 1000) / 10}
+                        onChange={(pct) =>
+                          onChangeHtmlStepClickY(Math.min(1, Math.max(0, pct / 100)))
+                        }
+                        className="mt-1 w-full"
+                      />
+                    </div>
+                    {onTogglePickClickPoint && (
+                      <button
+                        type="button"
+                        onClick={onTogglePickClickPoint}
+                        className={`knit-control-sm inline-flex items-center gap-1.5 rounded-[4px] border px-3 text-xs font-semibold ${
+                          pickingClickPoint
+                            ? "border-[#007BFF] bg-[#007BFF] text-white"
+                            : "border-[#CED4DA] bg-white text-[#212529] hover:bg-[#E9ECEF]"
+                        }`}
+                      >
+                        <Crosshair className="h-3.5 w-3.5" />
+                        {pickingClickPoint
+                          ? t.docs2pdf.htmlStepPickingOnPreview
+                          : t.docs2pdf.htmlStepPickOnPreview}
+                      </button>
+                    )}
+                  </div>
+                )}
+            </div>
+          )}
+        </div>
+      )}
       </fieldset>
     </div>
   );

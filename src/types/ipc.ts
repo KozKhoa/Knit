@@ -225,6 +225,17 @@ export type DocFont =
   | "new_computer_modern"
   | "dejavu_sans_mono";
 
+export type HtmlRenderMode = "auto" | "document_print" | "slide_step";
+export type HtmlStepKind = "auto_key" | "key" | "click_selector" | "click_point";
+
+export interface HtmlStepTrigger {
+  kind: HtmlStepKind;
+  key?: string | null;
+  selector?: string | null;
+  click_x?: number | null;
+  click_y?: number | null;
+}
+
 export interface DocConvertOptions {
   page_size: PageSizePreset;
   orientation?: PageOrientation;
@@ -238,6 +249,9 @@ export interface DocConvertOptions {
   theme: DocTheme;
   font: DocFont;
   mermaid_svgs?: Record<string, string>;
+  html_render_mode?: HtmlRenderMode;
+  html_step_trigger?: HtmlStepTrigger;
+  preview_max_chapters?: number | null;
 }
 
 export interface AppMetrics {

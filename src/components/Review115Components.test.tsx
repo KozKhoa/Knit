@@ -245,4 +245,110 @@ describe("Review 1.15 features", () => {
     const movedEnd = reorderSelectedPages(pages, selected, "a", 5);
     expect(movedEnd.map((p) => p.id)).toEqual(["b", "d", "a", "c", "e"]);
   });
+
+  it("Docs2PdfSettingsCard exposes HTML render modes and event step controls for HTML files", () => {
+    const onChangeMode = vi.fn();
+    const onChangeKind = vi.fn();
+    const onChangeSelector = vi.fn();
+    const onTogglePick = vi.fn();
+    const { rerender } = wrap(
+      <Docs2PdfSettingsCard
+        isHtmlFile={true}
+        htmlRenderMode="slide_step"
+        htmlStepKind="click_selector"
+        htmlStepSelector=".next-slide"
+        onChangeHtmlRenderMode={onChangeMode}
+        onChangeHtmlStepKind={onChangeKind}
+        onChangeHtmlStepSelector={onChangeSelector}
+        onTogglePickClickPoint={onTogglePick}
+        theme="github"
+        pdfFont="default"
+        mermaidTheme="default"
+        pageSize="a4"
+        orientation="portrait"
+        marginMm={20}
+        fontSizePt={11}
+        lineSpacing={1.45}
+        titleOverride=""
+        includeToc={false}
+        tocPage={1}
+        pageNumEnabled={false}
+        pageNumPosition="bottom_center"
+        pageNumFormat="page_of_total"
+        pageNumStartNumber={1}
+        pageNumStartFromPage={1}
+        onChangeTheme={vi.fn()}
+        onChangePdfFont={vi.fn()}
+        onChangeMermaidTheme={vi.fn()}
+        onChangePageSize={vi.fn()}
+        onChangeOrientation={vi.fn()}
+        onChangeMarginMm={vi.fn()}
+        onChangeFontSizePt={vi.fn()}
+        onChangeLineSpacing={vi.fn()}
+        onChangeTitleOverride={vi.fn()}
+        onChangeIncludeToc={vi.fn()}
+        onChangeTocPage={vi.fn()}
+        onChangePageNumEnabled={vi.fn()}
+        onChangePageNumPosition={vi.fn()}
+        onChangePageNumFormat={vi.fn()}
+        onChangePageNumStartNumber={vi.fn()}
+        onChangePageNumStartFromPage={vi.fn()}
+      />,
+    );
+
+    const selectorInput = screen.getByLabelText("CSS Selector nút Next") as HTMLInputElement;
+    expect(selectorInput.value).toBe(".next-slide");
+    fireEvent.change(selectorInput, { target: { value: "#goNext" } });
+    expect(onChangeSelector).toHaveBeenCalledWith("#goNext");
+
+    rerender(
+      <Docs2PdfSettingsCard
+        isHtmlFile={true}
+        htmlRenderMode="slide_step"
+        htmlStepKind="click_point"
+        htmlStepClickX={0.85}
+        htmlStepClickY={0.5}
+        onChangeHtmlRenderMode={onChangeMode}
+        onChangeHtmlStepKind={onChangeKind}
+        onChangeHtmlStepClickX={vi.fn()}
+        onChangeHtmlStepClickY={vi.fn()}
+        onTogglePickClickPoint={onTogglePick}
+        theme="github"
+        pdfFont="default"
+        mermaidTheme="default"
+        pageSize="a4"
+        orientation="portrait"
+        marginMm={20}
+        fontSizePt={11}
+        lineSpacing={1.45}
+        titleOverride=""
+        includeToc={false}
+        tocPage={1}
+        pageNumEnabled={false}
+        pageNumPosition="bottom_center"
+        pageNumFormat="page_of_total"
+        pageNumStartNumber={1}
+        pageNumStartFromPage={1}
+        onChangeTheme={vi.fn()}
+        onChangePdfFont={vi.fn()}
+        onChangeMermaidTheme={vi.fn()}
+        onChangePageSize={vi.fn()}
+        onChangeOrientation={vi.fn()}
+        onChangeMarginMm={vi.fn()}
+        onChangeFontSizePt={vi.fn()}
+        onChangeLineSpacing={vi.fn()}
+        onChangeTitleOverride={vi.fn()}
+        onChangeIncludeToc={vi.fn()}
+        onChangeTocPage={vi.fn()}
+        onChangePageNumEnabled={vi.fn()}
+        onChangePageNumPosition={vi.fn()}
+        onChangePageNumFormat={vi.fn()}
+        onChangePageNumStartNumber={vi.fn()}
+        onChangePageNumStartFromPage={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Chọn trên Preview" }));
+    expect(onTogglePick).toHaveBeenCalledTimes(1);
+  });
 });

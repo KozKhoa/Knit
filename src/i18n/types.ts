@@ -359,6 +359,21 @@ export interface Translations {
     pageLabelPrefix: string;
     mermaidThemeLabel: string;
     mermaidThemes: Record<"default" | "neutral" | "forest" | "dark" | "base", string>;
+    htmlRenderModeLabel: string;
+    htmlRenderModes: Record<"auto" | "slide_step" | "document_print", string>;
+    htmlRenderModeHint: string;
+    htmlStepKindLabel: string;
+    htmlStepKinds: Record<"auto_key" | "key" | "click_selector" | "click_point", string>;
+    htmlStepKeyLabel: string;
+    htmlStepKeyCustomLabel: string;
+    htmlStepKeyCustomPlaceholder: string;
+    htmlStepSelectorLabel: string;
+    htmlStepSelectorPlaceholder: string;
+    htmlStepClickXLabel: string;
+    htmlStepClickYLabel: string;
+    htmlStepPickOnPreview: string;
+    htmlStepPickingOnPreview: string;
+    htmlStepPickBanner: string;
     findPlaceholder: string;
     findEditorPlaceholder: string;
     findPreviewPlaceholder: string;
@@ -371,8 +386,16 @@ export interface Translations {
     gotoNotFound: string;
     syncScrollLabel: string;
     editorTitle: string;
+    editorTitleByLang: (langLabel: string) => string;
+    editorLanguageLabel: string;
+    editorLanguages: Record<
+      "markdown" | "html" | "css" | "javascript" | "typescript" | "jsx" | "tsx" | "plain_text",
+      string
+    >;
+    syntaxErrorCount: (n: number) => string;
     previewTitle: string;
     saveMdBtn: string;
+    saveFileBtn: (ext: string) => string;
     saveMdAsBtn: string;
     savedMdStatus: string;
     unsavedBadge: string;

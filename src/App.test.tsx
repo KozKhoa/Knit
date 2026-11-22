@@ -32,11 +32,13 @@ describe("Knit Workbench UI", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Tài liệu sang PDF/i }));
     expect(
-      screen.getByText("Chọn hoặc kéo thả tài liệu (.md, .txt, .html, .epub, .docx, .pptx)"),
+      screen.getByText(
+        "Chọn hoặc kéo thả tài liệu (.md, .txt, .html, .css, .js, .ts, .jsx, .tsx, .epub, .docx, .pptx)",
+      ),
     ).toBeTruthy();
     expect(screen.getByLabelText("Giao diện (Theme)")).toBeTruthy();
     expect(screen.getByLabelText("Font PDF")).toBeTruthy();
-    expect(screen.getByText("Soạn thảo Markdown / Văn bản")).toBeTruthy();
+    expect(screen.getByText("Soạn thảo Markdown")).toBeTruthy();
     expect(screen.getByText("Xem trước PDF trực tiếp")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: /Nén Archive/i }));

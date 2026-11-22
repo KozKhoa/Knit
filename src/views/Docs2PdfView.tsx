@@ -11,7 +11,12 @@ import {
   ImportFeedbackToast,
   useImportFeedback,
 } from "../components/ImportFeedbackToast";
-import type { MarkdownCodeEditorHandle } from "../components/MarkdownCodeEditor";
+import {
+  detectEditorLanguage,
+  editorLanguageExtension,
+  type EditorLanguage,
+  type MarkdownCodeEditorHandle,
+} from "../components/MarkdownCodeEditor";
 import type { PdfJsPreviewHandle } from "../components/PdfJsPreview";
 import { ViewHeader } from "../components/ViewHeader";
 import { useVerticalResize } from "../hooks/useVerticalResize";
@@ -42,6 +47,8 @@ import { usePersistentState } from "../lib/storage";
 import type {
   DocConvertOptions,
   DocFont,
+  HtmlRenderMode,
+  HtmlStepKind,
   DocInputKind,
   DocTheme,
   EngineStatus,
@@ -73,18 +80,55 @@ interface Docs2PdfViewProps {
   defaultExportDir?: string;
 }
 
-const SUPPORTED_DOC_RE = /\.(md|markdown|txt|html|htm|epub|docx|pptx)$/i;
+const SUPPORTED_DOC_RE =
+  /\.(md|markdown|txt|log|rst|html|htm|xhtml|css|js|mjs|cjs|ts|jsx|tsx|epub|docx|pptx)$/i;
 
 function detectDocKind(path: string | null): DocInputKind {
   if (!path) return "markdown";
   const lower = path.toLowerCase();
   if (lower.endsWith(".md") || lower.endsWith(".markdown")) return "markdown";
-  if (lower.endsWith(".txt") || lower.endsWith(".log") || lower.endsWith(".rst")) return "plain_text";
+  if (
+    lower.endsWith(".txt") ||
+    lower.endsWith(".log") ||
+    lower.endsWith(".rst") ||
+    lower.endsWith(".css") ||
+    lower.endsWith(".js") ||
+    lower.endsWith(".mjs") ||
+    lower.endsWith(".cjs") ||
+    lower.endsWith(".ts") ||
+    lower.endsWith(".jsx") ||
+    lower.endsWith(".tsx")
+  ) {
+    return "plain_text";
+  }
   if (lower.endsWith(".html") || lower.endsWith(".htm") || lower.endsWith(".xhtml")) return "html";
   if (lower.endsWith(".epub")) return "epub";
   if (lower.endsWith(".docx")) return "docx";
   if (lower.endsWith(".pptx")) return "pptx";
   return "markdown";
+}
+
+export function formatEditorContentForCompilation(
+  text: string,
+  lang: EditorLanguage,
+  fallbackKind: DocInputKind,
+): { content: string; kind: DocInputKind } {
+  if (lang === "html") return { content: text, kind: "html" };
+  if (lang === "markdown") return { content: text, kind: "markdown" };
+  if (lang === "plain_text") return { content: text, kind: "plain_text" };
+  if (
+    lang === "css" ||
+    lang === "javascript" ||
+    lang === "typescript" ||
+    lang === "jsx" ||
+    lang === "tsx"
+  ) {
+    const fenceLang = lang === "javascript" ? "js" : lang === "typescript" ? "ts" : lang;
+    const longestRun = Math.max(2, ...(text.match(/`+/g) ?? []).map((s) => s.length));
+    const fence = "`".repeat(longestRun + 1);
+    return { content: `${fence}${fenceLang}\n${text}\n${fence}`, kind: "markdown" };
+  }
+  return { content: text, kind: fallbackKind };
 }
 
 function parentDirOf(path: string | null): string | null {
@@ -126,6 +170,33 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
   const [fontSizePt, setFontSizePt] = usePersistentState<number>("knit.docs.fontSizePt", 11);
   const [theme, setTheme] = usePersistentState<DocTheme>("knit.docs.theme", "github");
   const [pdfFont, setPdfFont] = usePersistentState<DocFont>("knit.docs.font", "default");
+  const [htmlRenderMode, setHtmlRenderMode] = usePersistentState<HtmlRenderMode>(
+    "knit.docs.htmlRenderMode",
+    "auto",
+  );
+  const [htmlStepKind, setHtmlStepKind] = usePersistentState<HtmlStepKind>(
+    "knit.docs.htmlStepKind",
+    "auto_key",
+  );
+  const [htmlStepKey, setHtmlStepKey] = usePersistentState<string>(
+    "knit.docs.htmlStepKey",
+    "Space",
+  );
+  const [htmlStepSelector, setHtmlStepSelector] = usePersistentState<string>(
+    "knit.docs.htmlStepSelector",
+    "",
+  );
+  const [htmlStepClickX, setHtmlStepClickX] = usePersistentState<number>(
+    "knit.docs.htmlStepClickX",
+    0.85,
+  );
+  const [htmlStepClickY, setHtmlStepClickY] = usePersistentState<number>(
+    "knit.docs.htmlStepClickY",
+    0.5,
+  );
+  const [pickingClickPoint, setPickingClickPoint] = React.useState(false);
+  const [editorLanguage, setEditorLanguage] = React.useState<EditorLanguage>("markdown");
+  const [manualLangLocked, setManualLangLocked] = React.useState(false);
   const [mermaidTheme, setMermaidTheme] = usePersistentState<MermaidTheme>(
     "knit.docs.mermaidTheme",
     "default",
@@ -270,6 +341,14 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
       page_numbering: pageNumbering,
       theme,
       font: pdfFont,
+      html_render_mode: htmlRenderMode,
+      html_step_trigger: {
+        kind: htmlStepKind,
+        key: htmlStepKind === "key" ? htmlStepKey : null,
+        selector: htmlStepKind === "click_selector" ? htmlStepSelector : null,
+        click_x: htmlStepKind === "click_point" ? htmlStepClickX : null,
+        click_y: htmlStepKind === "click_point" ? htmlStepClickY : null,
+      },
     }),
     [
       pageSize,
@@ -283,6 +362,12 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
       pageNumbering,
       theme,
       pdfFont,
+      htmlRenderMode,
+      htmlStepKind,
+      htmlStepKey,
+      htmlStepSelector,
+      htmlStepClickX,
+      htmlStepClickY,
     ],
   );
 
@@ -303,16 +388,19 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
     async (path: string) => {
       setErrorMsg(null);
       setSaveFeedback(null);
+      setManualLangLocked(false);
       setInputPath(path);
       const base = path.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "") || "document";
       setExportFilename(`${base}.pdf`);
       const kind = detectDocKind(path);
+      setEditorLanguage(detectEditorLanguage(path, ""));
       if (kind === "markdown" || kind === "plain_text" || kind === "html") {
         if (isTauriRuntime()) {
           try {
             const text = await readDocTextFile(path);
             setEditorText(text);
             setSavedText(text);
+            setEditorLanguage(detectEditorLanguage(path, text));
           } catch (e) {
             setErrorMsg(String(e));
           }
@@ -468,17 +556,23 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
     setPreviewLoading(true);
     setPreviewError(null);
     try {
+      const compiled = isEditableText
+        ? formatEditorContentForCompilation(editorText, editorLanguage, docKind)
+        : { content: null as string | null, kind: docKind };
       const mermaidSvgs =
-        docKind === "markdown"
-          ? await renderMermaidSvgs(editorText, mermaidTheme, mermaidCacheRef.current)
+        compiled.kind === "markdown" && compiled.content
+          ? await renderMermaidSvgs(compiled.content, mermaidTheme, mermaidCacheRef.current)
           : {};
       if (previewSeqRef.current !== seq) return;
       const pdfBytes = await previewDocPdfBytes({
-        content: isEditableText ? editorText : null,
+        content: compiled.content,
         inputPath: !isEditableText ? inputPath : null,
-        inputKind: docKind,
+        inputKind: compiled.kind,
         baseDir: parentDirOf(inputPath),
-        options: { ...docOptions, mermaid_svgs: mermaidSvgs },
+        options: {
+          ...docOptions,
+          mermaid_svgs: mermaidSvgs,
+        },
       });
       if (previewSeqRef.current !== seq) return;
       setPreviewPdfBytes(pdfBytes);
@@ -493,6 +587,7 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
   }, [
     docKind,
     docOptions,
+    editorLanguage,
     editorText,
     engineStatus?.libreoffice_available,
     inputPath,
@@ -535,7 +630,21 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
         filters: [
           {
             name: "Documents",
-            extensions: ["md", "markdown", "txt", "html", "htm", "epub", "docx", "pptx"],
+            extensions: [
+              "md",
+              "markdown",
+              "txt",
+              "html",
+              "htm",
+              "css",
+              "js",
+              "ts",
+              "jsx",
+              "tsx",
+              "epub",
+              "docx",
+              "pptx",
+            ],
           },
         ],
       });
@@ -549,14 +658,16 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
     setErrorMsg(null);
     setSaveFeedback(null);
     try {
+      const ext = editorLanguageExtension(editorLanguage);
       let targetPath = !saveAs && inputPath && isEditableText ? inputPath : null;
       if (!targetPath) {
         targetPath = await pickSaveFile({
           title: t.docs2pdf.saveMdDialog,
-          defaultPath: inputPath || "document.md",
+          defaultPath: inputPath || `document${ext}`,
           filters: [
             { name: "Markdown", extensions: ["md", "markdown"] },
-            { name: "Text / HTML", extensions: ["txt", "html"] },
+            { name: "Web & Code", extensions: ["html", "htm", "css", "js", "ts", "jsx", "tsx"] },
+            { name: "Text", extensions: ["txt"] },
           ],
         });
       }
@@ -565,6 +676,7 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
       await writeDocTextFile(targetPath, editorText);
       setInputPath(targetPath);
       setSavedText(editorText);
+      setEditorLanguage(detectEditorLanguage(targetPath, editorText));
       setSaveFeedback(t.docs2pdf.savedMdStatus);
       window.setTimeout(() => setSaveFeedback(null), 2500);
     } catch (e) {
@@ -579,6 +691,7 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
   const executeConvert = async (outPath: string) => {
     const jobId = crypto.randomUUID();
     const snapEditorText = editorText;
+    const snapEditorLanguage = editorLanguage;
     const snapDocKind = docKind;
     const snapInputPath = inputPath;
     const snapIsEditableText = isEditableText;
@@ -589,25 +702,28 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
     try {
       onStartJob(jobId, t.shell.nav.docs2pdf.label, [outPath]);
 
+      const useInlineText = snapIsEditableText && snapEditorText.trim().length > 0;
+      const compiled = useInlineText
+        ? formatEditorContentForCompilation(snapEditorText, snapEditorLanguage, snapDocKind)
+        : { content: snapEditorText, kind: snapDocKind };
       const mermaidSvgs =
-        snapDocKind === "markdown" && snapEditorText.trim().length > 0
-          ? await renderMermaidSvgs(snapEditorText, snapMermaidTheme, mermaidCacheRef.current)
+        compiled.kind === "markdown" && compiled.content.trim().length > 0
+          ? await renderMermaidSvgs(compiled.content, snapMermaidTheme, mermaidCacheRef.current)
           : {};
       const finalOptions: DocConvertOptions = { ...snapDocOptions, mermaid_svgs: mermaidSvgs };
 
-      const res =
-        snapIsEditableText && snapEditorText.trim().length > 0
-          ? await convertDocContentToPdf(
-              jobId,
-              snapEditorText,
-              snapDocKind,
-              parentDirOf(snapInputPath),
-              snapInputPath,
-              outPath,
-              finalOptions,
-              emitEvent,
-            )
-          : await convertDocToPdf(jobId, snapInputPath!, outPath, finalOptions, emitEvent);
+      const res = useInlineText
+        ? await convertDocContentToPdf(
+            jobId,
+            compiled.content,
+            compiled.kind,
+            parentDirOf(snapInputPath),
+            snapInputPath,
+            outPath,
+            finalOptions,
+            emitEvent,
+          )
+        : await convertDocToPdf(jobId, snapInputPath!, outPath, finalOptions, emitEvent);
 
       onFinishJob(
         t.shell.nav.docs2pdf.label,
@@ -616,7 +732,7 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
           String(res.page_count ?? "?"),
           formatBytes(res.bytes_written),
           res.used_external_engine
-            ? snapDocKind === "html"
+            ? compiled.kind === "html"
               ? "Chromium"
               : "LibreOffice"
             : "Typst Native",
@@ -690,6 +806,211 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
     await executeConvert(nextPath);
   };
 
+  const effectiveHtmlMode = docKind === "html" || editorLanguage === "html";
+
+  const controlsCluster = (
+    <>
+      <Dropzone
+        title={t.docs2pdf.dropTitle}
+        description={t.docs2pdf.dropDesc}
+        onPickFiles={() => void handlePickDoc()}
+        filesLabel={t.docs2pdf.pickDocBtn}
+      />
+
+      {inputPath && (
+        <div
+          className={`flex flex-wrap items-center justify-between gap-2 rounded-[4px] border px-3.5 py-2 text-sm transition-colors duration-300 ${
+            importHighlighted
+              ? "border-[#28A745] bg-[#D4EDDA]/50"
+              : "border-[#DEE2E6] bg-white"
+          }`}
+        >
+          <div className="flex min-w-0 items-center gap-2">
+            <FileCode2
+              className={`h-4 w-4 shrink-0 ${
+                importHighlighted ? "text-[#28A745]" : "text-[#007BFF]"
+              }`}
+            />
+            <span className="font-semibold">{t.docs2pdf.selectedFileLabel}</span>
+            <span className="font-mono-code truncate text-xs text-[#343A40]">{inputPath}</span>
+          </div>
+          {isDirty && (
+            <span className="rounded-[4px] bg-[#FFF3CD] px-2 py-0.5 text-xs font-semibold text-[#856404]">
+              {t.docs2pdf.unsavedBadge}
+            </span>
+          )}
+        </div>
+      )}
+
+      <ExportFilenameControl
+        value={exportFilename}
+        onChange={setExportFilename}
+        placeholder="document.pdf"
+        defaultExportDir={defaultExportDir}
+        existsAtDefaultDir={existsAtDefaultDir}
+        estimateText={
+          isPreviewableDoc && previewPdfBytes
+            ? t.common.estimatedOutputSummary(formatBytes(previewPdfBytes.byteLength), 1)
+            : isOfficeFile && officeSourceBytes !== null
+              ? t.docs2pdf.estimatedOfficeNote(
+                  formatBytes(Math.max(4096, Math.round(officeSourceBytes * 1.15))),
+                )
+              : null
+        }
+        estimating={isPreviewableDoc && previewLoading && !previewPdfBytes}
+      />
+
+      <Docs2PdfSettingsCard
+        disabled={isOfficeFile}
+        isHtmlFile={effectiveHtmlMode}
+        htmlRenderMode={htmlRenderMode}
+        onChangeHtmlRenderMode={(mode) => {
+          setHtmlRenderMode(mode);
+          if (mode !== "slide_step") setPickingClickPoint(false);
+        }}
+        htmlStepKind={htmlStepKind}
+        htmlStepKey={htmlStepKey}
+        htmlStepSelector={htmlStepSelector}
+        htmlStepClickX={htmlStepClickX}
+        htmlStepClickY={htmlStepClickY}
+        pickingClickPoint={pickingClickPoint}
+        onChangeHtmlStepKind={(kind) => {
+          setHtmlStepKind(kind);
+          if (kind !== "click_point") setPickingClickPoint(false);
+        }}
+        onChangeHtmlStepKey={setHtmlStepKey}
+        onChangeHtmlStepSelector={setHtmlStepSelector}
+        onChangeHtmlStepClickX={setHtmlStepClickX}
+        onChangeHtmlStepClickY={setHtmlStepClickY}
+        onTogglePickClickPoint={() => setPickingClickPoint((v) => !v)}
+        theme={theme}
+        pdfFont={pdfFont}
+        mermaidTheme={mermaidTheme}
+        pageSize={pageSize}
+        orientation={orientation}
+        marginMm={marginMm}
+        fontSizePt={fontSizePt}
+        lineSpacing={lineSpacing}
+        titleOverride={titleOverride}
+        includeToc={includeToc}
+        tocPage={tocPage}
+        maxTocPage={previewTotalPages > 0 ? previewTotalPages : undefined}
+        pageNumEnabled={pageNumEnabled}
+        pageNumPosition={pageNumPosition}
+        pageNumFormat={pageNumFormat}
+        pageNumStartNumber={pageNumStartNumber}
+        pageNumStartFromPage={pageNumStartFromPage}
+        onChangeTheme={setTheme}
+        onChangePdfFont={setPdfFont}
+        onChangeMermaidTheme={setMermaidTheme}
+        onChangePageSize={setPageSize}
+        onChangeOrientation={setOrientation}
+        onChangeMarginMm={setMarginMm}
+        onChangeFontSizePt={setFontSizePt}
+        onChangeLineSpacing={setLineSpacing}
+        onChangeTitleOverride={setTitleOverride}
+        onChangeIncludeToc={setIncludeToc}
+        onChangeTocPage={setTocPage}
+        onChangePageNumEnabled={setPageNumEnabled}
+        onChangePageNumPosition={setPageNumPosition}
+        onChangePageNumFormat={setPageNumFormat}
+        onChangePageNumStartNumber={setPageNumStartNumber}
+        onChangePageNumStartFromPage={setPageNumStartFromPage}
+      />
+    </>
+  );
+
+  const workbenchNode = isPreviewableDoc ? (
+    <DocsSplitWorkbench
+      isEditableText={isEditableText}
+      liveHeightPx={liveHeightPx}
+      editorText={editorText}
+      editorLanguage={editorLanguage}
+      onChangeEditorLanguage={(lang) => {
+        setManualLangLocked(true);
+        setEditorLanguage(lang);
+      }}
+      saveExtension={editorLanguageExtension(editorLanguage)}
+      saveFeedback={saveFeedback}
+      previewLoading={previewLoading}
+      previewError={previewError}
+      previewPdfBytes={previewPdfBytes}
+      previewTotalPages={previewTotalPages}
+      syncScroll={syncScroll}
+      editorFindOpen={editorFindOpen}
+      editorFindQuery={editorFindQuery}
+      activeEditorMatchIdx={activeEditorMatchIdx}
+      editorMatchCount={editorMatches.length}
+      previewFindOpen={previewFindOpen}
+      previewFindQuery={previewFindQuery}
+      activePreviewMatchIdx={activePreviewMatchIdx}
+      previewMatchCount={previewMatchCount}
+      editorRef={editorRef}
+      previewRef={previewRef}
+      editorPaneRef={editorPaneRef}
+      previewPaneRef={previewPaneRef}
+      editorFindInputRef={editorFindInputRef}
+      previewFindInputRef={previewFindInputRef}
+      onChangeEditorText={(nextText) => {
+        setEditorText(nextText);
+        if (!inputPath && !manualLangLocked) {
+          setEditorLanguage(detectEditorLanguage(null, nextText));
+        }
+      }}
+      onSaveText={(saveAs) => void handleSaveText(saveAs)}
+      onOpenEditorFind={openEditorFind}
+      onChangeEditorFindQuery={(val) => {
+        setEditorFindQuery(val);
+        setEditorFindIdx(0);
+      }}
+      onStepEditorMatch={(delta) => setEditorFindIdx((i) => i + delta)}
+      onCloseEditorFind={() => {
+        setEditorFindOpen(false);
+        setEditorFindQuery("");
+      }}
+      onOpenPreviewFind={openPreviewFind}
+      onChangePreviewFindQuery={(val) => {
+        setPreviewFindQuery(val);
+        setPreviewFindIdx(0);
+      }}
+      onStepPreviewMatch={(delta) => setPreviewFindIdx((i) => i + delta)}
+      onClosePreviewFind={() => {
+        setPreviewFindOpen(false);
+        setPreviewFindQuery("");
+      }}
+      onRefreshPreview={() => void runLivePreview()}
+      onPageCountChange={setPreviewTotalPages}
+      onSearchMatchCountChange={setPreviewMatchCount}
+      onToggleSyncScroll={handleToggleSyncScroll}
+      onEditorScrollRatio={handleEditorScrollRatio}
+      onPreviewScrollRatio={handlePreviewScrollRatio}
+      onGoToInEditor={handleGoToInEditor}
+      onStartHeightResize={handleStartHeightResize}
+      pickPointActive={
+        effectiveHtmlMode &&
+        htmlRenderMode === "slide_step" &&
+        htmlStepKind === "click_point" &&
+        pickingClickPoint
+      }
+      pickedPoint={
+        effectiveHtmlMode &&
+        htmlRenderMode === "slide_step" &&
+        htmlStepKind === "click_point"
+          ? { x: htmlStepClickX, y: htmlStepClickY }
+          : null
+      }
+      onPickPoint={(nx, ny) => {
+        setHtmlStepClickX(nx);
+        setHtmlStepClickY(ny);
+        setPickingClickPoint(false);
+      }}
+    />
+  ) : (
+    <div className="knit-card p-4 text-sm text-[#6C757D]">
+      {t.docs2pdf.editorReadonlyNotice}
+    </div>
+  );
+
   return (
     <div className="space-y-4">
       <ViewHeader
@@ -743,151 +1064,29 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
 
       <ErrorBanner message={errorMsg} />
 
-      <Dropzone
-        title={t.docs2pdf.dropTitle}
-        description={t.docs2pdf.dropDesc}
-        onPickFiles={() => void handlePickDoc()}
-        filesLabel={t.docs2pdf.pickDocBtn}
-      />
-
-      {inputPath && (
+      {isPreviewableDoc && !isEditableText ? (
         <div
-          className={`flex flex-wrap items-center justify-between gap-2 rounded-[4px] border px-3.5 py-2 text-sm transition-colors duration-300 ${
-            importHighlighted
-              ? "border-[#28A745] bg-[#D4EDDA]/50"
-              : "border-[#DEE2E6] bg-white"
-          }`}
+          data-testid="docs2pdf-no-editor-split-layout"
+          className="grid grid-cols-1 gap-4 min-[1200px]:grid-cols-12 min-[1200px]:items-start"
         >
-          <div className="flex min-w-0 items-center gap-2">
-            <FileCode2
-              className={`h-4 w-4 shrink-0 ${
-                importHighlighted ? "text-[#28A745]" : "text-[#007BFF]"
-              }`}
-            />
-            <span className="font-semibold">{t.docs2pdf.selectedFileLabel}</span>
-            <span className="font-mono-code truncate text-xs text-[#343A40]">{inputPath}</span>
+          <div
+            data-testid="docs2pdf-no-editor-controls-col"
+            className="order-1 space-y-4 min-[1200px]:order-2 min-[1200px]:col-span-5"
+          >
+            {controlsCluster}
           </div>
-          {isDirty && (
-            <span className="rounded-[4px] bg-[#FFF3CD] px-2 py-0.5 text-xs font-semibold text-[#856404]">
-              {t.docs2pdf.unsavedBadge}
-            </span>
-          )}
+          <div
+            data-testid="docs2pdf-no-editor-preview-col"
+            className="order-2 min-[1200px]:order-1 min-[1200px]:col-span-7"
+          >
+            {workbenchNode}
+          </div>
         </div>
-      )}
-
-      <ExportFilenameControl
-        value={exportFilename}
-        onChange={setExportFilename}
-        placeholder="document.pdf"
-        defaultExportDir={defaultExportDir}
-        existsAtDefaultDir={existsAtDefaultDir}
-        estimateText={
-          isPreviewableDoc && previewPdfBytes
-            ? t.common.estimatedOutputSummary(formatBytes(previewPdfBytes.byteLength), 1)
-            : isOfficeFile && officeSourceBytes !== null
-              ? t.docs2pdf.estimatedOfficeNote(formatBytes(Math.max(4096, Math.round(officeSourceBytes * 1.15))))
-              : null
-        }
-        estimating={isPreviewableDoc && previewLoading && !previewPdfBytes}
-      />
-
-      <Docs2PdfSettingsCard
-        disabled={isOfficeFile}
-        theme={theme}
-        pdfFont={pdfFont}
-        mermaidTheme={mermaidTheme}
-        pageSize={pageSize}
-        orientation={orientation}
-        marginMm={marginMm}
-        fontSizePt={fontSizePt}
-        lineSpacing={lineSpacing}
-        titleOverride={titleOverride}
-        includeToc={includeToc}
-        tocPage={tocPage}
-        maxTocPage={previewTotalPages > 0 ? previewTotalPages : undefined}
-        pageNumEnabled={pageNumEnabled}
-        pageNumPosition={pageNumPosition}
-        pageNumFormat={pageNumFormat}
-        pageNumStartNumber={pageNumStartNumber}
-        pageNumStartFromPage={pageNumStartFromPage}
-        onChangeTheme={setTheme}
-        onChangePdfFont={setPdfFont}
-        onChangeMermaidTheme={setMermaidTheme}
-        onChangePageSize={setPageSize}
-        onChangeOrientation={setOrientation}
-        onChangeMarginMm={setMarginMm}
-        onChangeFontSizePt={setFontSizePt}
-        onChangeLineSpacing={setLineSpacing}
-        onChangeTitleOverride={setTitleOverride}
-        onChangeIncludeToc={setIncludeToc}
-        onChangeTocPage={setTocPage}
-        onChangePageNumEnabled={setPageNumEnabled}
-        onChangePageNumPosition={setPageNumPosition}
-        onChangePageNumFormat={setPageNumFormat}
-        onChangePageNumStartNumber={setPageNumStartNumber}
-        onChangePageNumStartFromPage={setPageNumStartFromPage}
-      />
-
-      {isPreviewableDoc ? (
-        <DocsSplitWorkbench
-          isEditableText={isEditableText}
-          liveHeightPx={liveHeightPx}
-          editorText={editorText}
-          saveFeedback={saveFeedback}
-          previewLoading={previewLoading}
-          previewError={previewError}
-          previewPdfBytes={previewPdfBytes}
-          previewTotalPages={previewTotalPages}
-          syncScroll={syncScroll}
-          editorFindOpen={editorFindOpen}
-          editorFindQuery={editorFindQuery}
-          activeEditorMatchIdx={activeEditorMatchIdx}
-          editorMatchCount={editorMatches.length}
-          previewFindOpen={previewFindOpen}
-          previewFindQuery={previewFindQuery}
-          activePreviewMatchIdx={activePreviewMatchIdx}
-          previewMatchCount={previewMatchCount}
-          editorRef={editorRef}
-          previewRef={previewRef}
-          editorPaneRef={editorPaneRef}
-          previewPaneRef={previewPaneRef}
-          editorFindInputRef={editorFindInputRef}
-          previewFindInputRef={previewFindInputRef}
-          onChangeEditorText={setEditorText}
-          onSaveText={(saveAs) => void handleSaveText(saveAs)}
-          onOpenEditorFind={openEditorFind}
-          onChangeEditorFindQuery={(val) => {
-            setEditorFindQuery(val);
-            setEditorFindIdx(0);
-          }}
-          onStepEditorMatch={(delta) => setEditorFindIdx((i) => i + delta)}
-          onCloseEditorFind={() => {
-            setEditorFindOpen(false);
-            setEditorFindQuery("");
-          }}
-          onOpenPreviewFind={openPreviewFind}
-          onChangePreviewFindQuery={(val) => {
-            setPreviewFindQuery(val);
-            setPreviewFindIdx(0);
-          }}
-          onStepPreviewMatch={(delta) => setPreviewFindIdx((i) => i + delta)}
-          onClosePreviewFind={() => {
-            setPreviewFindOpen(false);
-            setPreviewFindQuery("");
-          }}
-          onRefreshPreview={() => void runLivePreview()}
-          onPageCountChange={setPreviewTotalPages}
-          onSearchMatchCountChange={setPreviewMatchCount}
-          onToggleSyncScroll={handleToggleSyncScroll}
-          onEditorScrollRatio={handleEditorScrollRatio}
-          onPreviewScrollRatio={handlePreviewScrollRatio}
-          onGoToInEditor={handleGoToInEditor}
-          onStartHeightResize={handleStartHeightResize}
-        />
       ) : (
-        <div className="knit-card p-4 text-sm text-[#6C757D]">
-          {t.docs2pdf.editorReadonlyNotice}
-        </div>
+        <>
+          {controlsCluster}
+          {workbenchNode}
+        </>
       )}
 
       <ExportConflictModal

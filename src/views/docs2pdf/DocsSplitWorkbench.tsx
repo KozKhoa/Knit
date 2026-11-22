@@ -1,12 +1,16 @@
 import React from "react";
-import { Eye, FileCode2, Loader2, RefreshCw, Save, Search } from "lucide-react";
+import { AlertTriangle, Eye, FileCode2, Loader2, RefreshCw, Save, Search } from "lucide-react";
 import { DocumentFindBar } from "../../components/DocumentFindBar";
 import {
+  EDITOR_LANGUAGE_OPTIONS,
+  editorLanguageExtension,
   MarkdownCodeEditor,
+  type EditorLanguage,
   type MarkdownCodeEditorHandle,
 } from "../../components/MarkdownCodeEditor";
 import { PaneResizeHandle } from "../../components/PaneResizeHandle";
 import { PdfJsPreview, type PdfJsPreviewHandle } from "../../components/PdfJsPreview";
+import { Select } from "../../components/Select";
 import { useHorizontalRatioResize } from "../../hooks/useHorizontalRatioResize";
 import { useI18n } from "../../i18n";
 import { usePersistentState } from "../../lib/storage";
@@ -15,6 +19,9 @@ interface DocsSplitWorkbenchProps {
   isEditableText: boolean;
   liveHeightPx: number;
   editorText: string;
+  editorLanguage?: EditorLanguage;
+  onChangeEditorLanguage?: (lang: EditorLanguage) => void;
+  saveExtension?: string;
   saveFeedback: string | null;
   previewLoading: boolean;
   previewError: string | null;
@@ -53,12 +60,18 @@ interface DocsSplitWorkbenchProps {
   onPreviewScrollRatio: (ratio: number) => void;
   onGoToInEditor: (selectedText: string, occurrenceIndex?: number) => void;
   onStartHeightResize: (e: React.PointerEvent<HTMLElement>) => void;
+  pickPointActive?: boolean;
+  pickedPoint?: { x: number; y: number } | null;
+  onPickPoint?: (normX: number, normY: number) => void;
 }
 
 export const DocsSplitWorkbench: React.FC<DocsSplitWorkbenchProps> = ({
   isEditableText,
   liveHeightPx,
   editorText,
+  editorLanguage = "markdown",
+  onChangeEditorLanguage,
+  saveExtension,
   saveFeedback,
   previewLoading,
   previewError,
@@ -97,9 +110,13 @@ export const DocsSplitWorkbench: React.FC<DocsSplitWorkbenchProps> = ({
   onPreviewScrollRatio,
   onGoToInEditor,
   onStartHeightResize,
+  pickPointActive = false,
+  pickedPoint = null,
+  onPickPoint,
 }) => {
   const { t } = useI18n();
   const splitContainerRef = React.useRef<HTMLDivElement | null>(null);
+  const [syntaxErrorCount, setSyntaxErrorCount] = React.useState(0);
   const [leftRatio, setLeftRatio] = usePersistentState<number>("knit.docs.leftRatio", 0.5);
   const { ratio: liveLeftRatio, handlePointerDown: handleStartWidthResize } =
     useHorizontalRatioResize({
@@ -110,6 +127,9 @@ export const DocsSplitWorkbench: React.FC<DocsSplitWorkbenchProps> = ({
       cssVar: "--docs-left",
       onCommit: setLeftRatio,
     });
+
+  const activeExt = saveExtension ?? editorLanguageExtension(editorLanguage);
+  const langLabel = t.docs2pdf.editorLanguages[editorLanguage];
 
   return (
     <div className="space-y-2">
@@ -137,9 +157,31 @@ export const DocsSplitWorkbench: React.FC<DocsSplitWorkbenchProps> = ({
               className="knit-card flex min-h-0 flex-col overflow-hidden"
             >
             <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-[#DEE2E6] bg-[#F8F9FA] px-3.5 py-2">
-              <div className="flex items-center gap-2 text-sm font-bold text-[#343A40]">
+              <div className="flex flex-wrap items-center gap-2 text-sm font-bold text-[#343A40]">
                 <FileCode2 className="h-4 w-4 text-[#007BFF]" />
-                <span>{t.docs2pdf.editorTitle}</span>
+                <span>{t.docs2pdf.editorTitleByLang(langLabel)}</span>
+                {onChangeEditorLanguage && (
+                  <Select
+                    ariaLabel={t.docs2pdf.editorLanguageLabel}
+                    size="sm"
+                    value={editorLanguage}
+                    onChange={(val) => onChangeEditorLanguage(val as EditorLanguage)}
+                    className="w-32"
+                    options={EDITOR_LANGUAGE_OPTIONS.map((opt) => ({
+                      value: opt.value,
+                      label: t.docs2pdf.editorLanguages[opt.value],
+                    }))}
+                  />
+                )}
+                {syntaxErrorCount > 0 && (
+                  <span
+                    data-testid="editor-syntax-error-badge"
+                    className="inline-flex items-center gap-1 rounded-[4px] border border-[#F5C6CB] bg-[#F8D7DA] px-2 py-0.5 text-xs font-semibold text-[#842029]"
+                  >
+                    <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                    {t.docs2pdf.syntaxErrorCount(syntaxErrorCount)}
+                  </span>
+                )}
                 {saveFeedback && (
                   <span className="rounded-[4px] bg-[#D4EDDA] px-2 py-0.5 text-xs font-semibold text-[#155724]">
                     {saveFeedback}
@@ -161,7 +203,7 @@ export const DocsSplitWorkbench: React.FC<DocsSplitWorkbenchProps> = ({
                   className="knit-control-sm inline-flex items-center gap-1 rounded-[4px] border border-[#CED4DA] bg-white px-2.5 text-xs font-semibold text-[#343A40] hover:bg-[#E9ECEF]"
                 >
                   <Save className="h-3.5 w-3.5 text-[#007BFF]" />
-                  {t.docs2pdf.saveMdBtn}
+                  {t.docs2pdf.saveFileBtn(activeExt)}
                 </button>
                 <button
                   type="button"
@@ -193,10 +235,12 @@ export const DocsSplitWorkbench: React.FC<DocsSplitWorkbenchProps> = ({
             <MarkdownCodeEditor
               ref={editorRef}
               value={editorText}
+              language={editorLanguage}
               onChange={onChangeEditorText}
               onSave={() => onSaveText(false)}
               onOpenFind={onOpenEditorFind}
               onScrollRatioChange={onEditorScrollRatio}
+              onDiagnosticsChange={setSyntaxErrorCount}
               placeholder={t.docs2pdf.newDocPlaceholder}
             />
           </div>
@@ -293,6 +337,10 @@ export const DocsSplitWorkbench: React.FC<DocsSplitWorkbenchProps> = ({
               onGoToInEditor={isEditableText ? onGoToInEditor : undefined}
               onScrollRatioChange={onPreviewScrollRatio}
               onOpenFind={onOpenPreviewFind}
+              pickPointActive={pickPointActive}
+              pickedPoint={pickedPoint}
+              pickPointHint={t.docs2pdf.htmlStepPickBanner}
+              onPickPoint={onPickPoint}
             />
           </div>
         </div>

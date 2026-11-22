@@ -30,6 +30,10 @@ interface PdfJsPreviewProps {
   onScrollRatioChange?: (ratio: number) => void;
   onOpenFind?: () => void;
   onDoubleClickPage?: (pageNumber: number, dataUrl: string) => void;
+  pickPointActive?: boolean;
+  pickedPoint?: { x: number; y: number } | null;
+  pickPointHint?: string;
+  onPickPoint?: (normX: number, normY: number) => void;
 }
 
 interface PageSearchSpan {
@@ -140,32 +144,43 @@ function applySearchHighlightToTextLayer(
 interface PdfPageCanvasProps {
   pdfDoc: PDFDocumentProxy;
   pageNumber: number;
+  totalPages: number;
   scale: number;
+  defaultPageSize: { width: number; height: number };
   containerEl: HTMLDivElement | null;
   searchQuery: string;
   activeLocalIndex: number | null;
   onVisible?: (pageNumber: number) => void;
   registerPageRef: (pageNumber: number, el: HTMLDivElement | null) => void;
+  pickPointActive?: boolean;
+  pickedPoint?: { x: number; y: number } | null;
+  onPickPoint?: (normX: number, normY: number) => void;
 }
 
 const PdfPageCanvas: React.FC<PdfPageCanvasProps> = ({
   pdfDoc,
   pageNumber,
+  totalPages,
   scale,
+  defaultPageSize,
   containerEl,
   searchQuery,
   activeLocalIndex,
   onVisible,
   registerPageRef,
+  pickPointActive = false,
+  pickedPoint = null,
+  onPickPoint,
 }) => {
   const wrapperRef = React.useRef<HTMLDivElement | null>(null);
   const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
   const textLayerRef = React.useRef<HTMLDivElement | null>(null);
+  const measuredBaseRef = React.useRef<{ width: number; height: number } | null>(null);
   const [inView, setInView] = React.useState(pageNumber <= 3);
   const [textRenderedTick, setTextRenderedTick] = React.useState(0);
   const [dims, setDims] = React.useState<{ width: number; height: number }>({
-    width: 600,
-    height: 848,
+    width: defaultPageSize.width * scale,
+    height: defaultPageSize.height * scale,
   });
 
   const setWrapperRefs = React.useCallback(
@@ -211,12 +226,9 @@ const PdfPageCanvas: React.FC<PdfPageCanvasProps> = ({
 
     const run = async () => {
       try {
-        pageObj = await pdfDoc.getPage(pageNumber);
-        if (cancelled) return;
-        const viewport = pageObj.getViewport({ scale });
-        setDims({ width: viewport.width, height: viewport.height });
-
         if (!inView) {
+          const base = measuredBaseRef.current ?? defaultPageSize;
+          setDims({ width: base.width * scale, height: base.height * scale });
           const canvas = canvasRef.current;
           if (canvas && (canvas.width > 0 || canvas.height > 0)) {
             canvas.width = 0;
@@ -226,11 +238,19 @@ const PdfPageCanvas: React.FC<PdfPageCanvasProps> = ({
           return;
         }
 
+        pageObj = await pdfDoc.getPage(pageNumber);
+        if (cancelled) return;
+        const baseVp = pageObj.getViewport({ scale: 1.0 });
+        measuredBaseRef.current = { width: baseVp.width, height: baseVp.height };
+        const viewport = pageObj.getViewport({ scale });
+        setDims({ width: viewport.width, height: viewport.height });
+
         const canvas = canvasRef.current;
         const textDiv = textLayerRef.current;
         if (!canvas || !textDiv) return;
 
-        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const maxDpr = totalPages > 80 ? 1.25 : 2;
+        const dpr = Math.min(window.devicePixelRatio || 1, maxDpr);
         canvas.width = Math.floor(viewport.width * dpr);
         canvas.height = Math.floor(viewport.height * dpr);
         canvas.style.width = `${viewport.width}px`;
@@ -289,7 +309,7 @@ const PdfPageCanvas: React.FC<PdfPageCanvasProps> = ({
         // ignore
       }
     };
-  }, [pdfDoc, pageNumber, scale, inView]);
+  }, [pdfDoc, pageNumber, totalPages, scale, inView, defaultPageSize]);
 
   // Apply search highlights to rendered textLayer whenever query / active match / textLayer updates
   React.useEffect(() => {
@@ -315,14 +335,42 @@ const PdfPageCanvas: React.FC<PdfPageCanvasProps> = ({
       <div
         ref={setWrapperRefs}
         style={{ width: dims.width, height: dims.height }}
-        className="relative overflow-hidden rounded-[2px] border border-[#CED4DA] bg-white shadow-sm"
+        onClick={(e) => {
+          if (!pickPointActive || !onPickPoint || !wrapperRef.current) return;
+          e.preventDefault();
+          e.stopPropagation();
+          const rect = wrapperRef.current.getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0) return;
+          const x = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+          const y = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height));
+          onPickPoint(Number(x.toFixed(4)), Number(y.toFixed(4)));
+        }}
+        className={`relative overflow-hidden rounded-[2px] border bg-white shadow-sm ${
+          pickPointActive
+            ? "cursor-crosshair border-[#007BFF] ring-2 ring-[#007BFF]/25"
+            : "border-[#CED4DA]"
+        }`}
       >
         <canvas ref={canvasRef} className="block" />
         <div
           ref={textLayerRef}
-          className="textLayer"
+          className={`textLayer ${pickPointActive ? "pointer-events-none select-none" : ""}`}
           onPointerDown={() => textLayerRef.current?.classList.add("selecting")}
         />
+        {pickedPoint && pageNumber === 1 && (
+          <div
+            aria-hidden="true"
+            style={{
+              left: `${(pickedPoint.x * 100).toFixed(2)}%`,
+              top: `${(pickedPoint.y * 100).toFixed(2)}%`,
+            }}
+            className="pointer-events-none absolute z-20 -translate-x-1/2 -translate-y-1/2"
+          >
+            <div className="flex h-6 w-6 items-center justify-center rounded-full border-2 border-[#007BFF] bg-[#007BFF]/15 shadow-sm">
+              <div className="h-2 w-2 rounded-full bg-[#DC3545]" />
+            </div>
+          </div>
+        )}
       </div>
       <div className="mt-1 font-mono-code text-[11px] text-[#6C757D]">
         {pageNumber}
@@ -350,6 +398,10 @@ export const PdfJsPreview = React.forwardRef<PdfJsPreviewHandle, PdfJsPreviewPro
       onScrollRatioChange,
       onOpenFind,
       onDoubleClickPage,
+      pickPointActive = false,
+      pickedPoint = null,
+      pickPointHint,
+      onPickPoint,
     },
     ref,
   ) => {
@@ -363,6 +415,10 @@ export const PdfJsPreview = React.forwardRef<PdfJsPreviewHandle, PdfJsPreviewPro
     const [manualScale, setManualScale] = React.useState(1.1);
     const [fitScale, setFitScale] = React.useState(1.0);
     const [basePageWidth, setBasePageWidth] = React.useState(595);
+    const [basePageSize, setBasePageSize] = React.useState<{ width: number; height: number }>({
+      width: 595,
+      height: 842,
+    });
     const [parseError, setParseError] = React.useState<string | null>(null);
 
     const [pageSearchSpans, setPageSearchSpans] = React.useState<PageSearchSpan[]>([]);
@@ -423,6 +479,12 @@ export const PdfJsPreview = React.forwardRef<PdfJsPreviewHandle, PdfJsPreviewPro
         return;
       }
 
+      if (activeDocRef.current) {
+        destroyPdfDoc(activeDocRef.current);
+        activeDocRef.current = null;
+      }
+      setPdfDoc(null);
+
       let cancelled = false;
       setParseError(null);
       const loadingTask = pdfjsLib.getDocument({ data: pdfBytes.slice() });
@@ -436,8 +498,9 @@ export const PdfJsPreview = React.forwardRef<PdfJsPreviewHandle, PdfJsPreviewPro
           try {
             const firstPage = await doc.getPage(1);
             const vp = firstPage.getViewport({ scale: 1.0 });
-            if (!cancelled && vp.width > 0) {
+            if (!cancelled && vp.width > 0 && vp.height > 0) {
               setBasePageWidth(vp.width);
+              setBasePageSize({ width: vp.width, height: vp.height });
             }
             firstPage.cleanup();
           } catch {
@@ -768,6 +831,11 @@ export const PdfJsPreview = React.forwardRef<PdfJsPreviewHandle, PdfJsPreviewPro
           }}
           className="relative flex-1 overflow-y-auto overflow-x-auto p-4 focus:outline-none"
         >
+          {pickPointActive && pickPointHint && (
+            <div className="sticky top-2 z-30 mb-2 rounded-[4px] border border-[#007BFF] bg-[#E7F1FF] px-3 py-1.5 text-xs font-semibold text-[#0056B3] shadow-sm">
+              {pickPointHint}
+            </div>
+          )}
           {loading && pdfDoc && (
             <div className="sticky top-2 z-30 ml-auto mb-2 flex w-fit items-center gap-1.5 rounded-[4px] border border-[#B6D4FE] bg-[#E7F1FF]/95 px-2.5 py-1 text-xs font-semibold text-[#0056B3] shadow-sm">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -800,12 +868,17 @@ export const PdfJsPreview = React.forwardRef<PdfJsPreviewHandle, PdfJsPreviewPro
                     <PdfPageCanvas
                       pdfDoc={pdfDoc}
                       pageNumber={pageNum}
+                      totalPages={numPages}
                       scale={activeScale}
+                      defaultPageSize={basePageSize}
                       containerEl={scrollRef.current}
                       searchQuery={searchQuery}
                       activeLocalIndex={activeLocal}
                       onVisible={setCurrentPage}
                       registerPageRef={registerPageRef}
+                      pickPointActive={pickPointActive}
+                      pickedPoint={pickedPoint}
+                      onPickPoint={onPickPoint}
                     />
                   </div>
                 );
