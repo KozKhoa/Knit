@@ -6,6 +6,9 @@ on:
       - "v*"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-tauri:
     strategy:
@@ -38,5 +41,29 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Knit ${{ github.ref_name }}"
           args: ${{ matrix.args }}
           releaseDraft: true
+      - name: Upload portable Windows executable
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          EXE="src-tauri/target/release/knit-desktop.exe"
+          test -f "$EXE"
+          cp "$EXE" "Knit_${VER}_x64-portable.exe"
+          gh release upload "$GITHUB_REF_NAME" "Knit_${VER}_x64-portable.exe" --clobber
+
+  publish-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-tauri
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "${GITHUB_REF_NAME}" --repo "${{ github.repository }}" --draft=false --latest

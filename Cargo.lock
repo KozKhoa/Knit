@@ -3363,7 +3363,7 @@ dependencies = [
 
 [[package]]
 name = "knit-archive"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "flate2",
  "knit-core",
@@ -3377,7 +3377,7 @@ dependencies = [
 
 [[package]]
 name = "knit-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dirs",
  "fs4",
@@ -3389,7 +3389,7 @@ dependencies = [
 
 [[package]]
 name = "knit-desktop"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "knit-archive",
@@ -3409,7 +3409,7 @@ dependencies = [
 
 [[package]]
 name = "knit-docs"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "comemo",
@@ -3431,7 +3431,7 @@ dependencies = [
 
 [[package]]
 name = "knit-manga"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "csv",
  "knit-archive",
@@ -3445,7 +3445,7 @@ dependencies = [
 
 [[package]]
 name = "knit-pdf"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ab_glyph",
  "flate2",
@@ -3469,7 +3469,7 @@ dependencies = [
 
 [[package]]
 name = "knit-renamer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "globset",
