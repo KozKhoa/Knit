@@ -60,26 +60,21 @@ jobs:
           test -n "$EXE"
           mkdir -p portable-out
           cp "$EXE" "portable-out/Knit_${VER}_x64-portable.exe"
-      - name: Upload portable Windows artifact
-        if: matrix.os == 'windows-latest'
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-portable-exe
-          path: portable-out/Knit_*_x64-portable.exe
-          if-no-files-found: error
+      - name: Upload portable Windows executable to release
+        if: matrix.os == 'windows-latest' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" portable-out/*.exe --repo "${{ github.repository }}" --clobber
 
   publish-release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build-tauri
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: windows-portable-exe
-          path: portable-out
-      - name: Publish GitHub Release and attach portable Windows executable
+      - name: Publish GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release edit "${GITHUB_REF_NAME}" --repo "${{ github.repository }}" --draft=false --latest
-          gh release upload "${GITHUB_REF_NAME}" portable-out/*.exe --repo "${{ github.repository }}" --clobber

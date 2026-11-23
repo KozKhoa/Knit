@@ -159,7 +159,14 @@ impl LocalWebSocket {
                         return Err(KnitError::Internal("WebSocket handshake header too large".into()));
                     }
                 }
-                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => continue,
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                    ) =>
+                {
+                    continue
+                }
                 Err(e) => return Err(e.into()),
             }
         }
@@ -233,7 +240,14 @@ impl LocalWebSocket {
                     ))
                 }
                 Ok(n) => read += n,
-                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => continue,
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                    ) =>
+                {
+                    continue
+                }
                 Err(e) => return Err(e.into()),
             }
         }
@@ -341,6 +355,15 @@ impl LocalWebSocket {
     }
 }
 
+fn read_retry_eintr(stream: &mut TcpStream, buf: &mut [u8]) -> std::io::Result<usize> {
+    loop {
+        match stream.read(buf) {
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            res => return res,
+        }
+    }
+}
+
 fn http_get_local(port: u16, path: &str) -> Result<String> {
     let mut stream = TcpStream::connect(("127.0.0.1", port))?;
     stream.set_read_timeout(Some(Duration::from_secs(3)))?;
@@ -357,7 +380,7 @@ fn http_get_local(port: u16, path: &str) -> Result<String> {
         if let Some(pos) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
             break pos;
         }
-        let n = stream.read(&mut buf)?;
+        let n = read_retry_eintr(&mut stream, &mut buf)?;
         if n == 0 {
             return Err(KnitError::Internal(
                 "Chrome DevTools HTTP endpoint closed before sending headers".into(),
@@ -384,7 +407,7 @@ fn http_get_local(port: u16, path: &str) -> Result<String> {
     let body_start = header_end + 4;
     if let Some(expected_len) = content_len {
         while raw.len().saturating_sub(body_start) < expected_len {
-            let n = stream.read(&mut buf)?;
+            let n = read_retry_eintr(&mut stream, &mut buf)?;
             if n == 0 {
                 break;
             }
@@ -395,7 +418,7 @@ fn http_get_local(port: u16, path: &str) -> Result<String> {
     }
 
     loop {
-        match stream.read(&mut buf) {
+        match read_retry_eintr(&mut stream, &mut buf) {
             Ok(0) => break,
             Ok(n) => raw.extend_from_slice(&buf[..n]),
             Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => break,
