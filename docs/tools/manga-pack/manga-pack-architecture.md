@@ -5,12 +5,12 @@ version: 0.2.0
 crates: [knit-manga, knit-archive, knit-core, knit-desktop]
 diagrams:
   - docs/diagrams/manga_pack_01_architecture_pipeline.mmd
-agent_guide: docs/manga-pack-agent-guide.md
+agent_guide: docs/tools/manga-pack/manga-pack-agent-guide.md
 schema: docs/specs/manga-pack.schema.json
 deprecated: false
 ---
 
-> Index: [`/llms.txt`](../llms.txt) · Runnable API & IPC Guide: [`docs/manga-pack-agent-guide.md`](./manga-pack-agent-guide.md) · JSON Schema Contract: [`docs/specs/manga-pack.schema.json`](./specs/manga-pack.schema.json) · Functional Tests: [`docs/manga-pack-functional-tests.md`](./manga-pack-functional-tests.md)
+> Index: [`/llms.txt`](../../../llms.txt) · Runnable API & IPC Guide: [`docs/tools/manga-pack/manga-pack-agent-guide.md`](./manga-pack-agent-guide.md) · JSON Schema Contract: [`docs/specs/manga-pack.schema.json`](../../specs/manga-pack.schema.json) · Functional Tests: [`docs/tools/manga-pack/manga-pack-functional-tests.md`](./manga-pack-functional-tests.md)
 
 # Kiến trúc & Cơ chế Hoạt động của `Manga Packager` (`manga-pack`, Knit `v0.2.0`)
 
@@ -20,7 +20,7 @@ Tài liệu này mô tả luồng quét cây thư mục truyện tranh, chuẩn 
 
 ## 1. Tổng quan Kiến trúc 3 Tầng
 
-Sơ đồ luồng quét, kiểm tra cảnh báo và xuất ZIP/CBZ qua `knit-archive` (`.mmd`: [`manga_pack_01_architecture_pipeline.mmd`](./diagrams/manga_pack_01_architecture_pipeline.mmd)):
+Sơ đồ luồng quét, kiểm tra cảnh báo và xuất ZIP/CBZ qua `knit-archive` (`.mmd`: [`manga_pack_01_architecture_pipeline.mmd`](../../diagrams/manga_pack_01_architecture_pipeline.mmd)):
 
 ```mermaid
 flowchart TD
@@ -106,8 +106,8 @@ Khi `mode = "auto"`, `scan_stories` phân biệt thư mục **1 truyện đơn (
 
 ## 4. Tham chiếu Mã nguồn (Source Map)
 
-- **Agent API & Schema:** [`docs/manga-pack-agent-guide.md`](./manga-pack-agent-guide.md), [`docs/specs/manga-pack.schema.json`](./specs/manga-pack.schema.json), [`docs/manga-pack-functional-tests.md`](./manga-pack-functional-tests.md)
-- **Models & Naming Parser:** [`crates/knit-manga/src/models.rs`](../crates/knit-manga/src/models.rs), [`crates/knit-manga/src/naming.rs`](../crates/knit-manga/src/naming.rs)
-- **Scanner & Packer & CSV Builder:** [`crates/knit-manga/src/scanner.rs`](../crates/knit-manga/src/scanner.rs), [`crates/knit-manga/src/packer.rs`](../crates/knit-manga/src/packer.rs), [`crates/knit-manga/src/csv_builder.rs`](../crates/knit-manga/src/csv_builder.rs)
-- **Tauri IPC:** [`src-tauri/src/lib.rs`](../src-tauri/src/lib.rs) (`manga_scan`, `manga_pack`)
-- **Frontend:** [`src/views/MangaPackView.tsx`](../src/views/MangaPackView.tsx), [`src/components/MangaInfoModal.tsx`](../src/components/MangaInfoModal.tsx), [`src/lib/mangaInfo.ts`](../src/lib/mangaInfo.ts), [`src/lib/sizeEstimate.ts`](../src/lib/sizeEstimate.ts)
+- **Agent API & Schema:** [`docs/tools/manga-pack/manga-pack-agent-guide.md`](./manga-pack-agent-guide.md), [`docs/specs/manga-pack.schema.json`](../../specs/manga-pack.schema.json), [`docs/tools/manga-pack/manga-pack-functional-tests.md`](./manga-pack-functional-tests.md)
+- **Models & Naming Parser:** [`crates/knit-manga/src/models.rs`](../../../crates/knit-manga/src/models.rs), [`crates/knit-manga/src/naming.rs`](../../../crates/knit-manga/src/naming.rs)
+- **Scanner & Packer & CSV Builder:** [`crates/knit-manga/src/scanner.rs`](../../../crates/knit-manga/src/scanner.rs), [`crates/knit-manga/src/packer.rs`](../../../crates/knit-manga/src/packer.rs), [`crates/knit-manga/src/csv_builder.rs`](../../../crates/knit-manga/src/csv_builder.rs)
+- **Tauri IPC:** [`src-tauri/src/lib.rs`](../../../src-tauri/src/lib.rs) (`manga_scan`, `manga_pack`)
+- **Frontend:** [`src/views/MangaPackView.tsx`](../../../src/views/MangaPackView.tsx), [`src/components/MangaInfoModal.tsx`](../../../src/components/MangaInfoModal.tsx), [`src/lib/mangaInfo.ts`](../../../src/lib/mangaInfo.ts), [`src/lib/sizeEstimate.ts`](../../../src/lib/sizeEstimate.ts)

@@ -13,11 +13,11 @@ ipc_commands:
   - cancel_job
   - clear_image_preview_cache
 schema: docs/specs/image2pdf.schema.json
-architecture: docs/image2pdf-architecture.md
+architecture: docs/tools/image2pdf/image2pdf-architecture.md
 deprecated: false
 ---
 
-> Index: [`/llms.txt`](../llms.txt) · Machine-readable contract: [`docs/specs/image2pdf.schema.json`](./specs/image2pdf.schema.json) · Architecture & Mermaid diagrams: [`docs/image2pdf-architecture.md`](./image2pdf-architecture.md)
+> Index: [`/llms.txt`](../../../llms.txt) · Machine-readable contract: [`docs/specs/image2pdf.schema.json`](../../specs/image2pdf.schema.json) · Architecture & Mermaid diagrams: [`docs/tools/image2pdf/image2pdf-architecture.md`](./image2pdf-architecture.md)
 
 # Knit `image2pdf` — Agent Integration & API Reference (`v0.2.0`)
 
@@ -25,7 +25,7 @@ Convert static, vector, or animated images (`jpg`, `jpeg`, `jfif`, `png`, `webp`
 1. **Frontend Tauri IPC wrappers** in `src/lib/ipc.ts` (inside a Tauri v2 WebView where `__TAURI_INTERNALS__` exists), or
 2. **Pure-Rust library calls** in `crates/knit-pdf` (zero Tauri dependency; suitable for headless CLIs, integration tests, or Rust services).
 
-> **Surface note:** Knit's machine-readable contract in [`docs/specs/image2pdf.schema.json`](./specs/image2pdf.schema.json) uses Draft 2020-12 JSON Schema plus `x-ipc-operations`; annotation conventions (`operationId`, `summary`, `description`, `enum`, `x-enumDescriptions`) are inferred from OpenAPI agent-readability guidance.
+> **Surface note:** Knit's machine-readable contract in [`docs/specs/image2pdf.schema.json`](../../specs/image2pdf.schema.json) uses Draft 2020-12 JSON Schema plus `x-ipc-operations`; annotation conventions (`operationId`, `summary`, `description`, `enum`, `x-enumDescriptions`) are inferred from OpenAPI agent-readability guidance.
 
 ---
 

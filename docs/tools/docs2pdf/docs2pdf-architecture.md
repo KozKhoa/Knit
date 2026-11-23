@@ -6,12 +6,12 @@ crates: [knit-docs, knit-core, knit-desktop]
 diagrams:
   - docs/diagrams/docs2pdf_01_architecture_three_layer.mmd
   - docs/diagrams/docs2pdf_02_sequence_preview_export.mmd
-agent_guide: docs/docs2pdf-agent-guide.md
+agent_guide: docs/tools/docs2pdf/docs2pdf-agent-guide.md
 schema: docs/specs/docs2pdf.schema.json
 deprecated: false
 ---
 
-> Index: [`/llms.txt`](../llms.txt) · Runnable API & IPC Guide: [`docs/docs2pdf-agent-guide.md`](./docs2pdf-agent-guide.md) · JSON Schema Contract: [`docs/specs/docs2pdf.schema.json`](./specs/docs2pdf.schema.json) · Functional Tests: [`docs/docs2pdf-functional-tests.md`](./docs2pdf-functional-tests.md)
+> Index: [`/llms.txt`](../../../llms.txt) · Runnable API & IPC Guide: [`docs/tools/docs2pdf/docs2pdf-agent-guide.md`](./docs2pdf-agent-guide.md) · JSON Schema Contract: [`docs/specs/docs2pdf.schema.json`](../../specs/docs2pdf.schema.json) · Functional Tests: [`docs/tools/docs2pdf/docs2pdf-functional-tests.md`](./docs2pdf-functional-tests.md)
 
 # Kiến trúc & Cơ chế Hoạt động của `Document → PDF` (`docs2pdf`, Knit `v0.2.0`)
 
@@ -21,7 +21,7 @@ Tài liệu này mô tả kiến trúc phân tầng, luồng xem trước trực
 
 ## 1. Tổng quan Kiến trúc 3 Tầng
 
-`docs2pdf` chia định tuyến biên dịch thành 3 tầng theo định dạng nguồn để giữ bộ cài đặt desktop gọn nhẹ trong khi vẫn render trung thực từ Markdown/Code đến HTML slide và tài liệu Office (`.mmd`: [`docs2pdf_01_architecture_three_layer.mmd`](./diagrams/docs2pdf_01_architecture_three_layer.mmd)):
+`docs2pdf` chia định tuyến biên dịch thành 3 tầng theo định dạng nguồn để giữ bộ cài đặt desktop gọn nhẹ trong khi vẫn render trung thực từ Markdown/Code đến HTML slide và tài liệu Office (`.mmd`: [`docs2pdf_01_architecture_three_layer.mmd`](../../diagrams/docs2pdf_01_architecture_three_layer.mmd)):
 
 ```mermaid
 flowchart TD
@@ -90,7 +90,7 @@ flowchart TD
 
 ### 3.3. Vệ sinh Bộ nhớ & Điều phối Preview (`docs_preview_cancel`)
 
-Sơ đồ trình tự xem trước & xuất PDF (`.mmd`: [`docs2pdf_02_sequence_preview_export.mmd`](./diagrams/docs2pdf_02_sequence_preview_export.mmd)):
+Sơ đồ trình tự xem trước & xuất PDF (`.mmd`: [`docs2pdf_02_sequence_preview_export.mmd`](../../diagrams/docs2pdf_02_sequence_preview_export.mmd)):
 
 ```mermaid
 sequenceDiagram
@@ -127,10 +127,10 @@ sequenceDiagram
 
 ## 5. Tham chiếu Mã nguồn (Source Map)
 
-- **Agent API & Schema:** [`docs/docs2pdf-agent-guide.md`](./docs2pdf-agent-guide.md), [`docs/specs/docs2pdf.schema.json`](./specs/docs2pdf.schema.json), [`docs/docs2pdf-functional-tests.md`](./docs2pdf-functional-tests.md)
-- **Backend Models & Routing:** [`crates/knit-docs/src/models.rs`](../crates/knit-docs/src/models.rs), [`crates/knit-docs/src/lib.rs`](../crates/knit-docs/src/lib.rs)
-- **Typst Markdown & World:** [`crates/knit-docs/src/markdown.rs`](../crates/knit-docs/src/markdown.rs), [`crates/knit-docs/src/world.rs`](../crates/knit-docs/src/world.rs)
-- **EPUB & HTML CSS:** [`crates/knit-docs/src/html_epub.rs`](../crates/knit-docs/src/html_epub.rs)
-- **Chromium CDP & LibreOffice:** [`crates/knit-docs/src/cdp.rs`](../crates/knit-docs/src/cdp.rs), [`crates/knit-docs/src/office.rs`](../crates/knit-docs/src/office.rs)
-- **Tauri IPC:** [`src-tauri/src/lib.rs`](../src-tauri/src/lib.rs) (`docs_engine_status`, `docs_read_text_file`, `docs_write_text_file`, `docs_preview_pdf_bytes`, `docs_preview_markdown`, `docs_convert_to_pdf`, `docs_convert_content_to_pdf`)
-- **Frontend:** [`src/views/Docs2PdfView.tsx`](../src/views/Docs2PdfView.tsx), [`src/views/docs2pdf/DocsSplitWorkbench.tsx`](../src/views/docs2pdf/DocsSplitWorkbench.tsx), [`src/views/docs2pdf/Docs2PdfSettingsCard.tsx`](../src/views/docs2pdf/Docs2PdfSettingsCard.tsx), [`src/components/MarkdownCodeEditor.tsx`](../src/components/MarkdownCodeEditor.tsx), [`src/components/PdfJsPreview.tsx`](../src/components/PdfJsPreview.tsx)
+- **Agent API & Schema:** [`docs/tools/docs2pdf/docs2pdf-agent-guide.md`](./docs2pdf-agent-guide.md), [`docs/specs/docs2pdf.schema.json`](../../specs/docs2pdf.schema.json), [`docs/tools/docs2pdf/docs2pdf-functional-tests.md`](./docs2pdf-functional-tests.md)
+- **Backend Models & Routing:** [`crates/knit-docs/src/models.rs`](../../../crates/knit-docs/src/models.rs), [`crates/knit-docs/src/lib.rs`](../../../crates/knit-docs/src/lib.rs)
+- **Typst Markdown & World:** [`crates/knit-docs/src/markdown.rs`](../../../crates/knit-docs/src/markdown.rs), [`crates/knit-docs/src/world.rs`](../../../crates/knit-docs/src/world.rs)
+- **EPUB & HTML CSS:** [`crates/knit-docs/src/html_epub.rs`](../../../crates/knit-docs/src/html_epub.rs)
+- **Chromium CDP & LibreOffice:** [`crates/knit-docs/src/cdp.rs`](../../../crates/knit-docs/src/cdp.rs), [`crates/knit-docs/src/office.rs`](../../../crates/knit-docs/src/office.rs)
+- **Tauri IPC:** [`src-tauri/src/lib.rs`](../../../src-tauri/src/lib.rs) (`docs_engine_status`, `docs_read_text_file`, `docs_write_text_file`, `docs_preview_pdf_bytes`, `docs_preview_markdown`, `docs_convert_to_pdf`, `docs_convert_content_to_pdf`)
+- **Frontend:** [`src/views/Docs2PdfView.tsx`](../../../src/views/Docs2PdfView.tsx), [`src/views/docs2pdf/DocsSplitWorkbench.tsx`](../../../src/views/docs2pdf/DocsSplitWorkbench.tsx), [`src/views/docs2pdf/Docs2PdfSettingsCard.tsx`](../../../src/views/docs2pdf/Docs2PdfSettingsCard.tsx), [`src/components/MarkdownCodeEditor.tsx`](../../../src/components/MarkdownCodeEditor.tsx), [`src/components/PdfJsPreview.tsx`](../../../src/components/PdfJsPreview.tsx)

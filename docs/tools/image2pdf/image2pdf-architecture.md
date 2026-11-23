@@ -8,12 +8,12 @@ diagrams:
   - docs/diagrams/image2pdf_02_sequence_preview_export.mmd
   - docs/diagrams/image2pdf_03_flowchart_imaging_pipeline.mmd
   - docs/diagrams/image2pdf_04_class_domain_model.mmd
-agent_guide: docs/image2pdf-agent-guide.md
+agent_guide: docs/tools/image2pdf/image2pdf-agent-guide.md
 schema: docs/specs/image2pdf.schema.json
 deprecated: false
 ---
 
-> Index: [`/llms.txt`](../llms.txt) · Runnable API & IPC Guide: [`docs/image2pdf-agent-guide.md`](./image2pdf-agent-guide.md) · JSON Schema Contract: [`docs/specs/image2pdf.schema.json`](./specs/image2pdf.schema.json)
+> Index: [`/llms.txt`](../../../llms.txt) · Runnable API & IPC Guide: [`docs/tools/image2pdf/image2pdf-agent-guide.md`](./image2pdf-agent-guide.md) · JSON Schema Contract: [`docs/specs/image2pdf.schema.json`](../../specs/image2pdf.schema.json)
 
 # Kiến trúc & Cơ chế Hoạt động của `image2pdf` (Knit `v0.2.0`)
 
@@ -23,7 +23,7 @@ Tài liệu này mô tả kiến trúc hệ thống và các sơ đồ Mermaid �
 
 ## 1. Tổng quan Kiến trúc 3 Tầng
 
-`image2pdf` tách biệt hoàn toàn trạng thái giao diện nhẹ trên WebView khỏi quá trình giải mã và đóng gói ảnh nặng dưới Rust (`.mmd`: [`image2pdf_01_architecture_three_layer.mmd`](./diagrams/image2pdf_01_architecture_three_layer.mmd)):
+`image2pdf` tách biệt hoàn toàn trạng thái giao diện nhẹ trên WebView khỏi quá trình giải mã và đóng gói ảnh nặng dưới Rust (`.mmd`: [`image2pdf_01_architecture_three_layer.mmd`](../../diagrams/image2pdf_01_architecture_three_layer.mmd)):
 
 ```mermaid
 flowchart TD
@@ -71,7 +71,7 @@ flowchart TD
 
 ## 2. Mô hình Dữ liệu Miền (`crates/knit-pdf/src/models.rs`)
 
-Thay vì giữ bitmap trong RAM trình duyệt hoặc sửa ảnh gốc trên đĩa, mỗi trang là một `PageDraft` chuẩn hóa tọa độ `[0.0, 1.0]` (`.mmd`: [`image2pdf_04_class_domain_model.mmd`](./diagrams/image2pdf_04_class_domain_model.mmd)):
+Thay vì giữ bitmap trong RAM trình duyệt hoặc sửa ảnh gốc trên đĩa, mỗi trang là một `PageDraft` chuẩn hóa tọa độ `[0.0, 1.0]` (`.mmd`: [`image2pdf_04_class_domain_model.mmd`](../../diagrams/image2pdf_04_class_domain_model.mmd)):
 
 ```mermaid
 classDiagram
@@ -160,7 +160,7 @@ classDiagram
 
 ### 3.3. Nhánh Kép `LosslessPassthrough` vs `Render & Composite` (`imaging.rs`)
 
-Biểu đồ quyết định nhánh xử lý từng trang (`.mmd`: [`image2pdf_03_flowchart_imaging_pipeline.mmd`](./diagrams/image2pdf_03_flowchart_imaging_pipeline.mmd)):
+Biểu đồ quyết định nhánh xử lý từng trang (`.mmd`: [`image2pdf_03_flowchart_imaging_pipeline.mmd`](../../diagrams/image2pdf_03_flowchart_imaging_pipeline.mmd)):
 
 ```mermaid
 flowchart TD
@@ -201,7 +201,7 @@ flowchart TD
 
 ## 4. Trình tự Tương tác, Semaphore Cô lập & Tiền kiểm Trước Export
 
-Biểu đồ trình tự đầy đủ từ lúc preview thumbnail song song với zoom ưu tiên cao đến preflight `check_missing_files`, xuất streaming và giải phóng heap (`.mmd`: [`image2pdf_02_sequence_preview_export.mmd`](./diagrams/image2pdf_02_sequence_preview_export.mmd)):
+Biểu đồ trình tự đầy đủ từ lúc preview thumbnail song song với zoom ưu tiên cao đến preflight `check_missing_files`, xuất streaming và giải phóng heap (`.mmd`: [`image2pdf_02_sequence_preview_export.mmd`](../../diagrams/image2pdf_02_sequence_preview_export.mmd)):
 
 ```mermaid
 sequenceDiagram
@@ -253,10 +253,10 @@ sequenceDiagram
 
 ## 6. Tham chiếu Mã nguồn (Source Map)
 
-- **Agent API & Copy-Paste Integration:** [`docs/image2pdf-agent-guide.md`](./image2pdf-agent-guide.md)
-- **Machine-Readable Schema:** [`docs/specs/image2pdf.schema.json`](./specs/image2pdf.schema.json)
-- **Core Models:** [`crates/knit-pdf/src/models.rs`](../crates/knit-pdf/src/models.rs)
-- **Streaming PDF Writer:** [`crates/knit-pdf/src/packer.rs`](../crates/knit-pdf/src/packer.rs)
-- **Lossless Passthrough & Rasterizer:** [`crates/knit-pdf/src/imaging.rs`](../crates/knit-pdf/src/imaging.rs)
-- **IPC Handlers & Heap Trimming:** [`src-tauri/src/lib.rs`](../src-tauri/src/lib.rs)
-- **Frontend Workbench & Hooks:** [`src/views/Image2PdfView.tsx`](../src/views/Image2PdfView.tsx), [`src/lib/ipc.ts`](../src/lib/ipc.ts), [`src/hooks/useVirtualizedGrid.ts`](../src/hooks/useVirtualizedGrid.ts), [`src/hooks/useThumbnailQueue.ts`](../src/hooks/useThumbnailQueue.ts)
+- **Agent API & Copy-Paste Integration:** [`docs/tools/image2pdf/image2pdf-agent-guide.md`](./image2pdf-agent-guide.md)
+- **Machine-Readable Schema:** [`docs/specs/image2pdf.schema.json`](../../specs/image2pdf.schema.json)
+- **Core Models:** [`crates/knit-pdf/src/models.rs`](../../../crates/knit-pdf/src/models.rs)
+- **Streaming PDF Writer:** [`crates/knit-pdf/src/packer.rs`](../../../crates/knit-pdf/src/packer.rs)
+- **Lossless Passthrough & Rasterizer:** [`crates/knit-pdf/src/imaging.rs`](../../../crates/knit-pdf/src/imaging.rs)
+- **IPC Handlers & Heap Trimming:** [`src-tauri/src/lib.rs`](../../../src-tauri/src/lib.rs)
+- **Frontend Workbench & Hooks:** [`src/views/Image2PdfView.tsx`](../../../src/views/Image2PdfView.tsx), [`src/lib/ipc.ts`](../../../src/lib/ipc.ts), [`src/hooks/useVirtualizedGrid.ts`](../../../src/hooks/useVirtualizedGrid.ts), [`src/hooks/useThumbnailQueue.ts`](../../../src/hooks/useThumbnailQueue.ts)

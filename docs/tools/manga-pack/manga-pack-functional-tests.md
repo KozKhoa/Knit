@@ -3,17 +3,17 @@ title: Knit manga-pack Functional Test Suite
 description: Systematic ISTQB functional test design (Domain EP/BVA, Decision Tables, State Transitions, Use Cases, Fault Attack/Error Guessing, and RTM) for Knit Manga Packager.
 version: 0.2.0
 crates: [knit-manga, knit-archive, knit-core, knit-desktop]
-agent_guide: docs/manga-pack-agent-guide.md
-architecture: docs/manga-pack-architecture.md
+agent_guide: docs/tools/manga-pack/manga-pack-agent-guide.md
+architecture: docs/tools/manga-pack/manga-pack-architecture.md
 schema: docs/specs/manga-pack.schema.json
 deprecated: false
 ---
 
-> Index: [`/llms.txt`](../llms.txt) · Agent Integration Guide: [`docs/manga-pack-agent-guide.md`](./manga-pack-agent-guide.md) · Architecture: [`docs/manga-pack-architecture.md`](./manga-pack-architecture.md) · Machine-Readable Spec: [`docs/specs/manga-pack.schema.json`](./specs/manga-pack.schema.json)
+> Index: [`/llms.txt`](../../../llms.txt) · Agent Integration Guide: [`docs/tools/manga-pack/manga-pack-agent-guide.md`](./manga-pack-agent-guide.md) · Architecture: [`docs/tools/manga-pack/manga-pack-architecture.md`](./manga-pack-architecture.md) · Machine-Readable Spec: [`docs/specs/manga-pack.schema.json`](../../specs/manga-pack.schema.json)
 
 # Bộ Test Case Chức năng — `Manga Packager` (`manga-pack`, Knit `v0.2.0`)
 
-Bộ thiết kế kiểm thử chức năng cho **`Manga Packager`** (`MangaPackView` + `crates/knit-manga`), đối chiếu trực tiếp với [`docs/manga-pack-agent-guide.md`](./manga-pack-agent-guide.md) và [`docs/specs/manga-pack.schema.json`](./specs/manga-pack.schema.json).
+Bộ thiết kế kiểm thử chức năng cho **`Manga Packager`** (`MangaPackView` + `crates/knit-manga`), đối chiếu trực tiếp với [`docs/tools/manga-pack/manga-pack-agent-guide.md`](./manga-pack-agent-guide.md) và [`docs/specs/manga-pack.schema.json`](../../specs/manga-pack.schema.json).
 
 ---
 

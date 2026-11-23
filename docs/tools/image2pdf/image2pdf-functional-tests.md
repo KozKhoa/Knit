@@ -3,17 +3,17 @@ title: Knit image2pdf Functional Test Suite
 description: Systematic ISTQB functional test design (Domain EP/BVA, Decision Tables, State Transitions, Use Cases, Fault Attack/Error Guessing, and RTM) for Knit image2pdf.
 version: 0.2.0
 crates: [knit-pdf, knit-core, knit-desktop]
-agent_guide: docs/image2pdf-agent-guide.md
-architecture: docs/image2pdf-architecture.md
+agent_guide: docs/tools/image2pdf/image2pdf-agent-guide.md
+architecture: docs/tools/image2pdf/image2pdf-architecture.md
 schema: docs/specs/image2pdf.schema.json
 deprecated: false
 ---
 
-> Index: [`/llms.txt`](../llms.txt) · Agent Integration Guide: [`docs/image2pdf-agent-guide.md`](./image2pdf-agent-guide.md) · Architecture: [`docs/image2pdf-architecture.md`](./image2pdf-architecture.md) · Machine-Readable Spec: [`docs/specs/image2pdf.schema.json`](./specs/image2pdf.schema.json)
+> Index: [`/llms.txt`](../../../llms.txt) · Agent Integration Guide: [`docs/tools/image2pdf/image2pdf-agent-guide.md`](./image2pdf-agent-guide.md) · Architecture: [`docs/tools/image2pdf/image2pdf-architecture.md`](./image2pdf-architecture.md) · Machine-Readable Spec: [`docs/specs/image2pdf.schema.json`](../../specs/image2pdf.schema.json)
 
 # Bộ Test Case Chức năng — `Image → PDF` (`image2pdf`, Knit `v0.2.0`)
 
-Bộ thiết kế kiểm thử chức năng (**Functional Test Suite**) cho công cụ **`Image → PDF` (`image2pdf`)** của Knit, được xây dựng theo quy trình điều phối của skill `functional-test-design` và 5 kỹ thuật kiểm thử chuẩn ISTQB, đối chiếu trực tiếp với đặc tả tại [`docs/image2pdf-agent-guide.md`](./image2pdf-agent-guide.md), [`docs/specs/image2pdf.schema.json`](./specs/image2pdf.schema.json) và [`crates/knit-pdf/src/models.rs`](../crates/knit-pdf/src/models.rs).
+Bộ thiết kế kiểm thử chức năng (**Functional Test Suite**) cho công cụ **`Image → PDF` (`image2pdf`)** của Knit, được xây dựng theo quy trình điều phối của skill `functional-test-design` và 5 kỹ thuật kiểm thử chuẩn ISTQB, đối chiếu trực tiếp với đặc tả tại [`docs/tools/image2pdf/image2pdf-agent-guide.md`](./image2pdf-agent-guide.md), [`docs/specs/image2pdf.schema.json`](../../specs/image2pdf.schema.json) và [`crates/knit-pdf/src/models.rs`](../../../crates/knit-pdf/src/models.rs).
 
 ---
 

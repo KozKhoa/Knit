@@ -5,12 +5,12 @@ version: 0.2.0
 crates: [knit-renamer, knit-core, knit-desktop]
 diagrams:
   - docs/diagrams/renamer_01_architecture_pipeline.mmd
-agent_guide: docs/renamer-agent-guide.md
+agent_guide: docs/tools/renamer/renamer-agent-guide.md
 schema: docs/specs/renamer.schema.json
 deprecated: false
 ---
 
-> Index: [`/llms.txt`](../llms.txt) · Runnable API & IPC Guide: [`docs/renamer-agent-guide.md`](./renamer-agent-guide.md) · JSON Schema Contract: [`docs/specs/renamer.schema.json`](./specs/renamer.schema.json) · Functional Tests: [`docs/renamer-functional-tests.md`](./renamer-functional-tests.md)
+> Index: [`/llms.txt`](../../../llms.txt) · Runnable API & IPC Guide: [`docs/tools/renamer/renamer-agent-guide.md`](./renamer-agent-guide.md) · JSON Schema Contract: [`docs/specs/renamer.schema.json`](../../specs/renamer.schema.json) · Functional Tests: [`docs/tools/renamer/renamer-functional-tests.md`](./renamer-functional-tests.md)
 
 # Kiến trúc & Cơ chế Hoạt động của `Batch Renamer` (`renamer`, Knit `v0.2.0`)
 
@@ -20,7 +20,7 @@ Tài liệu này mô tả thiết kế an toàn hai lớp lọc, công cụ bi�
 
 ## 1. Tổng quan Kiến trúc 3 Tầng
 
-Sơ đồ kiến trúc từ `RenamerView` xuống các IPC commands, cache quét và lõi `knit-renamer` (`.mmd`: [`renamer_01_architecture_pipeline.mmd`](./diagrams/renamer_01_architecture_pipeline.mmd)):
+Sơ đồ kiến trúc từ `RenamerView` xuống các IPC commands, cache quét và lõi `knit-renamer` (`.mmd`: [`renamer_01_architecture_pipeline.mmd`](../../diagrams/renamer_01_architecture_pipeline.mmd)):
 
 ```mermaid
 flowchart TD
@@ -101,8 +101,8 @@ flowchart TD
 
 ## 5. Tham chiếu Mã nguồn (Source Map)
 
-- **Agent API & Schema:** [`docs/renamer-agent-guide.md`](./renamer-agent-guide.md), [`docs/specs/renamer.schema.json`](./specs/renamer.schema.json), [`docs/renamer-functional-tests.md`](./renamer-functional-tests.md)
-- **Models & Presets:** [`crates/knit-renamer/src/models.rs`](../crates/knit-renamer/src/models.rs), [`crates/knit-renamer/src/presets.rs`](../crates/knit-renamer/src/presets.rs)
-- **Scanner, Engine & Renamer:** [`crates/knit-renamer/src/scanner.rs`](../crates/knit-renamer/src/scanner.rs), [`crates/knit-renamer/src/engine.rs`](../crates/knit-renamer/src/engine.rs), [`crates/knit-renamer/src/renamer.rs`](../crates/knit-renamer/src/renamer.rs)
-- **Tauri IPC:** [`src-tauri/src/lib.rs`](../src-tauri/src/lib.rs) (`renamer_preview`, `renamer_recompute_collisions`, `renamer_apply`, `renamer_undo_last`, `renamer_has_undo`, `renamer_list_presets`, `renamer_save_preset`, `renamer_delete_preset`)
-- **Frontend:** [`src/views/RenamerView.tsx`](../src/views/RenamerView.tsx), [`src/views/renamer/RenamerFilterCard.tsx`](../src/views/renamer/RenamerFilterCard.tsx), [`src/views/renamer/RenamerRuleCard.tsx`](../src/views/renamer/RenamerRuleCard.tsx), [`src/views/renamer/RenamerPreviewTable.tsx`](../src/views/renamer/RenamerPreviewTable.tsx), [`src/lib/renamerTree.ts`](../src/lib/renamerTree.ts)
+- **Agent API & Schema:** [`docs/tools/renamer/renamer-agent-guide.md`](./renamer-agent-guide.md), [`docs/specs/renamer.schema.json`](../../specs/renamer.schema.json), [`docs/tools/renamer/renamer-functional-tests.md`](./renamer-functional-tests.md)
+- **Models & Presets:** [`crates/knit-renamer/src/models.rs`](../../../crates/knit-renamer/src/models.rs), [`crates/knit-renamer/src/presets.rs`](../../../crates/knit-renamer/src/presets.rs)
+- **Scanner, Engine & Renamer:** [`crates/knit-renamer/src/scanner.rs`](../../../crates/knit-renamer/src/scanner.rs), [`crates/knit-renamer/src/engine.rs`](../../../crates/knit-renamer/src/engine.rs), [`crates/knit-renamer/src/renamer.rs`](../../../crates/knit-renamer/src/renamer.rs)
+- **Tauri IPC:** [`src-tauri/src/lib.rs`](../../../src-tauri/src/lib.rs) (`renamer_preview`, `renamer_recompute_collisions`, `renamer_apply`, `renamer_undo_last`, `renamer_has_undo`, `renamer_list_presets`, `renamer_save_preset`, `renamer_delete_preset`)
+- **Frontend:** [`src/views/RenamerView.tsx`](../../../src/views/RenamerView.tsx), [`src/views/renamer/RenamerFilterCard.tsx`](../../../src/views/renamer/RenamerFilterCard.tsx), [`src/views/renamer/RenamerRuleCard.tsx`](../../../src/views/renamer/RenamerRuleCard.tsx), [`src/views/renamer/RenamerPreviewTable.tsx`](../../../src/views/renamer/RenamerPreviewTable.tsx), [`src/lib/renamerTree.ts`](../../../src/lib/renamerTree.ts)

@@ -3,17 +3,17 @@ title: Knit docs2pdf Functional Test Suite
 description: Systematic ISTQB functional test design (Domain EP/BVA, Decision Tables, State Transitions, Use Cases, Fault Attack/Error Guessing, and RTM) for Knit Document -> PDF.
 version: 0.2.0
 crates: [knit-docs, knit-core, knit-desktop]
-agent_guide: docs/docs2pdf-agent-guide.md
-architecture: docs/docs2pdf-architecture.md
+agent_guide: docs/tools/docs2pdf/docs2pdf-agent-guide.md
+architecture: docs/tools/docs2pdf/docs2pdf-architecture.md
 schema: docs/specs/docs2pdf.schema.json
 deprecated: false
 ---
 
-> Index: [`/llms.txt`](../llms.txt) · Agent Integration Guide: [`docs/docs2pdf-agent-guide.md`](./docs2pdf-agent-guide.md) · Architecture: [`docs/docs2pdf-architecture.md`](./docs2pdf-architecture.md) · Machine-Readable Spec: [`docs/specs/docs2pdf.schema.json`](./specs/docs2pdf.schema.json)
+> Index: [`/llms.txt`](../../../llms.txt) · Agent Integration Guide: [`docs/tools/docs2pdf/docs2pdf-agent-guide.md`](./docs2pdf-agent-guide.md) · Architecture: [`docs/tools/docs2pdf/docs2pdf-architecture.md`](./docs2pdf-architecture.md) · Machine-Readable Spec: [`docs/specs/docs2pdf.schema.json`](../../specs/docs2pdf.schema.json)
 
 # Bộ Test Case Chức năng — `Document → PDF` (`docs2pdf`, Knit `v0.2.0`)
 
-Bộ thiết kế kiểm thử chức năng cho **`Document → PDF`** (`Docs2PdfView` + `crates/knit-docs`), áp dụng 5 kỹ thuật ISTQB đối chiếu trực tiếp với [`docs/docs2pdf-agent-guide.md`](./docs2pdf-agent-guide.md) và [`docs/specs/docs2pdf.schema.json`](./specs/docs2pdf.schema.json).
+Bộ thiết kế kiểm thử chức năng cho **`Document → PDF`** (`Docs2PdfView` + `crates/knit-docs`), áp dụng 5 kỹ thuật ISTQB đối chiếu trực tiếp với [`docs/tools/docs2pdf/docs2pdf-agent-guide.md`](./docs2pdf-agent-guide.md) và [`docs/specs/docs2pdf.schema.json`](../../specs/docs2pdf.schema.json).
 
 ---
 

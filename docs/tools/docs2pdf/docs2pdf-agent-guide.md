@@ -13,11 +13,11 @@ ipc_commands:
   - docs_convert_content_to_pdf
   - cancel_job
 schema: docs/specs/docs2pdf.schema.json
-architecture: docs/docs2pdf-architecture.md
+architecture: docs/tools/docs2pdf/docs2pdf-architecture.md
 deprecated: false
 ---
 
-> Index: [`/llms.txt`](../llms.txt) · Machine-readable contract: [`docs/specs/docs2pdf.schema.json`](./specs/docs2pdf.schema.json) · Architecture & Mermaid diagrams: [`docs/docs2pdf-architecture.md`](./docs2pdf-architecture.md)
+> Index: [`/llms.txt`](../../../llms.txt) · Machine-readable contract: [`docs/specs/docs2pdf.schema.json`](../../specs/docs2pdf.schema.json) · Architecture & Mermaid diagrams: [`docs/tools/docs2pdf/docs2pdf-architecture.md`](./docs2pdf-architecture.md)
 
 # Knit `docs2pdf` — Agent Integration & API Reference (`v0.2.0`)
 

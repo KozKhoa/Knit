@@ -3,17 +3,17 @@ title: Knit archive Functional Test Suite
 description: Systematic ISTQB functional test design (Domain EP/BVA, Decision Tables, State Transitions, Use Cases, Fault Attack/Error Guessing, and RTM) for Knit Archive Packager.
 version: 0.2.0
 crates: [knit-archive, knit-core, knit-desktop]
-agent_guide: docs/archive-agent-guide.md
-architecture: docs/archive-architecture.md
+agent_guide: docs/tools/archive/archive-agent-guide.md
+architecture: docs/tools/archive/archive-architecture.md
 schema: docs/specs/archive.schema.json
 deprecated: false
 ---
 
-> Index: [`/llms.txt`](../llms.txt) · Agent Integration Guide: [`docs/archive-agent-guide.md`](./archive-agent-guide.md) · Architecture: [`docs/archive-architecture.md`](./archive-architecture.md) · Machine-Readable Spec: [`docs/specs/archive.schema.json`](./specs/archive.schema.json)
+> Index: [`/llms.txt`](../../../llms.txt) · Agent Integration Guide: [`docs/tools/archive/archive-agent-guide.md`](./archive-agent-guide.md) · Architecture: [`docs/tools/archive/archive-architecture.md`](./archive-architecture.md) · Machine-Readable Spec: [`docs/specs/archive.schema.json`](../../specs/archive.schema.json)
 
 # Bộ Test Case Chức năng — `Archive Packager` (`archive`, Knit `v0.2.0`)
 
-Bộ thiết kế kiểm thử chức năng cho **`Archive Packager`** (`ArchiveView` + `crates/knit-archive/src/lib.rs`), đối chiếu trực tiếp với [`docs/archive-agent-guide.md`](./archive-agent-guide.md) và [`docs/specs/archive.schema.json`](./specs/archive.schema.json).
+Bộ thiết kế kiểm thử chức năng cho **`Archive Packager`** (`ArchiveView` + `crates/knit-archive/src/lib.rs`), đối chiếu trực tiếp với [`docs/tools/archive/archive-agent-guide.md`](./archive-agent-guide.md) và [`docs/specs/archive.schema.json`](../../specs/archive.schema.json).
 
 ---
 

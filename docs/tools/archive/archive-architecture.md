@@ -5,12 +5,12 @@ version: 0.2.0
 crates: [knit-archive, knit-core, knit-desktop]
 diagrams:
   - docs/diagrams/archive_01_architecture_pipeline.mmd
-agent_guide: docs/archive-agent-guide.md
+agent_guide: docs/tools/archive/archive-agent-guide.md
 schema: docs/specs/archive.schema.json
 deprecated: false
 ---
 
-> Index: [`/llms.txt`](../llms.txt) · Runnable API & IPC Guide: [`docs/archive-agent-guide.md`](./archive-agent-guide.md) · JSON Schema Contract: [`docs/specs/archive.schema.json`](./specs/archive.schema.json) · Functional Tests: [`docs/archive-functional-tests.md`](./archive-functional-tests.md)
+> Index: [`/llms.txt`](../../../llms.txt) · Runnable API & IPC Guide: [`docs/tools/archive/archive-agent-guide.md`](./archive-agent-guide.md) · JSON Schema Contract: [`docs/specs/archive.schema.json`](../../specs/archive.schema.json) · Functional Tests: [`docs/tools/archive/archive-functional-tests.md`](./archive-functional-tests.md)
 
 # Kiến trúc & Cơ chế Hoạt động của `Archive Packager` (`archive`, Knit `v0.2.0`)
 
@@ -20,7 +20,7 @@ Tài liệu này mô tả thiết kế và luồng dữ liệu của công cụ 
 
 ## 1. Tổng quan Kiến trúc 3 Tầng
 
-Sơ đồ kiến trúc 3 tầng tách phần quét cây tệp, chỉnh sửa cấu trúc cây trên UI (`ArchiveTreeEditor`) và streaming ra đĩa (`.mmd`: [`archive_01_architecture_pipeline.mmd`](./diagrams/archive_01_architecture_pipeline.mmd)):
+Sơ đồ kiến trúc 3 tầng tách phần quét cây tệp, chỉnh sửa cấu trúc cây trên UI (`ArchiveTreeEditor`) và streaming ra đĩa (`.mmd`: [`archive_01_architecture_pipeline.mmd`](../../diagrams/archive_01_architecture_pipeline.mmd)):
 
 ```mermaid
 flowchart TD
@@ -92,7 +92,7 @@ flowchart TD
 
 ## 5. Tham chiếu Mã nguồn (Source Map)
 
-- **Agent API & Schema:** [`docs/archive-agent-guide.md`](./archive-agent-guide.md), [`docs/specs/archive.schema.json`](./specs/archive.schema.json), [`docs/archive-functional-tests.md`](./archive-functional-tests.md)
-- **Pure-Rust Core:** [`crates/knit-archive/src/lib.rs`](../crates/knit-archive/src/lib.rs) (`collect_entries`, `estimate_archive_output`, `estimate_archive_entries`, `pack_entries`)
-- **Tauri IPC:** [`src-tauri/src/lib.rs`](../src-tauri/src/lib.rs) (`archive_collect_entries`, `archive_estimate_size`, `archive_pack`, `get_file_size_bytes`)
-- **Frontend:** [`src/views/ArchiveView.tsx`](../src/views/ArchiveView.tsx), [`src/components/ArchiveTreeEditor.tsx`](../src/components/ArchiveTreeEditor.tsx), [`src/lib/archiveTree.ts`](../src/lib/archiveTree.ts), [`src/lib/ipc.ts`](../src/lib/ipc.ts)
+- **Agent API & Schema:** [`docs/tools/archive/archive-agent-guide.md`](./archive-agent-guide.md), [`docs/specs/archive.schema.json`](../../specs/archive.schema.json), [`docs/tools/archive/archive-functional-tests.md`](./archive-functional-tests.md)
+- **Pure-Rust Core:** [`crates/knit-archive/src/lib.rs`](../../../crates/knit-archive/src/lib.rs) (`collect_entries`, `estimate_archive_output`, `estimate_archive_entries`, `pack_entries`)
+- **Tauri IPC:** [`src-tauri/src/lib.rs`](../../../src-tauri/src/lib.rs) (`archive_collect_entries`, `archive_estimate_size`, `archive_pack`, `get_file_size_bytes`)
+- **Frontend:** [`src/views/ArchiveView.tsx`](../../../src/views/ArchiveView.tsx), [`src/components/ArchiveTreeEditor.tsx`](../../../src/components/ArchiveTreeEditor.tsx), [`src/lib/archiveTree.ts`](../../../src/lib/archiveTree.ts), [`src/lib/ipc.ts`](../../../src/lib/ipc.ts)

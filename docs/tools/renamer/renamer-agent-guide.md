@@ -13,11 +13,11 @@ ipc_commands:
   - renamer_save_preset
   - renamer_delete_preset
 schema: docs/specs/renamer.schema.json
-architecture: docs/renamer-architecture.md
+architecture: docs/tools/renamer/renamer-architecture.md
 deprecated: false
 ---
 
-> Index: [`/llms.txt`](../llms.txt) · Machine-readable contract: [`docs/specs/renamer.schema.json`](./specs/renamer.schema.json) · Architecture & Mermaid diagram: [`docs/renamer-architecture.md`](./renamer-architecture.md)
+> Index: [`/llms.txt`](../../../llms.txt) · Machine-readable contract: [`docs/specs/renamer.schema.json`](../../specs/renamer.schema.json) · Architecture & Mermaid diagram: [`docs/tools/renamer/renamer-architecture.md`](./renamer-architecture.md)
 
 # Knit `renamer` — Agent Integration & API Reference (`v0.2.0`)
 

@@ -3,17 +3,17 @@ title: Knit pdf-ops Functional Test Suite
 description: Systematic ISTQB functional test design (Domain EP/BVA, Decision Tables, State Transitions, Use Cases, Fault Attack/Error Guessing, and RTM) for Knit PDF Merge & Split.
 version: 0.2.0
 crates: [knit-pdf, knit-core, knit-desktop]
-agent_guide: docs/pdf-ops-agent-guide.md
-architecture: docs/pdf-ops-architecture.md
+agent_guide: docs/tools/pdf-ops/pdf-ops-agent-guide.md
+architecture: docs/tools/pdf-ops/pdf-ops-architecture.md
 schema: docs/specs/pdf-ops.schema.json
 deprecated: false
 ---
 
-> Index: [`/llms.txt`](../llms.txt) · Agent Integration Guide: [`docs/pdf-ops-agent-guide.md`](./pdf-ops-agent-guide.md) · Architecture: [`docs/pdf-ops-architecture.md`](./pdf-ops-architecture.md) · Machine-Readable Spec: [`docs/specs/pdf-ops.schema.json`](./specs/pdf-ops.schema.json)
+> Index: [`/llms.txt`](../../../llms.txt) · Agent Integration Guide: [`docs/tools/pdf-ops/pdf-ops-agent-guide.md`](./pdf-ops-agent-guide.md) · Architecture: [`docs/tools/pdf-ops/pdf-ops-architecture.md`](./pdf-ops-architecture.md) · Machine-Readable Spec: [`docs/specs/pdf-ops.schema.json`](../../specs/pdf-ops.schema.json)
 
 # Bộ Test Case Chức năng — `PDF Merge & Split` (`pdf-ops`, Knit `v0.2.0`)
 
-Bộ thiết kế kiểm thử chức năng cho **`PDF Merge & Split`** (`PdfOpsView` + `crates/knit-pdf/src/ops.rs`), áp dụng 5 kỹ thuật kiểm thử chuẩn ISTQB đối chiếu trực tiếp với [`docs/pdf-ops-agent-guide.md`](./pdf-ops-agent-guide.md) và [`docs/specs/pdf-ops.schema.json`](./specs/pdf-ops.schema.json).
+Bộ thiết kế kiểm thử chức năng cho **`PDF Merge & Split`** (`PdfOpsView` + `crates/knit-pdf/src/ops.rs`), áp dụng 5 kỹ thuật kiểm thử chuẩn ISTQB đối chiếu trực tiếp với [`docs/tools/pdf-ops/pdf-ops-agent-guide.md`](./pdf-ops-agent-guide.md) và [`docs/specs/pdf-ops.schema.json`](../../specs/pdf-ops.schema.json).
 
 ---
 

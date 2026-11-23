@@ -6,12 +6,12 @@ crates: [knit-pdf, knit-core, knit-desktop]
 diagrams:
   - docs/diagrams/pdf_ops_01_architecture_three_layer.mmd
   - docs/diagrams/pdf_ops_02_sequence_merge_split.mmd
-agent_guide: docs/pdf-ops-agent-guide.md
+agent_guide: docs/tools/pdf-ops/pdf-ops-agent-guide.md
 schema: docs/specs/pdf-ops.schema.json
 deprecated: false
 ---
 
-> Index: [`/llms.txt`](../llms.txt) · Runnable API & IPC Guide: [`docs/pdf-ops-agent-guide.md`](./pdf-ops-agent-guide.md) · JSON Schema Contract: [`docs/specs/pdf-ops.schema.json`](./specs/pdf-ops.schema.json) · Functional Tests: [`docs/pdf-ops-functional-tests.md`](./pdf-ops-functional-tests.md)
+> Index: [`/llms.txt`](../../../llms.txt) · Runnable API & IPC Guide: [`docs/tools/pdf-ops/pdf-ops-agent-guide.md`](./pdf-ops-agent-guide.md) · JSON Schema Contract: [`docs/specs/pdf-ops.schema.json`](../../specs/pdf-ops.schema.json) · Functional Tests: [`docs/tools/pdf-ops/pdf-ops-functional-tests.md`](./pdf-ops-functional-tests.md)
 
 # Kiến trúc & Cơ chế Hoạt động của `PDF Merge & Split` (`pdf-ops`, Knit `v0.2.0`)
 
@@ -21,7 +21,7 @@ Tài liệu này mô tả cách công cụ **`PDF Merge & Split`** (`PdfOpsView`
 
 ## 1. Tổng quan Kiến trúc 3 Tầng
 
-Sơ đồ 3 tầng tách biệt trạng thái hiển thị nhẹ trên React/WebView khỏi đọc/render/stream PDF thuần Rust (`.mmd`: [`pdf_ops_01_architecture_three_layer.mmd`](./diagrams/pdf_ops_01_architecture_three_layer.mmd)):
+Sơ đồ 3 tầng tách biệt trạng thái hiển thị nhẹ trên React/WebView khỏi đọc/render/stream PDF thuần Rust (`.mmd`: [`pdf_ops_01_architecture_three_layer.mmd`](../../diagrams/pdf_ops_01_architecture_three_layer.mmd)):
 
 ```mermaid
 flowchart TD
@@ -122,7 +122,7 @@ flowchart LR
 
 ### 3.1. Tách IPC Semaphore & Trình tự Nạp / Xem trước / Xuất
 
-Sơ đồ trình tự đầy đủ từ `pdf_inspect` đến xem trước song song và streaming export (`.mmd`: [`pdf_ops_02_sequence_merge_split.mmd`](./diagrams/pdf_ops_02_sequence_merge_split.mmd)):
+Sơ đồ trình tự đầy đủ từ `pdf_inspect` đến xem trước song song và streaming export (`.mmd`: [`pdf_ops_02_sequence_merge_split.mmd`](../../diagrams/pdf_ops_02_sequence_merge_split.mmd)):
 
 ```mermaid
 sequenceDiagram
@@ -186,15 +186,15 @@ Trong `PdfMergePane.tsx` và `pdfOpsTypes.ts`, người dùng có thể chuyển
 
 ## 5. Tham chiếu Mã nguồn (Source Map)
 
-- **Agent API & Schema:** [`docs/pdf-ops-agent-guide.md`](./pdf-ops-agent-guide.md), [`docs/specs/pdf-ops.schema.json`](./specs/pdf-ops.schema.json), [`docs/pdf-ops-functional-tests.md`](./pdf-ops-functional-tests.md)
-- **Backend PDF Operations & Streaming:** [`crates/knit-pdf/src/ops.rs`](../crates/knit-pdf/src/ops.rs) (`inspect_pdf`, `HAYRO_PDF_CACHE`, `evict_pdf_reader_cache_paths`, `merge_pdfs`, `split_pdf`, `split_multi_pdf`, `parse_page_ranges`, `stream_doc_occurrences_to_writer`)
-- **PDF Models & Split Rules:** [`crates/knit-pdf/src/models.rs`](../crates/knit-pdf/src/models.rs) (`PdfInfo`, `PdfMergeConfig`, `PageSelection`, `PdfSplitGroup`, `PdfSplitRule`, `PdfBuildResult`)
-- **Tauri IPC, Semaphores & Heap Trim:** [`src-tauri/src/lib.rs`](../src-tauri/src/lib.rs) (`pdf_inspect`, `render_pdf_thumb_file`, `render_pdf_page_preview_file`, `read_pdf_file_bytes`, `pdf_release_cached_files`, `pdf_merge`, `pdf_split`, `pdf_split_multi`)
+- **Agent API & Schema:** [`docs/tools/pdf-ops/pdf-ops-agent-guide.md`](./pdf-ops-agent-guide.md), [`docs/specs/pdf-ops.schema.json`](../../specs/pdf-ops.schema.json), [`docs/tools/pdf-ops/pdf-ops-functional-tests.md`](./pdf-ops-functional-tests.md)
+- **Backend PDF Operations & Streaming:** [`crates/knit-pdf/src/ops.rs`](../../../crates/knit-pdf/src/ops.rs) (`inspect_pdf`, `HAYRO_PDF_CACHE`, `evict_pdf_reader_cache_paths`, `merge_pdfs`, `split_pdf`, `split_multi_pdf`, `parse_page_ranges`, `stream_doc_occurrences_to_writer`)
+- **PDF Models & Split Rules:** [`crates/knit-pdf/src/models.rs`](../../../crates/knit-pdf/src/models.rs) (`PdfInfo`, `PdfMergeConfig`, `PageSelection`, `PdfSplitGroup`, `PdfSplitRule`, `PdfBuildResult`)
+- **Tauri IPC, Semaphores & Heap Trim:** [`src-tauri/src/lib.rs`](../../../src-tauri/src/lib.rs) (`pdf_inspect`, `render_pdf_thumb_file`, `render_pdf_page_preview_file`, `read_pdf_file_bytes`, `pdf_release_cached_files`, `pdf_merge`, `pdf_split`, `pdf_split_multi`)
 - **Frontend Views, Cards & Hooks:**
-  - [`src/views/PdfOpsView.tsx`](../src/views/PdfOpsView.tsx)
-  - [`src/views/pdf-ops/LoadedPdfList.tsx`](../src/views/pdf-ops/LoadedPdfList.tsx)
-  - [`src/views/pdf-ops/PdfMergePane.tsx`](../src/views/pdf-ops/PdfMergePane.tsx)
-  - [`src/views/pdf-ops/PdfSplitPane.tsx`](../src/views/pdf-ops/PdfSplitPane.tsx)
-  - [`src/views/pdf-ops/pdfOpsTypes.ts`](../src/views/pdf-ops/pdfOpsTypes.ts)
-  - [`src/components/PdfPageCards.tsx`](../src/components/PdfPageCards.tsx)
-  - [`src/components/BookmarkPageBadge.tsx`](../src/components/BookmarkPageBadge.tsx)
+  - [`src/views/PdfOpsView.tsx`](../../../src/views/PdfOpsView.tsx)
+  - [`src/views/pdf-ops/LoadedPdfList.tsx`](../../../src/views/pdf-ops/LoadedPdfList.tsx)
+  - [`src/views/pdf-ops/PdfMergePane.tsx`](../../../src/views/pdf-ops/PdfMergePane.tsx)
+  - [`src/views/pdf-ops/PdfSplitPane.tsx`](../../../src/views/pdf-ops/PdfSplitPane.tsx)
+  - [`src/views/pdf-ops/pdfOpsTypes.ts`](../../../src/views/pdf-ops/pdfOpsTypes.ts)
+  - [`src/components/PdfPageCards.tsx`](../../../src/components/PdfPageCards.tsx)
+  - [`src/components/BookmarkPageBadge.tsx`](../../../src/components/BookmarkPageBadge.tsx)

@@ -8,11 +8,11 @@ ipc_commands:
   - manga_pack
   - cancel_job
 schema: docs/specs/manga-pack.schema.json
-architecture: docs/manga-pack-architecture.md
+architecture: docs/tools/manga-pack/manga-pack-architecture.md
 deprecated: false
 ---
 
-> Index: [`/llms.txt`](../llms.txt) · Machine-readable contract: [`docs/specs/manga-pack.schema.json`](./specs/manga-pack.schema.json) · Architecture & Mermaid diagram: [`docs/manga-pack-architecture.md`](./manga-pack-architecture.md)
+> Index: [`/llms.txt`](../../../llms.txt) · Machine-readable contract: [`docs/specs/manga-pack.schema.json`](../../specs/manga-pack.schema.json) · Architecture & Mermaid diagram: [`docs/tools/manga-pack/manga-pack-architecture.md`](./manga-pack-architecture.md)
 
 # Knit `manga-pack` — Agent Integration & API Reference (`v0.2.0`)
 

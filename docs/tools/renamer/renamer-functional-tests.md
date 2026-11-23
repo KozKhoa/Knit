@@ -3,17 +3,17 @@ title: Knit renamer Functional Test Suite
 description: Systematic ISTQB functional test design (Domain EP/BVA, Decision Tables, State Transitions, Use Cases, Fault Attack/Error Guessing, and RTM) for Knit Batch Renamer.
 version: 0.2.0
 crates: [knit-renamer, knit-core, knit-desktop]
-agent_guide: docs/renamer-agent-guide.md
-architecture: docs/renamer-architecture.md
+agent_guide: docs/tools/renamer/renamer-agent-guide.md
+architecture: docs/tools/renamer/renamer-architecture.md
 schema: docs/specs/renamer.schema.json
 deprecated: false
 ---
 
-> Index: [`/llms.txt`](../llms.txt) · Agent Integration Guide: [`docs/renamer-agent-guide.md`](./renamer-agent-guide.md) · Architecture: [`docs/renamer-architecture.md`](./renamer-architecture.md) · Machine-Readable Spec: [`docs/specs/renamer.schema.json`](./specs/renamer.schema.json)
+> Index: [`/llms.txt`](../../../llms.txt) · Agent Integration Guide: [`docs/tools/renamer/renamer-agent-guide.md`](./renamer-agent-guide.md) · Architecture: [`docs/tools/renamer/renamer-architecture.md`](./renamer-architecture.md) · Machine-Readable Spec: [`docs/specs/renamer.schema.json`](../../specs/renamer.schema.json)
 
 # Bộ Test Case Chức năng — `Batch Renamer` (`renamer`, Knit `v0.2.0`)
 
-Bộ thiết kế kiểm thử chức năng cho **`Batch Renamer`** (`RenamerView` + `crates/knit-renamer`), đối chiếu trực tiếp với [`docs/renamer-agent-guide.md`](./renamer-agent-guide.md) và [`docs/specs/renamer.schema.json`](./specs/renamer.schema.json).
+Bộ thiết kế kiểm thử chức năng cho **`Batch Renamer`** (`RenamerView` + `crates/knit-renamer`), đối chiếu trực tiếp với [`docs/tools/renamer/renamer-agent-guide.md`](./renamer-agent-guide.md) và [`docs/specs/renamer.schema.json`](../../specs/renamer.schema.json).
 
 ---
 

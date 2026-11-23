@@ -14,11 +14,11 @@ ipc_commands:
   - pdf_split_multi
   - cancel_job
 schema: docs/specs/pdf-ops.schema.json
-architecture: docs/pdf-ops-architecture.md
+architecture: docs/tools/pdf-ops/pdf-ops-architecture.md
 deprecated: false
 ---
 
-> Index: [`/llms.txt`](../llms.txt) · Machine-readable contract: [`docs/specs/pdf-ops.schema.json`](./specs/pdf-ops.schema.json) · Architecture & Mermaid diagrams: [`docs/pdf-ops-architecture.md`](./pdf-ops-architecture.md)
+> Index: [`/llms.txt`](../../../llms.txt) · Machine-readable contract: [`docs/specs/pdf-ops.schema.json`](../../specs/pdf-ops.schema.json) · Architecture & Mermaid diagrams: [`docs/tools/pdf-ops/pdf-ops-architecture.md`](./pdf-ops-architecture.md)
 
 # Knit `pdf-ops` — Agent Integration & API Reference (`v0.2.0`)
 

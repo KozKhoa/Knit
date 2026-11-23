@@ -1,57 +1,59 @@
 # Knit
 
-> Offline desktop workbench (Rust Workspace + Tauri v2 + React/TypeScript) for converting images and documents into PDF, merging/splitting PDFs, packing encrypted archives or manga volumes, and batch-renaming files. Current workspace version: 0.2.0.
+> Offline desktop workbench (Rust Workspace + Tauri v2 + React/TypeScript) for converting images and documents into PDF, merging/splitting PDFs, packing encrypted archives or manga volumes, and batch-renaming files. Current workspace version: 0.2.1.
 
 ## image2pdf Integration & API Surfaces
 
-- [image2pdf Agent Guide](docs/image2pdf-agent-guide.md): runnable TypeScript Tauri IPC and pure-Rust `knit-pdf` snippets, SVG/GIF RichMedia support, UI-to-API mapping, config/bounds tables, and exact error string fixes
+- [image2pdf Agent Guide](docs/tools/image2pdf/image2pdf-agent-guide.md): runnable TypeScript Tauri IPC and pure-Rust `knit-pdf` snippets, SVG/GIF RichMedia support, UI-to-API mapping, config/bounds tables, and exact error string fixes
 - [image2pdf Machine-Readable Schema](docs/specs/image2pdf.schema.json): Draft 2020-12 JSON Schema for `PageDraft`, `BookmarkNode`, `Image2PdfConfig`, `PdfBuildResult`, and annotated `x-ipc-operations`
-- [image2pdf Architecture & Diagrams](docs/image2pdf-architecture.md): three-layer architecture, streaming writer, dual-semaphore preview pipeline, domain class diagram, and validated Mermaid diagrams
-- [image2pdf Functional Test Suite](docs/image2pdf-functional-tests.md): ISTQB functional test cases (Domain EP/BVA, Decision Tables, State Transitions, Use Cases, Fault Attack) and Requirements Traceability Matrix
+- [image2pdf Architecture & Diagrams](docs/tools/image2pdf/image2pdf-architecture.md): three-layer architecture, streaming writer, dual-semaphore preview pipeline, domain class diagram, and validated Mermaid diagrams
+- [image2pdf Functional Test Suite](docs/tools/image2pdf/image2pdf-functional-tests.md): ISTQB functional test cases (Domain EP/BVA, Decision Tables, State Transitions, Use Cases, Fault Attack) and Requirements Traceability Matrix
 
 ## pdf-ops (PDF Merge & Split) Integration & API Surfaces
 
-- [pdf-ops Agent Guide](docs/pdf-ops-agent-guide.md): runnable TypeScript Tauri IPC and pure-Rust `knit-pdf::ops` snippets, merge/split rules, and exact error strings
+- [pdf-ops Agent Guide](docs/tools/pdf-ops/pdf-ops-agent-guide.md): runnable TypeScript Tauri IPC and pure-Rust `knit-pdf::ops` snippets, merge/split rules, and exact error strings
 - [pdf-ops Machine-Readable Schema](docs/specs/pdf-ops.schema.json): Draft 2020-12 JSON Schema for `PdfInfo`, `PageSelection`, `PdfMergeConfig`, `PdfSplitRule` (5 variants), and `x-ipc-operations`
-- [pdf-ops Architecture & Diagrams](docs/pdf-ops-architecture.md): mmap `inspect_pdf` filtering, 4-entry `HAYRO_PDF_CACHE`, 1-file-at-a-time streaming `merge_pdfs`, `per_page`/`per_file` merge modes, and virtualized grid UI
-- [pdf-ops Functional Test Suite](docs/pdf-ops-functional-tests.md): ISTQB functional test cases and RTM for PDF Merge & Split
+- [pdf-ops Architecture & Diagrams](docs/tools/pdf-ops/pdf-ops-architecture.md): mmap `inspect_pdf` filtering, 4-entry `HAYRO_PDF_CACHE`, 1-file-at-a-time streaming `merge_pdfs`, `per_page`/`per_file` merge modes, and virtualized grid UI
+- [pdf-ops Functional Test Suite](docs/tools/pdf-ops/pdf-ops-functional-tests.md): ISTQB functional test cases and RTM for PDF Merge & Split
 
 ## docs2pdf (Document -> PDF) Integration & API Surfaces
 
-- [docs2pdf Agent Guide](docs/docs2pdf-agent-guide.md): runnable TypeScript Tauri IPC and pure-Rust `knit-docs` snippets for Markdown, code, HTML/CDP slide-step, EPUB, and LibreOffice DOCX/PPTX
+- [docs2pdf Agent Guide](docs/tools/docs2pdf/docs2pdf-agent-guide.md): runnable TypeScript Tauri IPC and pure-Rust `knit-docs` snippets for Markdown, code, HTML/CDP slide-step, EPUB, and LibreOffice DOCX/PPTX
 - [docs2pdf Machine-Readable Schema](docs/specs/docs2pdf.schema.json): Draft 2020-12 JSON Schema for `DocInputKind`, `DocConvertOptions`, `HtmlRenderMode`, `HtmlStepTrigger`, `EngineStatus`, and `x-ipc-operations`
-- [docs2pdf Architecture & Diagrams](docs/docs2pdf-architecture.md): three-tier conversion engines (Typst, Chromium CDP WebSocket, isolated `soffice`), cache eviction (`ComemoEvictGuard`, `LAST_PARSED_EPUB`, `LAST_CONVERTED_OFFICE`), and multi-language CodeMirror linter
-- [docs2pdf Functional Test Suite](docs/docs2pdf-functional-tests.md): ISTQB functional test cases and RTM for Document -> PDF
+- [docs2pdf Architecture & Diagrams](docs/tools/docs2pdf/docs2pdf-architecture.md): three-tier conversion engines (Typst, Chromium CDP WebSocket, isolated `soffice`), cache eviction (`ComemoEvictGuard`, `LAST_PARSED_EPUB`, `LAST_CONVERTED_OFFICE`), and multi-language CodeMirror linter
+- [docs2pdf Functional Test Suite](docs/tools/docs2pdf/docs2pdf-functional-tests.md): ISTQB functional test cases and RTM for Document -> PDF
 
 ## archive (Archive Packager) Integration & API Surfaces
 
-- [archive Agent Guide](docs/archive-agent-guide.md): runnable TypeScript Tauri IPC and pure-Rust `knit-archive` snippets for ZIP (AES-256 / ZipCrypto), TAR, TAR.GZ, and TAR.ZST
+- [archive Agent Guide](docs/tools/archive/archive-agent-guide.md): runnable TypeScript Tauri IPC and pure-Rust `knit-archive` snippets for ZIP (AES-256 / ZipCrypto), TAR, TAR.GZ, and TAR.ZST
 - [archive Machine-Readable Schema](docs/specs/archive.schema.json): Draft 2020-12 JSON Schema for `ArchiveFormat`, `CompressionLevel`, `ZipEncryption`, `ArchiveOptions`, `ArchiveEntrySpec`, and `x-ipc-operations`
-- [archive Architecture & Diagram](docs/archive-architecture.md): streaming 64 KiB I/O, `ArchiveTreeEditor` customization, non-blocking output size estimation, ZIP64 support, and atomic `.knit_tmp` writes
-- [archive Functional Test Suite](docs/archive-functional-tests.md): ISTQB functional test cases and RTM for Archive Packager
+- [archive Architecture & Diagram](docs/tools/archive/archive-architecture.md): streaming 64 KiB I/O, `ArchiveTreeEditor` customization, non-blocking output size estimation, ZIP64 support, and atomic `.knit_tmp` writes
+- [archive Functional Test Suite](docs/tools/archive/archive-functional-tests.md): ISTQB functional test cases and RTM for Archive Packager
 
 ## manga-pack (Manga Packager) Integration & API Surfaces
 
-- [manga-pack Agent Guide](docs/manga-pack-agent-guide.md): runnable TypeScript Tauri IPC and pure-Rust `knit-manga` snippets for scanning Volume/Arc/Chapter hierarchies and packing `.zip`/`.cbz`
+- [manga-pack Agent Guide](docs/tools/manga-pack/manga-pack-agent-guide.md): runnable TypeScript Tauri IPC and pure-Rust `knit-manga` snippets for scanning Volume/Arc/Chapter hierarchies and packing `.zip`/`.cbz`
 - [manga-pack Machine-Readable Schema](docs/specs/manga-pack.schema.json): Draft 2020-12 JSON Schema for `MangaScanMode`, `NodeRef`, `Story`, `StoryInfo`, `MangaPackOptions`, and `x-ipc-operations`
-- [manga-pack Architecture & Diagram](docs/manga-pack-architecture.md): `Auto` single/library heuristic, NFC normalization, path-traversal-safe cover resolution, whole-story `max_gb` splitting, and RFC 4180 `stories.csv`
-- [manga-pack Functional Test Suite](docs/manga-pack-functional-tests.md): ISTQB functional test cases and RTM for Manga Packager
+- [manga-pack Architecture & Diagram](docs/tools/manga-pack/manga-pack-architecture.md): `Auto` single/library heuristic, NFC normalization, path-traversal-safe cover resolution, whole-story `max_gb` splitting, and RFC 4180 `stories.csv`
+- [manga-pack Functional Test Suite](docs/tools/manga-pack/manga-pack-functional-tests.md): ISTQB functional test cases and RTM for Manga Packager
 
 ## renamer (Batch Renamer) Integration & API Surfaces
 
-- [renamer Agent Guide](docs/renamer-agent-guide.md): runnable TypeScript Tauri IPC and pure-Rust `knit-renamer` snippets for `ScanFilter`, `PrenameEngine` (`s///`, `y///`), 10 `FixedPresets`, `UserPreset`, and undo rollback
+- [renamer Agent Guide](docs/tools/renamer/renamer-agent-guide.md): runnable TypeScript Tauri IPC and pure-Rust `knit-renamer` snippets for `ScanFilter`, `PrenameEngine` (`s///`, `y///`), 10 `FixedPresets`, `UserPreset`, and undo rollback
 - [renamer Machine-Readable Schema](docs/specs/renamer.schema.json): Draft 2020-12 JSON Schema for `ScanFilter`, `RenameRule`, `RenamePlan`, `UserPreset`, `UndoManifest`, and `x-ipc-operations`
-- [renamer Architecture & Diagram](docs/renamer-architecture.md): two-layer filtering, `CachedRenamerScan`, case-insensitive collision detection, Bottom-Up execution, Windows case-only safety, and atomic `UndoManifest`
-- [renamer Functional Test Suite](docs/renamer-functional-tests.md): ISTQB functional test cases and RTM for Batch Renamer
+- [renamer Architecture & Diagram](docs/tools/renamer/renamer-architecture.md): two-layer filtering, `CachedRenamerScan`, case-insensitive collision detection, Bottom-Up execution, Windows case-only safety, and atomic `UndoManifest`
+- [renamer Functional Test Suite](docs/tools/renamer/renamer-functional-tests.md): ISTQB functional test cases and RTM for Batch Renamer
 
 ## Workspace Reference
 
 - [Project Architecture](ARCHITECTURE.md): Rust workspace crates, Tauri v2 IPC boundary, and data flow across all tools
 - [Project Rules](RULES.md): non-negotiable workspace boundary, UI icon, and atomic write invariants
+- [Docs Directory Index](docs/README.md): organized map of tool guides, schemas, diagrams, proposals, and ADRs
 - [Domain Glossary](docs/glossary.md): canonical definitions for `PageDraft`, `BookmarkNode`, `AtomicOutput`, `ScanFilter`, and `RenamePlan`
 
 ## Optional
 
 - [Product Requirements](PRD.md): v1 feature scope and functional goals
 - [Progress Log](PROGRESS.md): chronological implementation milestones and verification history
-- [Architecture Decision Records](docs/decisions/): ADR-001 through ADR-005 design rationale
+- [Architecture Decision Records](docs/decisions/): ADR-001 through ADR-006 design rationale
+- [Design Proposals & Grill Reports](docs/proposals/): pre-implementation Q&A and design baselines (e.g. `pdf2md`)

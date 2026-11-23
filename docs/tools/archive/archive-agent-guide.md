@@ -10,11 +10,11 @@ ipc_commands:
   - get_file_size_bytes
   - cancel_job
 schema: docs/specs/archive.schema.json
-architecture: docs/archive-architecture.md
+architecture: docs/tools/archive/archive-architecture.md
 deprecated: false
 ---
 
-> Index: [`/llms.txt`](../llms.txt) · Machine-readable contract: [`docs/specs/archive.schema.json`](./specs/archive.schema.json) · Architecture & Mermaid diagram: [`docs/archive-architecture.md`](./archive-architecture.md)
+> Index: [`/llms.txt`](../../../llms.txt) · Machine-readable contract: [`docs/specs/archive.schema.json`](../../specs/archive.schema.json) · Architecture & Mermaid diagram: [`docs/tools/archive/archive-architecture.md`](./archive-architecture.md)
 
 # Knit `archive` — Agent Integration & API Reference (`v0.2.0`)
 
