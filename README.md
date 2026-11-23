@@ -38,7 +38,11 @@ pnpm tauri build
 - [docs/glossary.md](docs/glossary.md) — Từ điển thuật ngữ miền nghiệp vụ
 - [docs/decisions/](docs/decisions/) — Architecture Decision Records (`ADR-001`..`ADR-005`)
 - [llms.txt](llms.txt) — Mục lục tài liệu tối ưu cho coding agents (chuẩn `llmstxt.org`)
-- [docs/image2pdf-agent-guide.md](docs/image2pdf-agent-guide.md) — Hướng dẫn tích hợp `image2pdf` (TypeScript Tauri IPC & Rust `knit-pdf`, bảng tham số & mã lỗi)
-- [docs/image2pdf-architecture.md](docs/image2pdf-architecture.md) — Tài liệu thiết kế kiến trúc & sơ đồ Mermaid cho `image2pdf`
-- [docs/specs/image2pdf.schema.json](docs/specs/image2pdf.schema.json) — JSON Schema & đặc tả hợp đồng IPC cho `image2pdf`
-- [docs/image2pdf-functional-tests.md](docs/image2pdf-functional-tests.md) — Bộ test case chức năng chuẩn ISTQB & Ma trận truy xuất yêu cầu (RTM) cho `image2pdf`
+
+### Tài liệu Chuyên sâu theo Từng Tool (`Architecture` · `Agent Guide` · `JSON Schema` · `Functional Tests`)
+1. **Image → PDF (`image2pdf`):** [Architecture](docs/image2pdf-architecture.md) · [Agent Guide](docs/image2pdf-agent-guide.md) · [Schema](docs/specs/image2pdf.schema.json) · [Functional Tests](docs/image2pdf-functional-tests.md)
+2. **PDF Merge & Split (`pdf-ops`):** [Architecture](docs/pdf-ops-architecture.md) · [Agent Guide](docs/pdf-ops-agent-guide.md) · [Schema](docs/specs/pdf-ops.schema.json) · [Functional Tests](docs/pdf-ops-functional-tests.md)
+3. **Document → PDF (`docs2pdf`):** [Architecture](docs/docs2pdf-architecture.md) · [Agent Guide](docs/docs2pdf-agent-guide.md) · [Schema](docs/specs/docs2pdf.schema.json) · [Functional Tests](docs/docs2pdf-functional-tests.md)
+4. **Archive Packager (`archive`):** [Architecture](docs/archive-architecture.md) · [Agent Guide](docs/archive-agent-guide.md) · [Schema](docs/specs/archive.schema.json) · [Functional Tests](docs/archive-functional-tests.md)
+5. **Manga Packager (`manga-pack`):** [Architecture](docs/manga-pack-architecture.md) · [Agent Guide](docs/manga-pack-agent-guide.md) · [Schema](docs/specs/manga-pack.schema.json) · [Functional Tests](docs/manga-pack-functional-tests.md)
+6. **Batch Renamer (`renamer`):** [Architecture](docs/renamer-architecture.md) · [Agent Guide](docs/renamer-agent-guide.md) · [Schema](docs/specs/renamer.schema.json) · [Functional Tests](docs/renamer-functional-tests.md)

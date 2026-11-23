@@ -2,7 +2,7 @@
 
 ## Tổng quan Trạng thái
 - **Giai đoạn hiện tại:** Hoàn tất toàn bộ 6 core crates (`knit-core`, `knit-archive`, `knit-manga`, `knit-renamer`, `knit-pdf`, `knit-docs`), Frontend React/TypeScript/Tailwind Workbench, lớp vỏ `src-tauri` Desktop Shell và GitHub Actions CI/Release.
-- **Cập nhật lần cuối:** 2026-11-21
+- **Cập nhật lần cuối:** 2026-11-23
 
 | Milestone | Trạng thái | Ghi chú |
 |---|---|---|
@@ -125,3 +125,23 @@
 - **ISTQB Functional Test Suite & Layer 1+2 Automation**: Documented 40 functional test cases + RTM in `docs/image2pdf-functional-tests.md`, added 3 comprehensive Rust integration suites in `crates/knit-pdf/tests/pdf_tests.rs`, and created `src/views/Image2PdfView.test.tsx` (6 Vitest/jsdom state-machine & UI tests).
 - **Bug Caught & Fixed by BVA (`TC-DOM-07`)**: Fixed `f32::clamp` panic (`min > max`) in `crates/knit-pdf/src/imaging.rs` (`apply_edits` & `rasterize_annotations`) when rasterizing text annotations on tiny cropped heights (`h < 20px`), and synced multi-part PDF naming (`_part01.pdf`) across docs.
 - **Verification**: `cargo test --workspace` (54/54), `cargo check -p knit-desktop` (exit 0), `pnpm build` (exit 0), `pnpm test` (21/21 files, 75/75 tests), `python3 .agents/skills/knit-qa-gate/scripts/audit-rules.py` (Pass).
+
+## Review v1.16 Implementation (2026-11-21)
+- **Image2PDF SVG & Animated GIF `/RichMedia`**: Added pure-Rust SVG rendering (`usvg`/`resvg`/`tiny-skia`), `AnimatedImagePolicy::EmbedRichMedia` (`/RichMedia` + `/Screen` annotations), `pdf_sync_animated_drafts`, separated `loadThumbs` + added `prependNewFiles` insert option, and removed double-click zoom modal from `Docs2Pdf`.
+- **Parallel Exports, Resize Splitters & Archive Tree Preview**: Enabled concurrent export jobs across distinct output paths (`activeExportPaths`), `PaneResizeHandle` horizontal splitters in `Docs2Pdf` and `PdfOps`, `Alt + Click` quick bookmark attach, `MergeFileCard` double-click modal, `Ctrl/Cmd + Scroll` preview zoom, and `ArchiveTreeEditor` custom structure & per-entry compression preview.
+- **Verification**: `cargo test --workspace` (55/55), `cargo check -p knit-desktop` (exit 0), `pnpm build` (exit 0), `pnpm test` (23/23 files, 87/87 tests).
+
+## Review v1.17 Implementation (2026-11-22)
+- **PDF Merge Memory & Duplicate Disambiguation**: Eliminated multi-GB memory retention during load/merge/remove/zoom (`filter_deferred_heavy_streams`, `read_pdf_file_bytes`, `pdf_release_cached_files`) and updated `LoadedPdfList` to show inline single-line path for shared filenames vs blue Info badge for exact duplicate files.
+- **Docs to PDF Browser Rendering, EPUB Drop-Caps & Office Preview**: Added Chromium `--print-to-pdf` HTML rendering (`compile_html_via_browser_to_pdf_bytes`), EPUB CSS drop-cap `.gif` grid layout (`parse_epub_css`), and read-only PDF preview for `.docx`/`.pptx` via `compile_office_to_pdf_bytes` + `LAST_CONVERTED_OFFICE`.
+- **Verification**: `cargo test --workspace` (58/58), `cargo check -p knit-desktop` (exit 0), `pnpm build` (exit 0), `pnpm test` (24/24 files, 89/89 tests).
+
+## Review v1.18 Implementation & `v0.2.0` Release (2026-11-22 — 2026-11-23)
+- **Multi-Language CodeMirror Editor & Responsive 2-Column Preview**: Upgraded `MarkdownCodeEditor` with dynamic `Compartment` switching across 8 languages (`markdown`, `html`, `css`, `javascript`, `typescript`, `jsx`, `tsx`, `plain_text`), offline `@codemirror/lint` syntax diagnostics, `rem` font scaling, and `>= 1200px` 2-column layout for read-only EPUB/DOCX/PPTX.
+- **Chromium CDP HTML Slide-Step Export**: Added `crates/knit-docs/src/cdp.rs` supporting `HtmlRenderMode` (`auto`, `document_print`, `slide_step`) and `HtmlStepTrigger` (`auto_key`, `key`, `click_selector`, `click_point`) with `fnv1a_64` state deduplication, `EINTR` socket retry, and `lopdf` vector PDF assembly.
+- **Release `v0.2.0`**: Bumped workspace version to `0.2.0` and updated `.github/workflows/release.yml` to attach portable Windows `.exe` builds.
+- **Verification**: `cargo test --workspace` (63/63), `cargo check -p knit-desktop` (exit 0), `pnpm build` (exit 0), `pnpm test` (25/25 files, 96/96 tests).
+
+## Complete 6-Tool Documentation Suite & Sync (2026-11-23)
+- **Synchronized `v0.2.0` Docs**: Updated `docs/image2pdf-*`, `docs/specs/image2pdf.schema.json`, `docs/pdf-ops-architecture.md`, and `docs/decisions/ADR-002-document-conversion-tiered-engines.md` to match current code (`.svg`, `embed_rich_media`, `pdf_sync_animated_drafts`, `per_page`/`per_file`, Chromium CDP WebSocket tier).
+- **Completed Full 4-Doc Suites for All Remaining Tools**: Authored `*-architecture.md`, `*-agent-guide.md`, `docs/specs/*.schema.json`, `*-functional-tests.md`, and Mermaid diagrams (`docs/diagrams/*.mmd`) for `pdf-ops`, `docs2pdf`, `archive`, `manga-pack`, and `renamer`, indexed in `llms.txt` and `README.md`.
