@@ -1,0 +1,19 @@
+# Maintainer: Knit Contributors
+pkgname=knit-bin
+pkgver=0.2.1
+pkgrel=1
+pkgdesc="Offline desktop workbench for images/docs to PDF, PDF merge/split, encrypted archives, manga packing, and batch renaming"
+arch=('x86_64')
+url="https://github.com/KozKhoa/Knit"
+license=('MIT')
+depends=('webkit2gtk-4.1' 'gtk3' 'libsoup3' 'librsvg' 'hicolor-icon-theme')
+provides=('knit')
+conflicts=('knit')
+source=("Knit_${pkgver}_linux_x86_64.tar.gz::https://github.com/KozKhoa/Knit/releases/download/v${pkgver}/Knit_${pkgver}_linux_x86_64.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+  install -Dm755 "${srcdir}/knit-desktop" "${pkgdir}/usr/bin/knit-desktop"
+  install -Dm644 "${srcdir}/knit.desktop" "${pkgdir}/usr/share/applications/knit.desktop"
+  install -Dm644 "${srcdir}/knit.png" "${pkgdir}/usr/share/icons/hicolor/128x128/apps/knit.png"
+}

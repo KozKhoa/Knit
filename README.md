@@ -21,11 +21,18 @@ pnpm build
 pnpm test
 
 # Chạy / đóng gói ứng dụng Desktop Tauri
-# (Trên Linux Fedora cần: sudo dnf install webkit2gtk4.1-devel gtk3-devel libsoup3-devel librsvg2-devel)
-# (Trên Ubuntu cần: sudo apt-get install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf)
+# - Ubuntu/Debian: sudo apt-get install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+# - Fedora:        sudo dnf install webkit2gtk4.1-devel gtk3-devel libsoup3-devel librsvg2-devel rpm-build
+# - Arch Linux:    sudo pacman -S --needed webkit2gtk-4.1 gtk3 libsoup3 librsvg base-devel
 pnpm tauri dev
 pnpm tauri build
 ```
+
+## Hỗ trợ Hệ điều hành & Gói cài đặt (GitHub Releases)
+- **Windows 10 / 11 (`x86_64`):** Bộ cài NSIS (`.exe`) và bản chạy ngay Portable (`Knit_<ver>_x64-portable.exe`).
+- **Ubuntu / Debian-base:** Gói `.deb` và `.AppImage`.
+- **Fedora / RHEL-base:** Gói `.rpm` và `.AppImage`.
+- **Arch-base (Arch / Manjaro / EndeavourOS):** Dùng `.AppImage`, hoặc cài qua `PKGBUILD` ([packaging/arch/PKGBUILD](packaging/arch/PKGBUILD)) + `Knit_<ver>_linux_x86_64.tar.gz` (`makepkg -si`).
 
 ## Hệ thống Tài liệu Dự án
 - [PRD.md](PRD.md) — Yêu cầu sản phẩm và phạm vi v1

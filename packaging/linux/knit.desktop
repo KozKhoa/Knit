@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Knit
+Comment=Offline File & Document Workbench
+Exec=knit-desktop
+Icon=knit
+Terminal=false
+Type=Application
+Categories=Utility;Office;
+StartupWMClass=knit-desktop
