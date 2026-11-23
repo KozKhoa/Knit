@@ -1,0 +1,35 @@
+flowchart TD
+    subgraph FE["Frontend React + TS (src/views/ArchiveView.tsx)"]
+        View["📦 ArchiveView\n(format, compression, encryption, includeRootDir, ignoreHidden)"]
+        Tree["🌲 ArchiveTreeEditor\n(buildArchiveTreeFromEntries / flattenArchiveTreeToEntries)"]
+        EstUI["📊 Size Estimate\n(archive_estimate_size)"]
+    end
+
+    subgraph IPC["Desktop Shell Adapter (src-tauri/src/lib.rs)"]
+        CollectCmd["🔍 archive_collect_entries\n(collect_entries)"]
+        EstCmd["⚖️ archive_estimate_size\n(estimate_archive_entries / estimate_archive_output)"]
+        PackCmd["🚀 archive_pack\n(spawn_blocking + 100ms ThrottledReporter)"]
+    end
+
+    subgraph Core["Pure Rust Core (crates/knit-archive/src/lib.rs)"]
+        Walk["📂 collect_entries\n(WalkDir follow_links=false + POSIX '/')"]
+        Ratio["📐 estimate_archive_entries\n(is_already_compressed_ext vs compressible)"]
+        Preflight["💾 ensure_disk_space\n(total + total/50 + 1 MiB)"]
+        ZipW["🔐 write_zip\n(Store/Deflate + AES-256 / ZipCrypto + ZIP64)"]
+        TarW["🗜️ write_tar\n(Tar / TarGz flate2 / TarZst zstd)"]
+        Atomic["🛡️ Atomic Rename\n(.<name>.knit_tmp.<pid> -> output_path)"]
+    end
+
+    View --> Tree & EstUI
+    View -->|"Scan inputs"| CollectCmd --> Walk
+    EstUI -->|"Live ~size"| EstCmd --> Ratio
+    Tree -->|"customEntries"| PackCmd
+    PackCmd --> Preflight --> ZipW & TarW --> Atomic
+
+    classDef ui fill:#E7F1FF,stroke:#007BFF,stroke-width:2px,color:#003366
+    classDef ipc fill:#FFF3CD,stroke:#D39E00,stroke-width:2px,color:#533F03
+    classDef core fill:#D4EDDA,stroke:#28A745,stroke-width:2px,color:#155724
+
+    class View,Tree,EstUI ui
+    class CollectCmd,EstCmd,PackCmd ipc
+    class Walk,Ratio,Preflight,ZipW,TarW,Atomic core

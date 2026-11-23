@@ -1,0 +1,39 @@
+flowchart TD
+    subgraph FE["Frontend React + TS (src/views/RenamerView.tsx)"]
+        View["✏️ RenamerView\n(roots[], Undo banner, Presets)"]
+        FilterCard["🔍 RenamerFilterCard\n(TargetType, recursive, max_depth, globs/regex, ext)"]
+        RuleCard["⚙️ RenamerRuleCard\n(FindReplace, Perl s/// y///, 10 FixedPresets, UserPresets)"]
+        Table["📋 RenamerPreviewTable\n(Sticky header, sortable cols, per-row selected checkbox)"]
+    end
+
+    subgraph IPC["Desktop Shell Adapter (src-tauri/src/lib.rs)"]
+        PrevCmd["👁️ renamer_preview\n(CachedRenamerScan cache by roots+filter)"]
+        ColCmd["⚠️ renamer_recompute_collisions\n(after checkbox toggle)"]
+        ApplyCmd["🚀 renamer_apply\n(apply_rename_plan + invalidate cache)"]
+        UndoCmd["↩️ renamer_undo_last / renamer_has_undo"]
+        PresetCmd["💾 renamer_list/save/delete_preset"]
+    end
+
+    subgraph Core["Pure Rust Core (crates/knit-renamer)"]
+        Scan["📂 scanner.rs\n(scan_items + FilterMatcher + Bottom-Up sort)"]
+        Engine["🔧 engine.rs\n(PrenameEngine s/// y/// + 10 FixedPresetKind)"]
+        Collide["🛡️ recompute_collisions\n(Case-insensitive batch & on-disk check)"]
+        Apply["⚡ renamer.rs\n(rename_with_case_safety + Atomic UndoManifest)"]
+        Store["📁 presets.rs\n(PresetStore -> renamer_presets.json)"]
+    end
+
+    View --> FilterCard & RuleCard & Table
+    View -->|"Preview"| PrevCmd --> Scan & Engine
+    Engine --> Collide
+    Table -->|"Toggle checkbox"| ColCmd --> Collide
+    View -->|"Apply"| ApplyCmd --> Apply
+    View -->|"Undo"| UndoCmd --> Apply
+    RuleCard -->|"Load/Save"| PresetCmd --> Store
+
+    classDef ui fill:#E7F1FF,stroke:#007BFF,stroke-width:2px,color:#003366
+    classDef ipc fill:#FFF3CD,stroke:#D39E00,stroke-width:2px,color:#533F03
+    classDef core fill:#D4EDDA,stroke:#28A745,stroke-width:2px,color:#155724
+
+    class View,FilterCard,RuleCard,Table ui
+    class PrevCmd,ColCmd,ApplyCmd,UndoCmd,PresetCmd ipc
+    class Scan,Engine,Collide,Apply,Store core

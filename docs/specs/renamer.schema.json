@@ -1,0 +1,274 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://knit.local/docs/specs/renamer.schema.json",
+  "title": "Knit renamer IPC & Data Contract",
+  "description": "Machine-readable schema and Tauri IPC / Rust crate contract for Knit Batch Renamer (v0.2.0). Derived directly from crates/knit-renamer/src/models.rs, src-tauri/src/lib.rs, and src/types/ipc.ts.",
+  "version": "0.2.0",
+  "x-llms-index": "/llms.txt",
+  "x-ipc-operations": [
+    {
+      "operationId": "previewBatchRename",
+      "tauriCommand": "renamer_preview",
+      "rustEntrypoint": "knit_renamer::scan_items + compile_rule + build_rename_plan",
+      "summary": "Scan roots (cached by roots+filter in AppState.renamer_scan_cache), apply rule, sort Bottom-Up, and detect collisions.",
+      "deprecated": false,
+      "parameters": {
+        "type": "object",
+        "required": ["roots", "filter", "rule"],
+        "additionalProperties": false,
+        "properties": {
+          "roots": { "type": "array", "items": { "type": "string" } },
+          "filter": { "$ref": "#/$defs/ScanFilter" },
+          "rule": { "$ref": "#/$defs/RenameRule" }
+        }
+      },
+      "returns": { "$ref": "#/$defs/RenamePlan" },
+      "errors": [
+        { "pattern": "Path not found: <path>", "cause": "One of roots does not exist." },
+        { "pattern": "Glob không hợp lệ '<pat>': <err>", "cause": "Malformed glob filter." },
+        { "pattern": "Regex không hợp lệ: <err>", "cause": "Invalid regex in filter or rule." },
+        { "pattern": "Cú pháp prename không hợp lệ: '<expr>'", "cause": "Invalid Perl Prename expression." }
+      ]
+    },
+    {
+      "operationId": "recomputeRenameCollisions",
+      "tauriCommand": "renamer_recompute_collisions",
+      "rustEntrypoint": "knit_renamer::recompute_collisions",
+      "summary": "Recompute batch and on-disk conflicts after user toggles selected checkboxes on RenamePlan.",
+      "deprecated": false,
+      "parameters": {
+        "type": "object",
+        "required": ["plan"],
+        "additionalProperties": false,
+        "properties": { "plan": { "$ref": "#/$defs/RenamePlan" } }
+      },
+      "returns": { "$ref": "#/$defs/RenamePlan" }
+    },
+    {
+      "operationId": "applyBatchRename",
+      "tauriCommand": "renamer_apply",
+      "rustEntrypoint": "knit_renamer::apply_rename_plan",
+      "summary": "Execute Bottom-Up renames for selected Pending items with Windows case-only safety and persist UndoManifest.",
+      "deprecated": false,
+      "parameters": {
+        "type": "object",
+        "required": ["jobId", "plan"],
+        "additionalProperties": false,
+        "properties": {
+          "jobId": { "type": "string", "format": "uuid" },
+          "plan": { "$ref": "#/$defs/RenamePlan" },
+          "onEvent": { "description": "Optional Tauri Channel<JobEvent>." }
+        }
+      },
+      "returns": { "$ref": "#/$defs/RenameExecutionResult" },
+      "errors": [
+        { "pattern": "Còn <n> xung đột tên chưa xử lý", "cause": "Selected items still have status == conflict." }
+      ]
+    },
+    {
+      "operationId": "undoLastRename",
+      "tauriCommand": "renamer_undo_last",
+      "rustEntrypoint": "knit_renamer::undo_manifest",
+      "summary": "Revert the most recent apply_rename_plan batch in reverse order using UndoManifest.",
+      "deprecated": false,
+      "parameters": { "type": "object", "properties": {}, "additionalProperties": false },
+      "returns": { "$ref": "#/$defs/RenameExecutionResult" },
+      "errors": [
+        { "pattern": "No rename history found to undo", "cause": "No undo manifest file exists." }
+      ]
+    },
+    {
+      "operationId": "hasRenameUndo",
+      "tauriCommand": "renamer_has_undo",
+      "summary": "Return true if an UndoManifest exists on disk.",
+      "deprecated": false,
+      "parameters": { "type": "object", "properties": {}, "additionalProperties": false },
+      "returns": { "type": "boolean" }
+    },
+    {
+      "operationId": "listRenamePresets",
+      "tauriCommand": "renamer_list_presets",
+      "rustEntrypoint": "knit_renamer::PresetStore::load",
+      "summary": "List saved UserPreset entries from OS config directory.",
+      "deprecated": false,
+      "parameters": { "type": "object", "properties": {}, "additionalProperties": false },
+      "returns": { "type": "array", "items": { "$ref": "#/$defs/UserPreset" } }
+    },
+    {
+      "operationId": "saveRenamePreset",
+      "tauriCommand": "renamer_save_preset",
+      "rustEntrypoint": "knit_renamer::PresetStore::save_preset",
+      "summary": "Create or update a UserPreset in renamer_presets.json atomically.",
+      "deprecated": false,
+      "parameters": {
+        "type": "object",
+        "required": ["preset"],
+        "additionalProperties": false,
+        "properties": { "preset": { "$ref": "#/$defs/UserPreset" } }
+      },
+      "returns": { "type": "array", "items": { "$ref": "#/$defs/UserPreset" } }
+    },
+    {
+      "operationId": "deleteRenamePreset",
+      "tauriCommand": "renamer_delete_preset",
+      "rustEntrypoint": "knit_renamer::PresetStore::delete_preset",
+      "summary": "Delete a UserPreset by id and return the remaining list.",
+      "deprecated": false,
+      "parameters": {
+        "type": "object",
+        "required": ["id"],
+        "additionalProperties": false,
+        "properties": { "id": { "type": "string" } }
+      },
+      "returns": { "type": "array", "items": { "$ref": "#/$defs/UserPreset" } }
+    }
+  ],
+  "$defs": {
+    "TargetType": {
+      "type": "string",
+      "enum": ["files", "folders", "both"],
+      "default": "both"
+    },
+    "PatternKind": {
+      "type": "string",
+      "enum": ["glob", "regex"]
+    },
+    "FilterPattern": {
+      "type": "object",
+      "required": ["kind", "pattern"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "$ref": "#/$defs/PatternKind" },
+        "pattern": { "type": "string" }
+      }
+    },
+    "ScanFilter": {
+      "type": "object",
+      "required": ["target_type", "recursive", "max_depth", "ignore_hidden", "include_extensions", "include_patterns", "exclude_patterns"],
+      "additionalProperties": false,
+      "properties": {
+        "target_type": { "$ref": "#/$defs/TargetType" },
+        "recursive": { "type": "boolean", "default": false },
+        "max_depth": { "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }], "default": null },
+        "ignore_hidden": { "type": "boolean", "default": true },
+        "include_extensions": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "include_patterns": { "type": "array", "items": { "$ref": "#/$defs/FilterPattern" }, "default": [] },
+        "exclude_patterns": { "type": "array", "items": { "$ref": "#/$defs/FilterPattern" }, "default": [] }
+      }
+    },
+    "FixedPresetKind": {
+      "type": "string",
+      "enum": [
+        "manga_chapter", "manga_volume", "pad2", "pad3",
+        "clean_tags", "clean_whitespace", "normalize_extensions",
+        "lowercase", "uppercase", "titlecase"
+      ]
+    },
+    "RenameRule": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["mode", "find", "replace", "match_case", "use_regex"],
+          "additionalProperties": false,
+          "properties": {
+            "mode": { "const": "find_replace" },
+            "find": { "type": "string" },
+            "replace": { "type": "string" },
+            "match_case": { "type": "boolean" },
+            "use_regex": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["mode", "expression"],
+          "additionalProperties": false,
+          "properties": {
+            "mode": { "const": "perl_prename" },
+            "expression": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["mode", "preset"],
+          "additionalProperties": false,
+          "properties": {
+            "mode": { "const": "fixed_preset" },
+            "preset": { "$ref": "#/$defs/FixedPresetKind" }
+          }
+        }
+      ],
+      "discriminator": { "propertyName": "mode" }
+    },
+    "RenameStatus": {
+      "type": "string",
+      "enum": ["unchanged", "pending", "conflict", "renamed", "error"]
+    },
+    "RenameItem": {
+      "type": "object",
+      "required": ["id", "original_path", "original_name", "parent_dir", "is_dir", "depth", "new_name", "new_path", "selected", "status", "error_message"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "original_path": { "type": "string" },
+        "original_name": { "type": "string" },
+        "parent_dir": { "type": "string" },
+        "is_dir": { "type": "boolean" },
+        "depth": { "type": "integer", "minimum": 0 },
+        "new_name": { "type": "string" },
+        "new_path": { "type": "string" },
+        "selected": { "type": "boolean" },
+        "status": { "$ref": "#/$defs/RenameStatus" },
+        "error_message": { "oneOf": [{ "type": "string" }, { "type": "null" }] }
+      }
+    },
+    "RenamePlan": {
+      "type": "object",
+      "required": ["items"],
+      "additionalProperties": false,
+      "properties": {
+        "items": { "type": "array", "items": { "$ref": "#/$defs/RenameItem" } }
+      }
+    },
+    "UserPreset": {
+      "type": "object",
+      "required": ["id", "title", "description", "rule"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "rule": { "$ref": "#/$defs/RenameRule" }
+      }
+    },
+    "UndoEntry": {
+      "type": "object",
+      "required": ["original_path", "new_path", "is_dir"],
+      "additionalProperties": false,
+      "properties": {
+        "original_path": { "type": "string" },
+        "new_path": { "type": "string" },
+        "is_dir": { "type": "boolean" }
+      }
+    },
+    "UndoManifest": {
+      "type": "object",
+      "required": ["timestamp", "entries"],
+      "additionalProperties": false,
+      "properties": {
+        "timestamp": { "type": "string", "format": "date-time" },
+        "entries": { "type": "array", "items": { "$ref": "#/$defs/UndoEntry" } }
+      }
+    },
+    "RenameExecutionResult": {
+      "type": "object",
+      "required": ["renamed_count", "skipped_count", "error_count", "undo_available"],
+      "additionalProperties": false,
+      "properties": {
+        "renamed_count": { "type": "integer", "minimum": 0 },
+        "skipped_count": { "type": "integer", "minimum": 0 },
+        "error_count": { "type": "integer", "minimum": 0 },
+        "undo_available": { "type": "boolean" }
+      }
+    }
+  }
+}

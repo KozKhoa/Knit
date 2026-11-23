@@ -1,0 +1,196 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://knit.local/docs/specs/archive.schema.json",
+  "title": "Knit archive IPC & Data Contract",
+  "description": "Machine-readable schema and Tauri IPC / Rust crate contract for Knit Archive Packager (v0.2.0). Derived directly from crates/knit-archive/src/lib.rs, src-tauri/src/lib.rs, and src/types/ipc.ts.",
+  "version": "0.2.0",
+  "x-llms-index": "/llms.txt",
+  "x-ipc-operations": [
+    {
+      "operationId": "collectArchiveEntries",
+      "tauriCommand": "archive_collect_entries",
+      "rustEntrypoint": "knit_archive::collect_entries",
+      "summary": "Walk input files/folders (following no symlinks) and normalize archive entries to POSIX '/' paths.",
+      "deprecated": false,
+      "parameters": {
+        "type": "object",
+        "required": ["inputs", "includeRootDir", "ignoreHidden"],
+        "additionalProperties": false,
+        "properties": {
+          "inputs": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+          "includeRootDir": { "type": "boolean" },
+          "ignoreHidden": { "type": "boolean" }
+        }
+      },
+      "returns": { "type": "array", "items": { "$ref": "#/$defs/ArchiveEntrySpec" } },
+      "errors": [
+        { "pattern": "Chưa chọn file hoặc thư mục nào để nén", "cause": "Empty inputs array." },
+        { "pattern": "Path not found: <path>", "cause": "Input path does not exist." },
+        { "pattern": "Không tìm thấy tệp hợp lệ nào để nén", "cause": "No non-hidden regular files found." }
+      ]
+    },
+    {
+      "operationId": "estimateArchiveSize",
+      "tauriCommand": "archive_estimate_size",
+      "rustEntrypoint": "knit_archive::estimate_archive_entries / knit_archive::estimate_archive_output",
+      "summary": "Estimate packed archive output size from metadata without reading file contents.",
+      "deprecated": false,
+      "parameters": {
+        "type": "object",
+        "required": ["inputs", "includeRootDir", "ignoreHidden", "options"],
+        "additionalProperties": false,
+        "properties": {
+          "inputs": { "type": "array", "items": { "type": "string" } },
+          "includeRootDir": { "type": "boolean" },
+          "ignoreHidden": { "type": "boolean" },
+          "options": { "$ref": "#/$defs/ArchiveOptions" },
+          "customEntries": {
+            "oneOf": [
+              { "type": "array", "items": { "$ref": "#/$defs/ArchiveEntrySpec" } },
+              { "type": "null" }
+            ],
+            "default": null
+          }
+        }
+      },
+      "returns": { "$ref": "#/$defs/ArchiveEstimate" }
+    },
+    {
+      "operationId": "createArchive",
+      "tauriCommand": "archive_pack",
+      "rustEntrypoint": "knit_archive::pack_entries",
+      "summary": "Stream entries into a ZIP (AES-256 / ZipCrypto), TAR, TAR.GZ, or TAR.ZST archive atomically.",
+      "deprecated": false,
+      "parameters": {
+        "type": "object",
+        "required": ["jobId", "inputs", "outputPath", "includeRootDir", "ignoreHidden", "options"],
+        "additionalProperties": false,
+        "properties": {
+          "jobId": { "type": "string", "format": "uuid" },
+          "inputs": { "type": "array", "items": { "type": "string" } },
+          "outputPath": { "type": "string" },
+          "includeRootDir": { "type": "boolean" },
+          "ignoreHidden": { "type": "boolean" },
+          "options": { "$ref": "#/$defs/ArchiveOptions" },
+          "customEntries": {
+            "oneOf": [
+              { "type": "array", "items": { "$ref": "#/$defs/ArchiveEntrySpec" } },
+              { "type": "null" }
+            ],
+            "default": null
+          },
+          "onEvent": { "description": "Optional Tauri Channel<JobEvent> throttled at 100ms." }
+        }
+      },
+      "returns": { "$ref": "#/$defs/ArchiveSummary" },
+      "errors": [
+        { "pattern": "Danh sách tệp cần nén đang rỗng", "cause": "Zero entries resolved." },
+        { "pattern": "Chỉ định dạng ZIP mới hỗ trợ đặt mật khẩu", "cause": "Encryption set for non-ZIP format." },
+        { "pattern": "Mật khẩu ZIP không được để trống", "cause": "Empty password with aes256 or zip_crypto." },
+        { "pattern": "Job cancelled by user", "cause": "Cancelled via cancel_job; .knit_tmp file removed." }
+      ]
+    },
+    {
+      "operationId": "getFileSizeBytes",
+      "tauriCommand": "get_file_size_bytes",
+      "summary": "Query byte length of an existing file via std::fs::metadata.",
+      "deprecated": false,
+      "parameters": {
+        "type": "object",
+        "required": ["path"],
+        "additionalProperties": false,
+        "properties": { "path": { "type": "string" } }
+      },
+      "returns": { "type": "integer", "minimum": 0 }
+    }
+  ],
+  "$defs": {
+    "ArchiveFormat": {
+      "type": "string",
+      "enum": ["zip", "tar", "tar_gz", "tar_zst"],
+      "default": "zip"
+    },
+    "CompressionLevel": {
+      "type": "string",
+      "enum": ["store", "fast", "normal", "best"],
+      "default": "normal"
+    },
+    "ZipEncryption": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind"],
+          "additionalProperties": false,
+          "properties": { "kind": { "const": "none" } }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "password"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "aes256" },
+            "password": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "password"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "zip_crypto" },
+            "password": { "type": "string", "minLength": 1 }
+          }
+        }
+      ],
+      "discriminator": { "propertyName": "kind" }
+    },
+    "ArchiveOptions": {
+      "type": "object",
+      "required": ["format", "compression", "encryption"],
+      "additionalProperties": false,
+      "properties": {
+        "format": { "$ref": "#/$defs/ArchiveFormat" },
+        "compression": { "$ref": "#/$defs/CompressionLevel" },
+        "encryption": { "$ref": "#/$defs/ZipEncryption" }
+      }
+    },
+    "ArchiveEntrySpec": {
+      "type": "object",
+      "required": ["source_path", "archive_path", "size_bytes"],
+      "additionalProperties": false,
+      "properties": {
+        "source_path": { "type": "string" },
+        "archive_path": { "type": "string", "description": "Normalized POSIX '/' path inside the archive." },
+        "size_bytes": { "type": "integer", "minimum": 0 },
+        "compression_override": {
+          "oneOf": [
+            { "$ref": "#/$defs/CompressionLevel" },
+            { "type": "null" }
+          ],
+          "default": null
+        }
+      }
+    },
+    "ArchiveEstimate": {
+      "type": "object",
+      "required": ["files_count", "input_bytes", "estimated_output_bytes"],
+      "additionalProperties": false,
+      "properties": {
+        "files_count": { "type": "integer", "minimum": 0 },
+        "input_bytes": { "type": "integer", "minimum": 0 },
+        "estimated_output_bytes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "ArchiveSummary": {
+      "type": "object",
+      "required": ["output_path", "files_packed", "input_bytes", "output_bytes"],
+      "additionalProperties": false,
+      "properties": {
+        "output_path": { "type": "string" },
+        "files_packed": { "type": "integer", "minimum": 0 },
+        "input_bytes": { "type": "integer", "minimum": 0 },
+        "output_bytes": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

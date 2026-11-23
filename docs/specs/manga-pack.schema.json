@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://knit.local/docs/specs/manga-pack.schema.json",
+  "title": "Knit manga-pack IPC & Data Contract",
+  "description": "Machine-readable schema and Tauri IPC / Rust crate contract for Knit Manga Packager (v0.2.0). Derived directly from crates/knit-manga/src/models.rs, crates/knit-manga/src/scanner.rs, crates/knit-manga/src/packer.rs, src-tauri/src/lib.rs, and src/types/ipc.ts.",
+  "version": "0.2.0",
+  "x-llms-index": "/llms.txt",
+  "x-ipc-operations": [
+    {
+      "operationId": "scanMangaFolder",
+      "tauriCommand": "manga_scan",
+      "rustEntrypoint": "knit_manga::scan_stories",
+      "summary": "Scan a single story folder or multi-story library into Story[] with NodeRef trees, cover resolution, info.json parsing, and warnings.",
+      "deprecated": false,
+      "parameters": {
+        "type": "object",
+        "required": ["root", "mode"],
+        "additionalProperties": false,
+        "properties": {
+          "root": { "type": "string", "description": "Absolute path to story folder or library root directory." },
+          "mode": { "$ref": "#/$defs/MangaScanMode" }
+        }
+      },
+      "returns": { "type": "array", "items": { "$ref": "#/$defs/Story" } },
+      "errors": [
+        { "pattern": "Path not found: <path>", "cause": "Target root does not exist or is not a directory." }
+      ]
+    },
+    {
+      "operationId": "packMangaStories",
+      "tauriCommand": "manga_pack",
+      "rustEntrypoint": "knit_manga::pack_stories",
+      "summary": "Pack Story[] into one or more .zip/.cbz archives, grouping whole stories by max_gb and optionally generating stories.csv.",
+      "deprecated": false,
+      "parameters": {
+        "type": "object",
+        "required": ["jobId", "stories", "outputDir", "options"],
+        "additionalProperties": false,
+        "properties": {
+          "jobId": { "type": "string", "format": "uuid" },
+          "stories": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/Story" } },
+          "outputDir": { "type": "string" },
+          "outputName": {
+            "oneOf": [{ "type": "string" }, { "type": "null" }],
+            "default": null,
+            "description": "Optional filename (.zip or .cbz). Defaults to <story.dir_name>.zip (1 story) or manga_batch.zip (multiple)."
+          },
+          "options": { "$ref": "#/$defs/MangaPackOptions" },
+          "onEvent": { "description": "Optional Tauri Channel<JobEvent>." }
+        }
+      },
+      "returns": { "$ref": "#/$defs/MangaPackSummary" },
+      "errors": [
+        { "pattern": "Không có truyện nào để đóng gói", "cause": "Empty stories array." },
+        { "pattern": "Job cancelled by user", "cause": "Cancelled via cancel_job; created partial archives are deleted." }
+      ]
+    }
+  ],
+  "$defs": {
+    "MangaScanMode": {
+      "type": "string",
+      "enum": ["auto", "single", "library"],
+      "default": "auto"
+    },
+    "NodeKind": {
+      "type": "string",
+      "enum": ["chapter", "volume", "arc"]
+    },
+    "NodeRef": {
+      "type": "object",
+      "required": ["kind", "order_index", "title"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "$ref": "#/$defs/NodeKind" },
+        "order_index": { "type": "number", "description": "Supports fractional numbers such as 1.5." },
+        "title": { "type": "string" }
+      }
+    },
+    "StoryInfo": {
+      "type": "object",
+      "required": ["title", "summary", "genres", "authors", "other_titles", "nation", "nation_id", "poster_id", "story_type", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "title": { "type": "string" },
+        "summary": { "type": "string" },
+        "genres": { "type": "array", "items": { "type": "string" } },
+        "authors": { "type": "array", "items": { "type": "string" } },
+        "other_titles": { "type": "array", "items": { "type": "string" } },
+        "nation": { "type": "string" },
+        "nation_id": { "type": "string" },
+        "poster_id": { "type": "string" },
+        "story_type": { "type": "string", "default": "manga" },
+        "status": { "type": "string", "default": "ongoing" }
+      }
+    },
+    "Chapter": {
+      "type": "object",
+      "required": ["chain", "folder", "path", "images"],
+      "additionalProperties": false,
+      "properties": {
+        "chain": { "type": "array", "items": { "$ref": "#/$defs/NodeRef" } },
+        "folder": { "type": "string", "description": "Relative POSIX '/' folder path (empty string if at story root)." },
+        "path": { "type": "string" },
+        "images": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "Story": {
+      "type": "object",
+      "required": ["dir_name", "path", "info", "info_file", "cover", "chapters", "warnings"],
+      "additionalProperties": false,
+      "properties": {
+        "dir_name": { "type": "string" },
+        "path": { "type": "string" },
+        "info": { "oneOf": [{ "$ref": "#/$defs/StoryInfo" }, { "type": "null" }] },
+        "info_file": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+        "cover": { "oneOf": [{ "type": "string" }, { "type": "null" }], "description": "Relative POSIX '/' path within story folder." },
+        "chapters": { "type": "array", "items": { "$ref": "#/$defs/Chapter" } },
+        "warnings": { "type": "array", "items": { "type": "string" } },
+        "total_bytes": { "type": "integer", "minimum": 0, "default": 0 }
+      }
+    },
+    "MangaPackOptions": {
+      "type": "object",
+      "required": ["mangament_package_mode", "image_compression", "max_gb"],
+      "additionalProperties": false,
+      "properties": {
+        "mangament_package_mode": { "type": "boolean", "default": false },
+        "image_compression": { "type": "integer", "minimum": 0, "maximum": 9, "default": 0 },
+        "max_gb": { "type": "number", "minimum": 0.0, "default": 0.0 }
+      }
+    },
+    "MangaPackSummary": {
+      "type": "object",
+      "required": ["created_files", "stories_count", "total_files", "total_input_bytes"],
+      "additionalProperties": false,
+      "properties": {
+        "created_files": { "type": "array", "items": { "type": "string" } },
+        "stories_count": { "type": "integer", "minimum": 0 },
+        "total_files": { "type": "integer", "minimum": 0 },
+        "total_input_bytes": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

@@ -1,0 +1,34 @@
+flowchart TD
+    subgraph FE["Frontend React + TS (src/views/MangaPackView.tsx)"]
+        View["📚 MangaPackView\n(MangaScanMode, image_compression, max_gb, MangamentPackageMode)"]
+        InfoModal["📝 MangaInfoModal + JsonCodeEditor\n(CodeMirror 6 info.json editor)"]
+        Conflict["⚠️ ExportConflictModal\n(Overwrite / Auto-append _1)"]
+    end
+
+    subgraph IPC["Desktop Shell Adapter (src-tauri/src/lib.rs)"]
+        ScanCmd["🔍 manga_scan\n(scan_stories + NoopReporter)"]
+        PackCmd["🚀 manga_pack\n(sanitize_filename + default_output_name)"]
+    end
+
+    subgraph Core["Pure Rust Core (crates/knit-manga)"]
+        Scanner["🌲 scanner.rs\n(looks_like_single_story, NFC, NaturalSort, safe_join_within cover)"]
+        Naming["🏷️ naming.rs\n(parse_node_folder_name -> Volume / Arc / Chapter)"]
+        Group["📦 packer.rs\n(group_by_size whole-story max_gb -> _part01..N)"]
+        Csv["📄 csv_builder.rs\n(build_csv_bytes RFC 4180 + right-aligned NODE_HEADERS)"]
+        Archive["🗜️ knit-archive::pack_entries\n(Store images + Normal Deflate info.json/stories.csv)"]
+    end
+
+    View --> InfoModal & Conflict
+    View -->|"Scan folder"| ScanCmd --> Scanner
+    Scanner --> Naming
+    View -->|"Pack ZIP/CBZ"| PackCmd --> Group
+    Group -->|"if mangament_package_mode"| Csv
+    Group & Csv --> Archive
+
+    classDef ui fill:#E7F1FF,stroke:#007BFF,stroke-width:2px,color:#003366
+    classDef ipc fill:#FFF3CD,stroke:#D39E00,stroke-width:2px,color:#533F03
+    classDef core fill:#D4EDDA,stroke:#28A745,stroke-width:2px,color:#155724
+
+    class View,InfoModal,Conflict ui
+    class ScanCmd,PackCmd ipc
+    class Scanner,Naming,Group,Csv,Archive core
