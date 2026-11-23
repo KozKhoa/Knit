@@ -1,0 +1,4 @@
+- Trong tool md to pdf, khi mà link folder/file không tồn tại thì hiển thị là not found (tiếng Anh) thay vì chỉ thông báo là render fail như là "Invalid input: Loi bien dich Typst: file not found (searched at /home/khoa/.gemini/antigravity/brain/fa01da91-f070-41e3-a449-60f526362c2c/qa-wiki-review-mobile.png)"
+- Trong too pdf merge, phần bookmark tree, khi tôi kéo thả section vào ngay chính giữa hai section khác thì không (hiện thị lên thanh báo vị trí sẽ đạt section và cũng không thẻ sắp xếp được, fix cái đó đi). Bổ sung thêm select mode trong bookmark tree nữa, khi hold hoặc nhấn shift/ctrl một section thì tiến hành vào selection mode, trong mode selection có thể xóa hoàng loạt và sắp xếp hàng loạt (không thể đổi tên, page, và thêm section con)
+- App này có thể install trên ubuntu base, fedora base, arch base, window 10/11
+- Ở cuối app bottom-right hiển thị nhỏ curent version của app
