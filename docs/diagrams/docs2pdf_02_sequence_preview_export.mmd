@@ -1,0 +1,26 @@
+sequenceDiagram
+    participant UI as 📄 Docs2PdfView
+    participant IPC as 🔌 src-tauri
+    participant Sem as 🚦 docs_preview_semaphore (1)
+    participant Engine as ⚙️ knit-docs (Typst / CDP / Office)
+    participant PDFJS as 👁️ PdfJsPreview
+
+    UI->>UI: Edit text / change option -> cancel previous preview token
+    UI->>IPC: docs_preview_pdf_bytes(content, inputPath, inputKind, options)
+    IPC->>IPC: Swap docs_preview_cancel (abort stale task)
+    IPC->>Sem: Acquire 1-permit preview semaphore
+    alt Markdown / PlainText / CodeFence
+        Sem->>Engine: compile_text_to_pdf_bytes_with_cancel (Typst + ComemoEvictGuard)
+    else HTML (Auto / DocumentPrint / SlideStep)
+        Sem->>Engine: compile_html_via_browser_to_pdf_bytes (CDP or --print-to-pdf) else html_to_typst
+    else EPUB
+        Sem->>Engine: compile_epub_to_pdf_bytes (LAST_PARSED_EPUB cache)
+    else DOCX / PPTX
+        Sem->>Engine: compile_office_to_pdf_bytes (LAST_CONVERTED_OFFICE cache)
+    end
+    Engine->>Engine: trim_process_heap() / comemo::evict(2)
+    Engine-->>PDFJS: Raw PDF bytes (ArrayBuffer) -> release off-screen canvas stores
+
+    UI->>IPC: docs_convert_content_to_pdf / docs_convert_to_pdf(jobId, ...)
+    IPC->>Engine: Atomic write output_path (.tmp -> rename)
+    Engine-->>UI: DocConvertResult (page_count, bytes_written, used_external_engine)

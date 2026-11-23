@@ -1,0 +1,271 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://knit.local/docs/specs/docs2pdf.schema.json",
+  "title": "Knit docs2pdf IPC & Data Contract",
+  "description": "Machine-readable schema and Tauri IPC / Rust crate contract for Knit Document -> PDF (v0.2.0). Derived directly from crates/knit-docs/src/models.rs, crates/knit-docs/src/lib.rs, src-tauri/src/lib.rs, and src/types/ipc.ts.",
+  "version": "0.2.0",
+  "x-llms-index": "/llms.txt",
+  "x-supported-extensions": [
+    "md", "markdown", "txt", "log", "rst",
+    "css", "js", "mjs", "cjs", "ts", "jsx", "tsx",
+    "html", "htm", "xhtml", "epub", "docx", "pptx"
+  ],
+  "x-ipc-operations": [
+    {
+      "operationId": "getDocsEngineStatus",
+      "tauriCommand": "docs_engine_status",
+      "rustEntrypoint": "knit_docs::detect_libreoffice",
+      "summary": "Detect system LibreOffice (soffice) executable and version for DOCX/PPTX conversion.",
+      "deprecated": false,
+      "parameters": { "type": "object", "properties": {}, "additionalProperties": false },
+      "returns": { "$ref": "#/$defs/EngineStatus" }
+    },
+    {
+      "operationId": "readDocTextFile",
+      "tauriCommand": "docs_read_text_file",
+      "rustEntrypoint": "knit_docs::read_utf8_text",
+      "summary": "Read a UTF-8 text/Markdown/HTML/code file from disk (stripping UTF-8 BOM).",
+      "deprecated": false,
+      "parameters": {
+        "type": "object",
+        "required": ["path"],
+        "additionalProperties": false,
+        "properties": { "path": { "type": "string" } }
+      },
+      "returns": { "type": "string" }
+    },
+    {
+      "operationId": "writeDocTextFile",
+      "tauriCommand": "docs_write_text_file",
+      "rustEntrypoint": "knit_docs::write_utf8_text",
+      "summary": "Atomically write edited editor buffer back to disk via .tmp -> rename.",
+      "deprecated": false,
+      "parameters": {
+        "type": "object",
+        "required": ["path", "content"],
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string" },
+          "content": { "type": "string" }
+        }
+      },
+      "returns": { "type": "null" }
+    },
+    {
+      "operationId": "previewDocPdfBytes",
+      "tauriCommand": "docs_preview_pdf_bytes",
+      "rustEntrypoint": "knit_docs::compile_text_to_pdf_bytes_with_cancel / compile_epub_to_pdf_bytes / compile_office_to_pdf_bytes",
+      "summary": "Compile live preview PDF bytes under a 1-permit preempting semaphore (docs_preview_cancel).",
+      "description": "Preempts any queued/in-flight preview via docs_preview_cancel before acquiring the 1-permit docs_preview_semaphore, returns raw PDF bytes via IPC Response for PdfJsPreview, and triggers trim_process_heap().",
+      "deprecated": false,
+      "parameters": {
+        "type": "object",
+        "required": ["inputKind", "options"],
+        "additionalProperties": false,
+        "properties": {
+          "content": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+          "inputPath": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+          "inputKind": { "$ref": "#/$defs/DocInputKind" },
+          "baseDir": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+          "options": { "$ref": "#/$defs/DocConvertOptions" }
+        }
+      },
+      "returns": { "type": "string", "format": "binary" }
+    },
+    {
+      "operationId": "previewDocMarkdown",
+      "tauriCommand": "docs_preview_markdown",
+      "summary": "Legacy Base64 PNG preview renderer for text/Markdown/HTML (superseded by previewDocPdfBytes).",
+      "deprecated": true,
+      "x-replacement": "previewDocPdfBytes",
+      "parameters": {
+        "type": "object",
+        "required": ["content", "inputKind", "options"],
+        "additionalProperties": false,
+        "properties": {
+          "content": { "type": "string" },
+          "inputKind": { "$ref": "#/$defs/DocInputKind" },
+          "baseDir": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+          "options": { "$ref": "#/$defs/DocConvertOptions" },
+          "maxPages": { "type": "integer", "minimum": 1, "maximum": 50, "default": 20 },
+          "maxWidth": { "type": "integer", "minimum": 240, "maximum": 1800, "default": 920 }
+        }
+      },
+      "returns": { "$ref": "#/$defs/MarkdownPreviewResult" }
+    },
+    {
+      "operationId": "convertDocToPdf",
+      "tauriCommand": "docs_convert_to_pdf",
+      "rustEntrypoint": "knit_docs::convert_document_to_pdf",
+      "summary": "Convert an on-disk document (MD/TXT/Code/HTML/EPUB/DOCX/PPTX) to PDF atomically.",
+      "deprecated": false,
+      "parameters": {
+        "type": "object",
+        "required": ["jobId", "inputPath", "outputPath", "options"],
+        "additionalProperties": false,
+        "properties": {
+          "jobId": { "type": "string", "format": "uuid" },
+          "inputPath": { "type": "string" },
+          "outputPath": { "type": "string" },
+          "options": { "$ref": "#/$defs/DocConvertOptions" },
+          "onEvent": { "description": "Optional Tauri Channel<JobEvent>." }
+        }
+      },
+      "returns": { "$ref": "#/$defs/DocConvertResult" }
+    },
+    {
+      "operationId": "convertDocContentToPdf",
+      "tauriCommand": "docs_convert_content_to_pdf",
+      "rustEntrypoint": "knit_docs::convert_text_to_pdf",
+      "summary": "Convert an in-memory text buffer (Markdown, PlainText, or HTML) to PDF atomically.",
+      "deprecated": false,
+      "parameters": {
+        "type": "object",
+        "required": ["jobId", "content", "inputKind", "outputPath", "options"],
+        "additionalProperties": false,
+        "properties": {
+          "jobId": { "type": "string", "format": "uuid" },
+          "content": { "type": "string" },
+          "inputKind": { "type": "string", "enum": ["markdown", "plain_text", "html"] },
+          "baseDir": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+          "inputPath": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+          "outputPath": { "type": "string" },
+          "options": { "$ref": "#/$defs/DocConvertOptions" },
+          "onEvent": { "description": "Optional Tauri Channel<JobEvent>." }
+        }
+      },
+      "returns": { "$ref": "#/$defs/DocConvertResult" }
+    }
+  ],
+  "$defs": {
+    "DocInputKind": {
+      "type": "string",
+      "enum": ["markdown", "plain_text", "html", "epub", "docx", "pptx"]
+    },
+    "PageSizePreset": {
+      "type": "string",
+      "enum": ["a4", "letter", "a5"],
+      "default": "a4"
+    },
+    "PageOrientation": {
+      "type": "string",
+      "enum": ["portrait", "landscape"],
+      "default": "portrait"
+    },
+    "PageNumberPosition": {
+      "type": "string",
+      "enum": ["bottom_center", "bottom_right", "bottom_left", "top_center", "top_left", "top_right"],
+      "default": "bottom_center"
+    },
+    "PageNumberFormat": {
+      "type": "string",
+      "enum": ["number_only", "page_of_total", "page_label"],
+      "default": "number_only"
+    },
+    "PageNumberingOptions": {
+      "type": "object",
+      "required": ["enabled", "start_number", "start_from_page", "position", "format"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "start_number": { "type": "integer", "minimum": 0, "default": 1 },
+        "start_from_page": { "type": "integer", "minimum": 1, "default": 1 },
+        "position": { "$ref": "#/$defs/PageNumberPosition" },
+        "format": { "$ref": "#/$defs/PageNumberFormat" },
+        "label_prefix": { "oneOf": [{ "type": "string" }, { "type": "null" }], "default": null }
+      }
+    },
+    "DocTheme": {
+      "type": "string",
+      "enum": ["github", "academic", "minimal", "modern", "resume", "vs_code_light", "obsidian"],
+      "default": "github"
+    },
+    "DocFont": {
+      "type": "string",
+      "enum": ["default", "afacad", "roboto", "lora", "libertinus_serif", "new_computer_modern", "dejavu_sans_mono"],
+      "default": "default"
+    },
+    "HtmlRenderMode": {
+      "type": "string",
+      "enum": ["auto", "document_print", "slide_step"],
+      "default": "auto",
+      "x-enumDescriptions": {
+        "auto": "Uses slide_step when should_use_slide_step_auto detects slide deck patterns; otherwise uses document_print or Typst fallback.",
+        "document_print": "Prints static DOM via Chromium --print-to-pdf with injected @page rules and .slide .reveal visibility override.",
+        "slide_step": "Launches headless Chromium CDP WebSocket session, steps through slides via HtmlStepTrigger, deduplicates via fnv1a_64, and merges vector PDFs."
+      }
+    },
+    "HtmlStepKind": {
+      "type": "string",
+      "enum": ["auto_key", "key", "click_selector", "click_point"],
+      "default": "auto_key"
+    },
+    "HtmlStepTrigger": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "$ref": "#/$defs/HtmlStepKind" },
+        "key": { "oneOf": [{ "type": "string" }, { "type": "null" }], "default": null },
+        "selector": { "oneOf": [{ "type": "string" }, { "type": "null" }], "default": null },
+        "click_x": { "oneOf": [{ "type": "number", "minimum": 0.0, "maximum": 1.0 }, { "type": "null" }], "default": null },
+        "click_y": { "oneOf": [{ "type": "number", "minimum": 0.0, "maximum": 1.0 }, { "type": "null" }], "default": null }
+      }
+    },
+    "DocConvertOptions": {
+      "type": "object",
+      "required": ["page_size", "margin_mm", "font_size_pt", "title", "include_toc", "theme", "font"],
+      "additionalProperties": false,
+      "properties": {
+        "page_size": { "$ref": "#/$defs/PageSizePreset" },
+        "orientation": { "$ref": "#/$defs/PageOrientation" },
+        "margin_mm": { "type": "number", "minimum": 5.0, "maximum": 60.0, "default": 20.0 },
+        "font_size_pt": { "type": "number", "minimum": 7.0, "maximum": 24.0, "default": 11.0 },
+        "line_spacing": { "oneOf": [{ "type": "number", "minimum": 0.8, "maximum": 3.0 }, { "type": "null" }], "default": null },
+        "title": { "oneOf": [{ "type": "string" }, { "type": "null" }], "default": null },
+        "include_toc": { "type": "boolean", "default": false },
+        "toc_page": { "type": "integer", "minimum": 1, "default": 1 },
+        "page_numbering": { "$ref": "#/$defs/PageNumberingOptions" },
+        "theme": { "$ref": "#/$defs/DocTheme" },
+        "font": { "$ref": "#/$defs/DocFont" },
+        "mermaid_svgs": { "type": "object", "additionalProperties": { "type": "string" }, "default": {} },
+        "html_render_mode": { "$ref": "#/$defs/HtmlRenderMode" },
+        "html_step_trigger": { "$ref": "#/$defs/HtmlStepTrigger" },
+        "preview_max_chapters": { "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }], "default": null }
+      }
+    },
+    "EngineStatus": {
+      "type": "object",
+      "required": ["libreoffice_available", "executable_path", "version_text", "checked_paths"],
+      "additionalProperties": false,
+      "properties": {
+        "libreoffice_available": { "type": "boolean" },
+        "executable_path": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+        "version_text": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+        "checked_paths": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "DocConvertResult": {
+      "type": "object",
+      "required": ["input_path", "output_path", "kind", "page_count", "bytes_written", "used_external_engine"],
+      "additionalProperties": false,
+      "properties": {
+        "input_path": { "type": "string" },
+        "output_path": { "type": "string" },
+        "kind": { "$ref": "#/$defs/DocInputKind" },
+        "page_count": { "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }] },
+        "bytes_written": { "type": "integer", "minimum": 0 },
+        "used_external_engine": { "type": "boolean" }
+      }
+    },
+    "MarkdownPreviewResult": {
+      "type": "object",
+      "required": ["page_count", "pages_png_base64"],
+      "additionalProperties": false,
+      "properties": {
+        "page_count": { "type": "integer", "minimum": 0 },
+        "pages_png_base64": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

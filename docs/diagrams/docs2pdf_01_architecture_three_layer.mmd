@@ -1,0 +1,40 @@
+flowchart TD
+    subgraph FE["Frontend React + TS (src/views/Docs2PdfView.tsx)"]
+        View["📄 Docs2PdfView\n(Auto-switch 1-col / 2-col >= 1200px)"]
+        Workbench["↔️ DocsSplitWorkbench\n(PaneResizeHandle + knit.docs.leftRatio)"]
+        Editor["📝 MarkdownCodeEditor\n(8-lang Compartment + Lezer Linter)"]
+        Mermaid["🧜 mermaid.ts\n(SVG pre-render -> mermaid_svgs)"]
+        Preview["👁️ PdfJsPreview\n(pdfjs-dist + Off-screen Canvas Zeroing)"]
+        Settings["⚙️ Docs2PdfSettingsCard\n(7 Themes, 7 Fonts, TOC, PageNum, HTML Mode)"]
+    end
+
+    subgraph IPC["Desktop Shell Adapter (src-tauri/src/lib.rs)"]
+        EngineCmd["🔍 docs_engine_status\n(detect_libreoffice)"]
+        FileCmd["💾 docs_read_text_file / docs_write_text_file"]
+        PrevCmd["🚦 docs_preview_pdf_bytes\n(1-permit Semaphore + docs_preview_cancel)"]
+        ConvCmd["🚀 docs_convert_to_pdf / docs_convert_content_to_pdf\n(spawn_blocking + 10Hz JobEvent)"]
+    end
+
+    subgraph Core["Pure Rust Core (crates/knit-docs)"]
+        MD["📑 markdown.rs / world.rs\n(pulldown-cmark -> Typst 2-pass TOC + comemo::evict)"]
+        EPUB["📚 html_epub.rs\n(EpubCssRules + LAST_PARSED_EPUB)"]
+        CDP["🌐 cdp.rs\n(Chromium WebSocket slide_step / fnv1a_64)"]
+        Office["🏢 office.rs\n(Chromium --print-to-pdf / LibreOffice soffice + LAST_CONVERTED_OFFICE)"]
+    end
+
+    View --> Workbench & Settings
+    Workbench --> Editor & Preview
+    View --> Mermaid
+    View -->|"Check engine"| EngineCmd --> Office
+    Editor -->|"Open / Save"| FileCmd
+    View -->|"Debounced preview"| PrevCmd
+    View -->|"Export PDF"| ConvCmd
+    PrevCmd & ConvCmd --> MD & EPUB & CDP & Office
+
+    classDef ui fill:#E7F1FF,stroke:#007BFF,stroke-width:2px,color:#003366
+    classDef ipc fill:#FFF3CD,stroke:#D39E00,stroke-width:2px,color:#533F03
+    classDef core fill:#D4EDDA,stroke:#28A745,stroke-width:2px,color:#155724
+
+    class View,Workbench,Editor,Mermaid,Preview,Settings ui
+    class EngineCmd,FileCmd,PrevCmd,ConvCmd ipc
+    class MD,EPUB,CDP,Office core
