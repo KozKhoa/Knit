@@ -582,7 +582,7 @@ export const WorkbenchShell: React.FC<WorkbenchShellProps> = ({
       {/* Floating Bottom-Right Current Version Badge */}
       <div
         data-testid="app-version-badge"
-        className="pointer-events-none fixed bottom-2.5 right-3 z-30 rounded-[4px] border border-[#DEE2E6] bg-white/90 px-2 py-0.5 font-mono-code text-[11px] font-medium text-[#6C757D]"
+        className="pointer-events-none fixed bottom-1 right-1 z-30 font-mono-code text-[11px] font-medium text-[#6C757D]"
       >
         v{appVersion}
       </div>
