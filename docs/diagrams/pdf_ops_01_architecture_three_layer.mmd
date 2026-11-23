@@ -1,0 +1,43 @@
+flowchart TD
+    subgraph FE["Frontend React + TS (src/views/PdfOpsView.tsx)"]
+        View["📋 PdfOpsView\n(PdfInfo[], PageSelection[], SplitSections)"]
+        List["📑 LoadedPdfList\n(Duplicate & Same-Name Disambiguation)"]
+        MergePane["🔀 PdfMergePane\n(per_page / MergeFileCard per_file)"]
+        SplitPane["✂️ PdfSplitPane\n(5 Rules + Output PDF Sections)"]
+        Queue["⚡ useThumbnailQueue\n(concurrency=3, cap=500, LIFO + PinnedKeys)"]
+        Zoom["🔍 PdfPageZoomModal\n(ZoomPanViewport 100..500%)"]
+    end
+
+    subgraph IPC["Desktop Shell Adapter (src-tauri/src/lib.rs)"]
+        InspectCmd["📄 pdf_inspect\n(Mmap + filter_inspect_objects)"]
+        TSem["🚦 thumb_semaphore (2..6)\nrender_pdf_thumb_file (.jpg)"]
+        PSem["🔍 preview_semaphore (2)\nrender_pdf_page_preview_file (.png)"]
+        ExecCmd["🚀 pdf_merge / pdf_split / pdf_split_multi\n(spawn_blocking + 10Hz JobEvent)"]
+        EvictCmd["🧹 pdf_release_cached_files\n(evict_pdf_reader_cache_paths + trim)"]
+    end
+
+    subgraph Core["Pure Rust Core (crates/knit-pdf/src/ops.rs)"]
+        Filter["🪶 inspect_pdf\n(Drop Image/Font Streams)"]
+        Hayro["📚 HAYRO_PDF_CACHE\n(LRU 4 Arc<Pdf> on memmap2)"]
+        Merge["⚙️ merge_pdfs\n(1 Source Doc at a Time -> Drop)"]
+        Split["📐 split_pdf / split_multi_pdf\n(5 PdfSplitRule + CustomGroups)"]
+        Writer["💾 StreamingPdfWriter\n(BufWriter 256 KiB -> .tmp -> Rename)"]
+    end
+
+    View --> List & MergePane & SplitPane
+    MergePane & SplitPane --> Queue
+    Queue -->|"IPC invoke"| TSem
+    Zoom -->|"Double-click"| PSem
+    TSem & PSem --> Hayro
+    View -->|"Import PDF"| InspectCmd --> Filter
+    View -->|"Execute"| ExecCmd --> Merge & Split
+    Merge & Split --> Writer
+    View -->|"Remove / Clear"| EvictCmd --> Hayro
+
+    classDef ui fill:#E7F1FF,stroke:#007BFF,stroke-width:2px,color:#003366
+    classDef ipc fill:#FFF3CD,stroke:#D39E00,stroke-width:2px,color:#533F03
+    classDef core fill:#D4EDDA,stroke:#28A745,stroke-width:2px,color:#155724
+
+    class View,List,MergePane,SplitPane,Queue,Zoom ui
+    class InspectCmd,TSem,PSem,ExecCmd,EvictCmd ipc
+    class Filter,Hayro,Merge,Split,Writer core

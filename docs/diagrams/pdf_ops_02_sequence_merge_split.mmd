@@ -1,0 +1,31 @@
+sequenceDiagram
+    participant UI as 📋 PdfOpsView
+    participant IPC as 🔌 src-tauri
+    participant TSem as 🚦 thumb_semaphore
+    participant PSem as 🔍 preview_semaphore
+    participant Cache as 📚 HAYRO_PDF_CACHE + Disk
+    participant Rust as ⚙️ knit-pdf/ops.rs
+
+    UI->>IPC: pdf_inspect(path)
+    IPC->>Rust: inspect_pdf (mmap + filter_inspect_objects)
+    Rust-->>UI: PdfInfo (page_count, file_size_bytes, bookmarks)
+
+    par Viewport Thumbnail Queue
+        UI->>TSem: render_pdf_thumb_file(path, pageIndex, 260)
+        TSem->>Cache: Lookup .jpg cache or HAYRO_PDF_CACHE
+        TSem-->>UI: Cached .jpg path (convertFileSrc)
+    and High-Priority Page Zoom
+        UI->>PSem: render_pdf_page_preview_file(path, pageIndex, 1400)
+        PSem->>Cache: Acquire 2-permit preview_semaphore
+        PSem-->>UI: Cached .png path (ZoomPanViewport)
+    end
+
+    UI->>IPC: pdf_merge / pdf_split / pdf_split_multi(jobId, ...)
+    loop Sequential 1-file-at-a-time streaming
+        IPC->>Rust: Load 1 mmap Document -> materialize attrs -> stream
+        Rust-->>IPC: JobProgress (~10Hz) + drop(doc) + trim_heap
+    end
+    Rust-->>UI: PdfBuildResult (output_files, total_pages, total_bytes)
+
+    UI->>IPC: pdf_release_cached_files(removedPaths)
+    IPC->>Cache: evict_pdf_reader_cache_paths + malloc_trim(0)
