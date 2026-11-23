@@ -1,7 +1,7 @@
 ---
 title: Knit image2pdf Architecture & Design Document
 description: Three-layer architecture, streaming PDF writer, bounded Rayon chunking, dual-semaphore IPC previews, and domain model diagrams for Knit image2pdf.
-version: 0.1.0
+version: 0.2.0
 crates: [knit-pdf, knit-core, knit-desktop]
 diagrams:
   - docs/diagrams/image2pdf_01_architecture_three_layer.mmd
@@ -15,7 +15,7 @@ deprecated: false
 
 > Index: [`/llms.txt`](../llms.txt) · Runnable API & IPC Guide: [`docs/image2pdf-agent-guide.md`](./image2pdf-agent-guide.md) · JSON Schema Contract: [`docs/specs/image2pdf.schema.json`](./specs/image2pdf.schema.json)
 
-# Kiến trúc & Cơ chế Hoạt động của `image2pdf` (Knit `v0.1.0`)
+# Kiến trúc & Cơ chế Hoạt động của `image2pdf` (Knit `v0.2.0`)
 
 Tài liệu này mô tả kiến trúc hệ thống và các sơ đồ Mermaid đã kiểm chứng cho công cụ **`image2pdf`** của Knit khi xử lý hàng nghìn ảnh dung lượng lớn (1.5 GB – 2+ GB) thành PDF với 3 mục tiêu cốt lõi: **chống tràn RAM**, **giữ UI mượt mà**, và **tốc độ export cao**.
 
@@ -139,7 +139,7 @@ classDiagram
     Image2PdfConfig ..> PdfBuildResult : produces
 ```
 
-- **Nguồn (`PageSource`):** Chỉ giữ đường dẫn tệp ảnh trên đĩa (`ImageFile` / `AnimatedFrame`), giữ nguyên tệp gốc read-only. *(Lưu ý: biến thể `PdfPage` dùng chung struct `PageDraft` cho PDF editor, không phải đầu vào của `image2pdf`).*
+- **Nguồn (`PageSource`):** Chỉ giữ đường dẫn tệp ảnh trên đĩa (`ImageFile` / `AnimatedFrame`), giữ nguyên tệp gốc read-only. Hỗ trợ đầy đủ 11 định dạng gồm `jpg, jpeg, jfif, png, webp, avif, gif, bmp, tiff, tif, svg` (`usvg`/`resvg`/`tiny-skia` thuần Rust trong `imaging.rs`). Nếu thay đổi `AnimatedImagePolicy` sau khi import (giữa `first_frame_only`, `unpack_all_frames`, `embed_rich_media`), `pdf_sync_animated_drafts` (`expand_drafts_for_animated_policy`) tự động tách/gộp frame và ánh xạ lại chỉ số `BookmarkNode`; riêng `embed_rich_media` nhúng trực tiếp GIF động qua `/RichMedia` và `/Screen` annotation trong `packer.rs`. *(Lưu ý: biến thể `PdfPage` dùng chung struct `PageDraft` cho PDF editor, không phải đầu vào của `image2pdf`).*
 - **Chỉnh sửa chuẩn hóa (`[0.0, 1.0]`):** `rotation_deg` (`0/90/180/270`), `CropRect`, `TextAnnotation` (`font_size_ratio`), và `StrokeAnnotation` (`stroke_width_ratio`) độc lập độ phân giải hiển thị.
 - **Hệ quả:** 2.000+ ảnh trên React chỉ chiếm vài trăm KB JSON; chỉ khi Export hoặc Double-click xem chi tiết, Rust mới dựng ảnh thật 1 lần.
 

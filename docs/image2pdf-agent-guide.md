@@ -1,10 +1,11 @@
 ---
 title: Knit image2pdf Agent Integration & API Reference
 description: Self-contained Tauri v2 IPC and pure-Rust knit-pdf integration guide for converting images into PDF with lossless passthrough, non-destructive edits, bookmarks, and chunked splitting.
-version: 0.1.0
+version: 0.2.0
 crates: [knit-pdf, knit-core, knit-desktop]
 ipc_commands:
   - pdf_scan_images
+  - pdf_sync_animated_drafts
   - render_image_thumb_file
   - render_page_draft_preview_file
   - check_missing_files
@@ -18,9 +19,9 @@ deprecated: false
 
 > Index: [`/llms.txt`](../llms.txt) · Machine-readable contract: [`docs/specs/image2pdf.schema.json`](./specs/image2pdf.schema.json) · Architecture & Mermaid diagrams: [`docs/image2pdf-architecture.md`](./image2pdf-architecture.md)
 
-# Knit `image2pdf` — Agent Integration & API Reference (`v0.1.0`)
+# Knit `image2pdf` — Agent Integration & API Reference (`v0.2.0`)
 
-Convert static or animated images (`jpg`, `jpeg`, `jfif`, `png`, `webp`, `avif`, `gif`, `bmp`, `tiff`, `tif`) into one or more PDF files using either:
+Convert static, vector, or animated images (`jpg`, `jpeg`, `jfif`, `png`, `webp`, `avif`, `gif`, `bmp`, `tiff`, `tif`, `svg`) into one or more PDF files using either:
 1. **Frontend Tauri IPC wrappers** in `src/lib/ipc.ts` (inside a Tauri v2 WebView where `__TAURI_INTERNALS__` exists), or
 2. **Pure-Rust library calls** in `crates/knit-pdf` (zero Tauri dependency; suitable for headless CLIs, integration tests, or Rust services).
 
@@ -175,6 +176,7 @@ pub fn export_album(folder: &Path, output_pdf: &Path) -> knit_core::Result<PdfBu
 |---|---|---|
 | Import Files / Drag-and-Drop files | `scanImagesForPdf(paths, false, animatedPolicy, onEvent)` | `pdf_scan_images` → `knit_pdf::scan_image_files_with_reporter` |
 | Import Folder (auto folder bookmarks + `Cover`) | `scanImagesForPdf([dir], true, animatedPolicy, onEvent)` | `pdf_scan_images` → `knit_pdf::scan_image_folder_with_reporter` |
+| Change animated GIF/WebP policy after import | `syncAnimatedDrafts(drafts, bookmarks, animatedPolicy)` | `pdf_sync_animated_drafts` → `knit_pdf::expand_drafts_for_animated_policy` |
 | Render grid card thumbnail | `convertFileSrc(await renderImageThumbFile(path, 360))` | `render_image_thumb_file` (`thumb_semaphore`) → `render_image_thumbnail_jpeg` |
 | Open Zoom modal / Edited card preview | `convertFileSrc(await renderPageDraftPreviewFile(draft, 1400))` | `render_page_draft_preview_file` (`preview_semaphore`) → `render_page_draft_preview_jpeg` |
 | Edit page (Rotate / Crop / Text / Draw) | Mutate `PageDraft` in memory (`rotation_deg`, normalized `[0.0, 1.0]` `crop`, `annotations`) | Applied at render/export time by `knit_pdf::apply_edits` |
@@ -200,8 +202,8 @@ pub fn export_album(folder: &Path, output_pdf: &Path) -> knit_core::Result<PdfBu
 | `layout.margin_pt` | `number` (`>= 0`) | `0` | Page margin in PDF points for `fit_a4` / `fit_letter` (`1 mm = 72 / 25.4 pt`). |
 | `layout.background.kind` | `"transparent"` \| `"white"` \| `"black"` \| `"custom"` | `"transparent"` | `"custom"` requires integer `r`, `g`, `b` in `0..=255`. |
 | `jpeg_quality` | `integer` (`1..=100`) | `88` | JPEG re-encode quality for non-passthrough or edited pages (clamped to `40..=95` for thumb/preview helpers). |
-| `lossless_passthrough` | `boolean` | `true` | Unedited JPEG (with EXIF orientation 1) and non-interlaced 8-bit `Gray`/`RGB` PNG without `tRNS` bypass pixel decode & re-encode. Forced `true` in `fast` UI export. |
-| `animated_policy` | `"first_frame_only"` \| `"unpack_all_frames"` | `"first_frame_only"` | `"unpack_all_frames"` expands GIF/WebP frames into `AnimatedFrame` drafts with `duration_ms` written as PDF `/Dur`. |
+| `lossless_passthrough` | `boolean` | `true` | Unedited JPEG (with EXIF orientation 1), non-interlaced 8-bit `Gray`/`RGB` PNG without `tRNS`, and pure-Rust rasterized `SVG` (via `usvg`/`resvg` + `FlateStream`) bypass JPEG re-encode. Forced `true` in `fast` UI export. |
+| `animated_policy` | `"first_frame_only"` \| `"unpack_all_frames"` \| `"embed_rich_media"` | `"first_frame_only"` | `"unpack_all_frames"` expands GIF/WebP frames into `AnimatedFrame` drafts with `duration_ms` written as PDF `/Dur`; `"embed_rich_media"` embeds animated GIFs via `/RichMedia` + `/Screen` annotations. |
 | `export_mode` | `"fast"` \| `"balanced"` \| `"safe"` | `"balanced"` | Controls Rayon concurrency, `batch_size`, disk check, split behavior, and pixel verification (table below). |
 | `max_mb` | `number \| null` (`> 0`) | `null` | Splits PDFs before exceeding `max_mb` MiB. Ignored when `export_mode == "fast"`. |
 | `max_pages_per_file` | `integer \| null` (`>= 1`) | `null` | Splits PDFs after `N` pages. Ignored when `export_mode == "fast"`. |

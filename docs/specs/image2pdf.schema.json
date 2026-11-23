@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://knit.local/docs/specs/image2pdf.schema.json",
   "title": "Knit image2pdf IPC & Data Contract",
-  "description": "Machine-readable schema and Tauri IPC / Rust crate contract for Knit image2pdf (v0.1.0). Derived directly from crates/knit-pdf/src/models.rs, src-tauri/src/lib.rs, and src/types/ipc.ts.",
-  "version": "0.1.0",
+  "description": "Machine-readable schema and Tauri IPC / Rust crate contract for Knit image2pdf (v0.2.0). Derived directly from crates/knit-pdf/src/models.rs, src-tauri/src/lib.rs, and src/types/ipc.ts.",
+  "version": "0.2.0",
   "x-llms-index": "/llms.txt",
   "x-supported-image-extensions": [
     "jpg",
@@ -15,7 +15,8 @@
     "gif",
     "bmp",
     "tiff",
-    "tif"
+    "tif",
+    "svg"
   ],
   "x-ipc-operations": [
     {
@@ -53,6 +54,33 @@
         { "pattern": "Chua chon anh hoac thu muc anh", "cause": "Empty paths array passed to pdf_scan_images." },
         { "pattern": "Path not found: <path>", "cause": "Folder root does not exist on disk." }
       ]
+    },
+    {
+      "operationId": "syncAnimatedDrafts",
+      "tauriCommand": "pdf_sync_animated_drafts",
+      "rustEntrypoint": "knit_pdf::expand_drafts_for_animated_policy",
+      "summary": "Re-expand or collapse animated image PageDrafts and remap bookmarks when animated_policy changes after import.",
+      "description": "Converts GIF/WebP ImageFile drafts into per-frame AnimatedFrame drafts when animatedPolicy == unpack_all_frames, or collapses contiguous AnimatedFrame runs back into a single ImageFile draft when switching to first_frame_only or embed_rich_media, remapping BookmarkNode target_page_index values.",
+      "deprecated": false,
+      "parameters": {
+        "type": "object",
+        "required": ["drafts", "bookmarks", "animatedPolicy"],
+        "additionalProperties": false,
+        "properties": {
+          "drafts": { "type": "array", "items": { "$ref": "#/$defs/PageDraft" } },
+          "bookmarks": { "type": "array", "items": { "$ref": "#/$defs/BookmarkNode" } },
+          "animatedPolicy": { "$ref": "#/$defs/AnimatedImagePolicy" }
+        }
+      },
+      "returns": {
+        "type": "object",
+        "required": ["pages", "bookmarks"],
+        "additionalProperties": false,
+        "properties": {
+          "pages": { "type": "array", "items": { "$ref": "#/$defs/PageDraft" } },
+          "bookmarks": { "type": "array", "items": { "$ref": "#/$defs/BookmarkNode" } }
+        }
+      }
     },
     {
       "operationId": "renderImageThumbFile",
@@ -367,11 +395,12 @@
     },
     "AnimatedImagePolicy": {
       "type": "string",
-      "enum": ["first_frame_only", "unpack_all_frames"],
+      "enum": ["first_frame_only", "unpack_all_frames", "embed_rich_media"],
       "default": "first_frame_only",
       "x-enumDescriptions": {
         "first_frame_only": "Imports only frame 0 of GIF/WebP animations.",
-        "unpack_all_frames": "Expands each frame into an AnimatedFrame PageDraft with duration_ms mapped to PDF /Dur."
+        "unpack_all_frames": "Expands each frame into an AnimatedFrame PageDraft with duration_ms mapped to PDF /Dur.",
+        "embed_rich_media": "Embeds animated GIF files directly into the PDF via /RichMedia and /Screen annotations (falls back to frame 0 for static formats)."
       }
     },
     "PdfExportMode": {

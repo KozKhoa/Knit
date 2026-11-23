@@ -37,3 +37,13 @@ Tuy nhiên, không có thư viện thuần Rust (hay thuần Python) nào render
 - Bộ cài gốc giữ được kích thước nhỏ (~15–25 MB) và 100% offline cho `md`/`html`/`epub`/ảnh/PDF/ZIP.
 - Trên giao diện **Document → PDF**, cần hiển thị rõ huy hiệu trạng thái engine (*"Built-in"* cho MD/HTML/EPUB vs *"Cần LibreOffice (Đã tìm thấy / Chưa cài)"* cho DOCX/PPTX) để người dùng không bị bất ngờ.
 - Khi gọi `soffice` trên Windows phải ẩn cửa sổ console (`CREATE_NO_WINDOW`) và đặt timeout + `CancellationToken`.
+
+## Update (v0.2.0 / Review v1.17–v1.18)
+- **Core Native (`knit-docs` + Typst):**
+  - Mở rộng nhận diện thêm các tệp mã nguồn web (`.css`, `.js`, `.mjs`, `.cjs`, `.ts`, `.jsx`, `.tsx`) ánh xạ sang `DocInputKind::PlainText` và được UI tự bọc thành fenced code block Markdown an toàn khi biên dịch qua Typst (`formatEditorContentForCompilation`).
+  - Nâng cấp bộ chuyển đổi EPUB (`crates/knit-docs/src/html_epub.rs`): bổ sung `parse_epub_css` để giữ hình ảnh drop-cap `.gif` và định dạng chương CSS, đồng thời duy trì bộ nhớ đệm 1 mục `LAST_PARSED_EPUB` (theo `(path, file_len, mtime_nanos)`) và gọi `comemo::evict(2)` (`ComemoEvictGuard`) sau mỗi lần biên dịch Typst.
+- **Tầng HTML Browser + CDP WebSocket (`crates/knit-docs/src/cdp.rs`, `office.rs`):**
+  - Khi người dùng mở tệp HTML (`.html`/`.htm`/`.xhtml`), ngoài nhánh fallback `html_to_typst`, `compile_html_via_browser_to_pdf_bytes` tự động phát hiện trình duyệt nhân Chromium có sẵn trên hệ thống (`detect_chromium_browser`) để render trung thực CSS trình duyệt.
+  - Hỗ trợ `HtmlRenderMode` (`auto`, `document_print`, `slide_step`) và `HtmlStepTrigger` (`auto_key`, `key`, `click_selector`, `click_point`): ở chế độ `slide_step`, `knit-docs` mở Chromium headless với `--remote-debugging-port=0`, giao tiếp trực tiếp qua WebSocket CDP thuần `std` (`LocalWebSocket`), chụp từng bước bằng `Page.printToPDF`, phát hiện trang lặp/trang cuối qua dấu vân tay `fnv1a_64` rồi ghép lại thành PDF vector bằng `lopdf`.
+- **Tầng External Office (`crates/knit-docs/src/office.rs`):**
+  - Bổ sung `compile_office_to_pdf_bytes` cùng cache 1 mục `LAST_CONVERTED_OFFICE` (khóa `(path, file_len, mtime_nanos)`) giúp xem trước PDF chỉ đọc cho `.docx`/`.pptx` ngay trong workbench mà không cần gọi lại `soffice` khi bấm Export.

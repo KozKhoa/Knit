@@ -1,7 +1,7 @@
 ---
 title: Knit image2pdf Functional Test Suite
 description: Systematic ISTQB functional test design (Domain EP/BVA, Decision Tables, State Transitions, Use Cases, Fault Attack/Error Guessing, and RTM) for Knit image2pdf.
-version: 0.1.0
+version: 0.2.0
 crates: [knit-pdf, knit-core, knit-desktop]
 agent_guide: docs/image2pdf-agent-guide.md
 architecture: docs/image2pdf-architecture.md
@@ -11,7 +11,7 @@ deprecated: false
 
 > Index: [`/llms.txt`](../llms.txt) · Agent Integration Guide: [`docs/image2pdf-agent-guide.md`](./image2pdf-agent-guide.md) · Architecture: [`docs/image2pdf-architecture.md`](./image2pdf-architecture.md) · Machine-Readable Spec: [`docs/specs/image2pdf.schema.json`](./specs/image2pdf.schema.json)
 
-# Bộ Test Case Chức năng — `Image → PDF` (`image2pdf`, Knit `v0.1.0`)
+# Bộ Test Case Chức năng — `Image → PDF` (`image2pdf`, Knit `v0.2.0`)
 
 Bộ thiết kế kiểm thử chức năng (**Functional Test Suite**) cho công cụ **`Image → PDF` (`image2pdf`)** của Knit, được xây dựng theo quy trình điều phối của skill `functional-test-design` và 5 kỹ thuật kiểm thử chuẩn ISTQB, đối chiếu trực tiếp với đặc tả tại [`docs/image2pdf-agent-guide.md`](./image2pdf-agent-guide.md), [`docs/specs/image2pdf.schema.json`](./specs/image2pdf.schema.json) và [`crates/knit-pdf/src/models.rs`](../crates/knit-pdf/src/models.rs).
 
@@ -23,7 +23,7 @@ Theo **Pattern 4 (Complex Business Rules Embedded in a Flow)** và **Pattern 2 (
 
 | Mã BR | Tóm tắt yêu cầu nghiệp vụ (`image2pdf`) | Kỹ thuật chính | Kỹ thuật bổ trợ |
 |---|---|---|---|
-| **BR-01** | Quét file/thư mục ảnh hỗ trợ `jpg, jpeg, jfif, png, webp, avif, gif, bmp, tiff, tif`; tự sinh cây `BookmarkNode` theo thư mục và ghim `cover.*` lên đầu. | Use Case (`use-case-testing`) | Domain (`domain-testing`) |
+| **BR-01** | Quét file/thư mục ảnh hỗ trợ `jpg, jpeg, jfif, png, webp, avif, gif, bmp, tiff, tif, svg`; tự sinh cây `BookmarkNode` theo thư mục, ghim `cover.*` lên đầu và đồng bộ `pdf_sync_animated_drafts` (gồm `embed_rich_media`). | Use Case (`use-case-testing`) | Domain (`domain-testing`) |
 | **BR-02** | Ràng buộc miền giá trị đầu vào: `jpeg_quality` (`1..=100`), `dpi` (`> 0`), `margin_pt` (`>= 0`), `rotation_deg` (`{0,90,180,270}`), tọa độ chuẩn hóa `CropRect`/Annotation `[0.0, 1.0]`, kích thước trang PDF ISO `[3.0, 14400.0]` pt, `max_mb` (`> 0`), `max_pages_per_file` (`>= 1`). | Domain (`domain-testing` — EP + BVA) | — |
 | **BR-03** | Quyết định nhánh xử lý ảnh: `LosslessPassthrough` (`/DCTDecode` hoặc PNG `IDAT` `/FlateDecode`) chỉ kích hoạt khi `lossless_passthrough = true`, `has_pixel_edits() = false`, định dạng JPEG/PNG hợp lệ (không alpha/`tRNS`, EXIF orientation = 1), và vượt qua bước kiểm tra theo `PdfExportMode`. | Decision Table (`decision-table-testing`) | Error Guessing |
 | **BR-04** | Tương tác giữa `PdfExportMode` (`fast` / `balanced` / `safe`), quy tắc chia file (`max_mb` / `max_pages_per_file`), và kiểm tra dung lượng đĩa trống (`ensure_disk_space`: bỏ qua ở `fast`, `1x` ở `balanced`, `2x` ở `safe`; `fast` luôn xuất 1 file duy nhất). | Decision Table (`decision-table-testing`) | Domain (`domain-testing`) |
@@ -54,7 +54,7 @@ Theo **Pattern 4 (Complex Business Rules Embedded in a Flow)** và **Pattern 2 (
 
 | Class ID | Variable | Class Type | Value / Range / Description | BVA Applicable? | Rationale / Notes |
 |---|---|---|---|---|---|
-| **EC-01** | `paths` | Valid | Mảng `>= 1` đường dẫn ảnh hợp lệ (`jpg, png, webp, avif, gif, bmp, tiff`) | Yes (count) | LB = 1 file |
+| **EC-01** | `paths` | Valid | Mảng `>= 1` đường dẫn ảnh hợp lệ (`jpg, png, webp, avif, gif, bmp, tiff, svg`) | Yes (count) | LB = 1 file |
 | **EC-02** | `paths` | Invalid | Mảng rỗng `[]` | Yes (count) | LB−1 = 0 → lỗi `"Chua chon anh hoac thu muc anh"` |
 | **EC-03** | `paths` | Invalid | Đường dẫn không tồn tại trên đĩa | No | Trả lỗi `"Path not found: <path>"` |
 | **EC-04** | `paths` | Invalid | Chỉ chứa file không phải ảnh (`.txt`, `.mp4`, `.pdf`) | No | Scan lọc bỏ → `pages = []`; khi gọi export trả `"Khong co trang nao de tao PDF"` |
