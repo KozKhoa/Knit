@@ -247,6 +247,26 @@ pub fn compile_typst_to_pdf(
     compile_typst_to_pdf_with_toc(markup, base_dir, virtual_files, None)
 }
 
+fn format_typst_compile_error(errs: &[typst::diag::SourceDiagnostic], fallback_prefix: &str) -> KnitError {
+    let msgs: Vec<String> = errs
+        .iter()
+        .map(|e| {
+            let msg = e.message.to_string();
+            if let Some(rest) = msg.strip_prefix("file not found") {
+                format!("Not found{rest}")
+            } else {
+                msg
+            }
+        })
+        .collect();
+    let joined = msgs.join("; ");
+    if msgs.iter().all(|m| m.starts_with("Not found")) {
+        KnitError::InvalidInput(joined)
+    } else {
+        KnitError::InvalidInput(format!("{fallback_prefix}: {joined}"))
+    }
+}
+
 fn compile_typst_doc(
     markup: &str,
     base_dir: Option<&Path>,
@@ -255,10 +275,9 @@ fn compile_typst_doc(
     let world = KnitTypstWorld::new(markup, base_dir, Arc::clone(virtual_files));
     let warned = typst::compile::<PagedDocument>(&world);
     drop(world);
-    warned.output.map_err(|errs| {
-        let msgs: Vec<String> = errs.iter().map(|e| e.message.to_string()).collect();
-        KnitError::InvalidInput(format!("Loi bien dich Typst: {}", msgs.join("; ")))
-    })
+    warned
+        .output
+        .map_err(|errs| format_typst_compile_error(&errs, "Typst compilation failed"))
 }
 
 fn strip_knit_blk_markers(markup: &str) -> String {
@@ -426,13 +445,52 @@ pub(crate) fn compile_typst_with_prepared_assets(
 
     check_cancel()?;
     let pages = final_doc.pages().len();
-    let pdf_bytes =
-        typst_pdf::pdf(&final_doc, &typst_pdf::PdfOptions::default()).map_err(|errs| {
-            let msgs: Vec<String> = errs.iter().map(|e| e.message.to_string()).collect();
-            KnitError::InvalidInput(format!("Loi xuat PDF tu Typst: {}", msgs.join("; ")))
-        })?;
+    let pdf_bytes = typst_pdf::pdf(&final_doc, &typst_pdf::PdfOptions::default())
+        .map_err(|errs| format_typst_compile_error(&errs, "Typst PDF export failed"))?;
     drop(final_doc);
     Ok((pdf_bytes, pages))
+}
+
+fn escape_xml_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn truncate_middle(s: &str, max_chars: usize) -> String {
+    let count = s.chars().count();
+    if count <= max_chars || max_chars < 10 {
+        return s.to_string();
+    }
+    let keep_head = (max_chars - 3) / 3;
+    let keep_tail = max_chars - 3 - keep_head;
+    let head: String = s.chars().take(keep_head).collect();
+    let tail: String = s.chars().skip(count - keep_tail).collect();
+    format!("{head}...{tail}")
+}
+
+fn make_missing_image_placeholder_svg(raw_path: &str) -> Vec<u8> {
+    let display = truncate_middle(raw_path.trim(), 58);
+    let escaped = escape_xml_text(&display);
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="520" height="82" viewBox="0 0 520 82">
+  <rect x="1" y="1" width="518" height="80" rx="4" fill="#FFF8E1" stroke="#FFC107" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <circle cx="28" cy="41" r="11" fill="#DC3545"/>
+  <text x="28" y="46" font-family="sans-serif" font-size="14" font-weight="700" fill="#FFFFFF" text-anchor="middle">!</text>
+  <text x="50" y="33" font-family="sans-serif" font-size="13" font-weight="700" fill="#856404">Not found</text>
+  <text x="50" y="54" font-family="monospace" font-size="11" fill="#495057">{escaped}</text>
+</svg>"##
+    )
+    .into_bytes()
 }
 
 pub(crate) fn prepare_typst_images(
@@ -455,19 +513,24 @@ pub(crate) fn prepare_typst_images(
         }
 
         let resolved_bytes = load_image_bytes(&unescaped, base_dir, virtual_files);
-        let Some(raw) = resolved_bytes else {
-            return caps[0].to_string();
-        };
-
-        if let Some((canonical_ext, final_bytes)) = normalize_image_payload(&unescaped, &raw) {
-            let virtual_name = format!("__knit_img_{counter}.{canonical_ext}");
-            counter += 1;
-            virtual_files.insert(virtual_name.clone(), Bytes::new(final_bytes));
-            mapped.insert(unescaped, virtual_name.clone());
-            format!("image(\"{virtual_name}\"")
-        } else {
-            caps[0].to_string()
+        if let Some(raw) = resolved_bytes {
+            if let Some((canonical_ext, final_bytes)) = normalize_image_payload(&unescaped, &raw) {
+                let virtual_name = format!("__knit_img_{counter}.{canonical_ext}");
+                counter += 1;
+                virtual_files.insert(virtual_name.clone(), Bytes::new(final_bytes));
+                mapped.insert(unescaped, virtual_name.clone());
+                return format!("image(\"{virtual_name}\"");
+            }
         }
+
+        let missing_name = format!("__knit_missing_{counter}.svg");
+        counter += 1;
+        virtual_files.insert(
+            missing_name.clone(),
+            Bytes::new(make_missing_image_placeholder_svg(&unescaped)),
+        );
+        mapped.insert(unescaped, missing_name.clone());
+        format!("image(\"{missing_name}\"")
     })
     .into_owned()
 }

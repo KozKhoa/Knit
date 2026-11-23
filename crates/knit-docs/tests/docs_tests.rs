@@ -810,3 +810,34 @@ fn epub_preview_max_chapters_limits_preview_while_full_export_keeps_all_chapters
     assert!(full_bytes.starts_with(b"%PDF-"));
     knit_docs::clear_epub_cache();
 }
+
+#[test]
+fn missing_markdown_image_and_folder_links_render_not_found_placeholder_and_report_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let existing_dir = dir.path().join("assets");
+    std::fs::create_dir_all(&existing_dir).unwrap();
+
+    let md = "\
+# Missing Link Test
+
+![Missing Screenshot](/nonexistent/path/qa-wiki-review-mobile.png)
+
+[Missing Folder](./missing-folder)
+[Existing Folder](./assets)
+[Remote](https://example.com/ok.png)
+";
+    let missing = knit_docs::find_missing_markdown_links(md, Some(dir.path()));
+    assert_eq!(
+        missing,
+        vec![
+            "/nonexistent/path/qa-wiki-review-mobile.png".to_string(),
+            "./missing-folder".to_string(),
+        ]
+    );
+
+    let (pdf_bytes, pages) =
+        compile_text_to_pdf_bytes(md, DocInputKind::Markdown, Some(dir.path()), &DocConvertOptions::default())
+            .expect("missing image should render SVG placeholder instead of failing compilation");
+    assert!(pages >= 1);
+    assert!(pdf_bytes.starts_with(b"%PDF-"));
+}

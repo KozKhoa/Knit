@@ -333,6 +333,14 @@ export async function splitMultiPdfFiles(
 }
 
 // --- Document -> PDF ---
+export async function checkDocMissingLinks(
+  content: string,
+  baseDir: string | null,
+): Promise<string[]> {
+  if (!isTauriRuntime()) return [];
+  return await invoke("docs_check_missing_links", { content, baseDir });
+}
+
 export async function getDocsEngineStatus(): Promise<EngineStatus> {
   return await invoke("docs_engine_status");
 }

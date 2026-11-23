@@ -210,6 +210,12 @@ export const en: Translations = {
     collapseAll: "Collapse",
     undoBtn: "Undo",
     undoTooltip: "Undo bookmark edit (Ctrl+Z)",
+    selectedCount: (count) => `${count} selected`,
+    selectAll: "Select all",
+    deleteSelected: "Delete selected",
+    doneSelection: "Done",
+    selectionHint: "Selection mode: hold 400ms or Ctrl/Shift+Click · drag to reorder batch · Esc to exit",
+    multiDragHint: (count) => `Moving ${count} sections`,
   },
   canvasEditor: {
     title: (label) => `Edit page: ${label}`,
@@ -470,6 +476,8 @@ export const en: Translations = {
     editorReadonlyNotice: "Binary formats (EPUB/DOCX/PPTX) cannot be edited inline — click Export PDF to convert.",
     doneSummary: (pages, size, engine) => `Exported (${pages} pages, ${size}, engine: ${engine}).`,
     estimatedOfficeNote: (size) => `~${size}`,
+    missingLinksWarning: (count, samples) =>
+      `Not found (${count}): ${samples.join(", ")}${count > samples.length ? ", ..." : ""}`,
   },
   archive: {
     title: "Archive Packager",

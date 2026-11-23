@@ -27,6 +27,7 @@ import {
   useExportFilenameCheck,
 } from "../lib/exportPath";
 import {
+  checkDocMissingLinks,
   checkExportConflicts,
   convertDocContentToPdf,
   convertDocToPdf,
@@ -246,6 +247,7 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
 
   const [previewLoading, setPreviewLoading] = React.useState(false);
   const [previewError, setPreviewError] = React.useState<string | null>(null);
+  const [missingLinks, setMissingLinks] = React.useState<string[]>([]);
   const [previewPdfBytes, setPreviewPdfBytes] = React.useState<Uint8Array | null>(null);
   const [previewTotalPages, setPreviewTotalPages] = React.useState<number>(0);
   const [officeSourceBytes, setOfficeSourceBytes] = React.useState<number | null>(null);
@@ -542,12 +544,14 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
     if (isOfficeFile && engineStatus?.libreoffice_available === false) {
       setPreviewPdfBytes(null);
       setPreviewTotalPages(0);
+      setMissingLinks([]);
       setPreviewError(t.docs2pdf.libreMissing);
       return;
     }
     if (isEditableText && editorText.trim().length === 0) {
       setPreviewPdfBytes(null);
       setPreviewTotalPages(0);
+      setMissingLinks([]);
       setPreviewError(null);
       return;
     }
@@ -559,22 +563,32 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
       const compiled = isEditableText
         ? formatEditorContentForCompilation(editorText, editorLanguage, docKind)
         : { content: null as string | null, kind: docKind };
+      const shouldCheckLinks =
+        isEditableText && (editorLanguage === "markdown" || docKind === "markdown");
+      const missingLinksPromise =
+        shouldCheckLinks && typeof checkDocMissingLinks === "function"
+          ? checkDocMissingLinks(editorText, parentDirOf(inputPath)).catch(() => [] as string[])
+          : Promise.resolve([] as string[]);
       const mermaidSvgs =
         compiled.kind === "markdown" && compiled.content
           ? await renderMermaidSvgs(compiled.content, mermaidTheme, mermaidCacheRef.current)
           : {};
       if (previewSeqRef.current !== seq) return;
-      const pdfBytes = await previewDocPdfBytes({
-        content: compiled.content,
-        inputPath: !isEditableText ? inputPath : null,
-        inputKind: compiled.kind,
-        baseDir: parentDirOf(inputPath),
-        options: {
-          ...docOptions,
-          mermaid_svgs: mermaidSvgs,
-        },
-      });
+      const [pdfBytes, missing] = await Promise.all([
+        previewDocPdfBytes({
+          content: compiled.content,
+          inputPath: !isEditableText ? inputPath : null,
+          inputKind: compiled.kind,
+          baseDir: parentDirOf(inputPath),
+          options: {
+            ...docOptions,
+            mermaid_svgs: mermaidSvgs,
+          },
+        }),
+        missingLinksPromise,
+      ]);
       if (previewSeqRef.current !== seq) return;
+      setMissingLinks(missing);
       setPreviewPdfBytes(pdfBytes);
     } catch (e) {
       if (previewSeqRef.current !== seq) return;
@@ -1063,6 +1077,18 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
       )}
 
       <ErrorBanner message={errorMsg} />
+
+      {missingLinks.length > 0 && (
+        <div
+          data-testid="docs2pdf-missing-links-warning"
+          className="flex items-center gap-2 rounded-[4px] border border-[#FFC107] bg-[#FFF8E1] px-3.5 py-2 text-sm text-[#856404]"
+        >
+          <AlertTriangle className="h-4 w-4 shrink-0 text-[#D39E00]" />
+          <span className="font-mono-code text-xs break-all">
+            {t.docs2pdf.missingLinksWarning(missingLinks.length, missingLinks.slice(0, 3))}
+          </span>
+        </div>
+      )}
 
       {isPreviewableDoc && !isEditableText ? (
         <div

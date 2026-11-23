@@ -207,6 +207,12 @@ export interface Translations {
     collapseAll: string;
     undoBtn: string;
     undoTooltip: string;
+    selectedCount: (count: number) => string;
+    selectAll: string;
+    deleteSelected: string;
+    doneSelection: string;
+    selectionHint: string;
+    multiDragHint: (count: number) => string;
   };
   canvasEditor: {
     title: (label: string) => string;
@@ -407,6 +413,7 @@ export interface Translations {
     editorReadonlyNotice: string;
     doneSummary: (pages: string, size: string, engine: string) => string;
     estimatedOfficeNote: (size: string) => string;
+    missingLinksWarning: (count: number, samples: string[]) => string;
   };
   archive: {
     title: string;

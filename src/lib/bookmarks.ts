@@ -339,6 +339,192 @@ export function deleteBookmarkAtPath(
   );
 }
 
+export function parseBookmarkPathKey(key: string): number[] {
+  if (!key) return [];
+  const parts = key.split(".").map((n) => Number.parseInt(n, 10));
+  return parts.some((n) => Number.isNaN(n) || n < 0) ? [] : parts;
+}
+
+export function isBookmarkDescendantOrSame(
+  ancestor: readonly number[],
+  candidate: readonly number[],
+): boolean {
+  return (
+    candidate.length >= ancestor.length &&
+    ancestor.every((seg, i) => candidate[i] === seg)
+  );
+}
+
+/**
+ * Loại bỏ các đường dẫn con cháu nếu nút cha đã nằm trong danh sách chọn,
+ * đồng thời sắp xếp theo thứ tự xuất hiện trên cây từ trên xuống dưới.
+ */
+export function pruneNestedBookmarkPaths(paths: readonly number[][]): number[][] {
+  const sorted = [...paths]
+    .filter((p) => p.length > 0)
+    .sort((a, b) => {
+      const len = Math.min(a.length, b.length);
+      for (let i = 0; i < len; i++) {
+        if (a[i] !== b[i]) return a[i] - b[i];
+      }
+      return a.length - b.length;
+    });
+
+  const kept: number[][] = [];
+  for (const p of sorted) {
+    if (!kept.some((anc) => isBookmarkDescendantOrSame(anc, p))) {
+      kept.push(p);
+    }
+  }
+  return kept;
+}
+
+function getBookmarkNodeAt(
+  nodes: BookmarkNode[],
+  path: readonly number[],
+): BookmarkNode | null {
+  let list = nodes;
+  let found: BookmarkNode | null = null;
+  for (let i = 0; i < path.length; i++) {
+    const idx = path[i];
+    if (idx < 0 || idx >= list.length) return null;
+    found = list[idx];
+    list = found.children;
+  }
+  return found;
+}
+
+/**
+ * Xóa hàng loạt các bookmark theo danh sách đường dẫn (tự gộp nút cha-con).
+ */
+export function deleteBookmarkNodesAtPaths(
+  nodes: BookmarkNode[],
+  paths: readonly number[][],
+): BookmarkNode[] {
+  const pruned = pruneNestedBookmarkPaths(paths);
+  if (pruned.length === 0) return nodes;
+
+  const targetRefs = new Set<BookmarkNode>();
+  for (const p of pruned) {
+    const node = getBookmarkNodeAt(nodes, p);
+    if (node) targetRefs.add(node);
+  }
+  if (targetRefs.size === 0) return nodes;
+
+  const walk = (list: BookmarkNode[]): BookmarkNode[] => {
+    const out: BookmarkNode[] = [];
+    for (const n of list) {
+      if (targetRefs.has(n)) continue;
+      out.push(n.children.length > 0 ? { ...n, children: walk(n.children) } : n);
+    }
+    return out;
+  };
+
+  return walk(nodes);
+}
+
+/**
+ * Di chuyển hàng loạt các bookmark đang chọn tới vị trí tương đối (`before` | `after` | `inside`)
+ * so với `targetPath`, giữ nguyên thứ tự cây và nhánh con của từng mục.
+ */
+export function moveBookmarkNodesWithSelection(
+  nodes: BookmarkNode[],
+  sourcePaths: readonly number[][],
+  targetPath: readonly number[],
+  position: BookmarkDropPosition,
+): { nodes: BookmarkNode[]; nextSelectedKeys: string[] } {
+  const pruned = pruneNestedBookmarkPaths(sourcePaths);
+  if (pruned.length === 0 || targetPath.length === 0) {
+    return {
+      nodes,
+      nextSelectedKeys: pruned.map((p) => bookmarkPathKey(p)),
+    };
+  }
+  if (pruned.some((src) => isBookmarkDescendantOrSame(src, targetPath))) {
+    return {
+      nodes,
+      nextSelectedKeys: pruned.map((p) => bookmarkPathKey(p)),
+    };
+  }
+
+  const movedRefs: BookmarkNode[] = [];
+  for (const p of pruned) {
+    const n = getBookmarkNodeAt(nodes, p);
+    if (n) movedRefs.push(n);
+  }
+  const targetRef = getBookmarkNodeAt(nodes, targetPath);
+  if (movedRefs.length === 0 || !targetRef) {
+    return {
+      nodes,
+      nextSelectedKeys: pruned.map((p) => bookmarkPathKey(p)),
+    };
+  }
+
+  const movedSet = new Set(movedRefs);
+  const movedClones = movedRefs.map((n) => ({
+    title: n.title,
+    target_page_index: n.target_page_index,
+    children: cloneBookmarkTree(n.children),
+  }));
+  const movedCloneSet = new Set(movedClones);
+
+  const transform = (list: BookmarkNode[]): BookmarkNode[] => {
+    const out: BookmarkNode[] = [];
+    for (const n of list) {
+      if (movedSet.has(n)) continue;
+
+      const nextChildren = n.children.length > 0 ? transform(n.children) : [];
+      if (n === targetRef && position === "inside") {
+        out.push({
+          title: n.title,
+          target_page_index: n.target_page_index,
+          children: [...nextChildren, ...movedClones],
+        });
+        continue;
+      }
+
+      const rebuilt: BookmarkNode = {
+        title: n.title,
+        target_page_index: n.target_page_index,
+        children: nextChildren,
+      };
+      if (n === targetRef && position === "before") {
+        out.push(...movedClones, rebuilt);
+      } else if (n === targetRef && position === "after") {
+        out.push(rebuilt, ...movedClones);
+      } else {
+        out.push(rebuilt);
+      }
+    }
+    return out;
+  };
+
+  const nextNodes = transform(nodes);
+  const nextSelectedKeys: string[] = [];
+  const collectKeys = (list: BookmarkNode[], prefix: number[]) => {
+    list.forEach((n, idx) => {
+      const p = [...prefix, idx];
+      if (movedCloneSet.has(n)) {
+        nextSelectedKeys.push(bookmarkPathKey(p));
+      } else if (n.children.length > 0) {
+        collectKeys(n.children, p);
+      }
+    });
+  };
+  collectKeys(nextNodes, []);
+
+  return { nodes: nextNodes, nextSelectedKeys };
+}
+
+export function moveBookmarkNodes(
+  nodes: BookmarkNode[],
+  sourcePaths: readonly number[][],
+  targetPath: readonly number[],
+  position: BookmarkDropPosition,
+): BookmarkNode[] {
+  return moveBookmarkNodesWithSelection(nodes, sourcePaths, targetPath, position).nodes;
+}
+
 export function addChildBookmarkAtPath(
   nodes: BookmarkNode[],
   path: readonly number[],

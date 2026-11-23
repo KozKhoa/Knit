@@ -210,6 +210,12 @@ export const vi: Translations = {
     collapseAll: "Thu gọn",
     undoBtn: "Hoàn tác",
     undoTooltip: "Hoàn tác thao tác mục lục (Ctrl+Z)",
+    selectedCount: (count) => `Đã chọn ${count} mục`,
+    selectAll: "Chọn tất cả",
+    deleteSelected: "Xóa đã chọn",
+    doneSelection: "Xong",
+    selectionHint: "Chế độ chọn: giữ 400ms, Ctrl/Shift+Click để chọn nhiều · kéo thả để sắp xếp hàng loạt · Esc để thoát",
+    multiDragHint: (count) => `Đang kéo ${count} mục`,
   },
   canvasEditor: {
     title: (label) => `Chỉnh sửa trang: ${label}`,
@@ -471,6 +477,8 @@ export const vi: Translations = {
     doneSummary: (pages, size, engine) =>
       `Xuất thành công (${pages} trang, ${size}, engine: ${engine}).`,
     estimatedOfficeNote: (size) => `~${size}`,
+    missingLinksWarning: (count, samples) =>
+      `Not found (${count}): ${samples.join(", ")}${count > samples.length ? ", ..." : ""}`,
   },
   archive: {
     title: "Đóng gói Archive",

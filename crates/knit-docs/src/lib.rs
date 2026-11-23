@@ -9,7 +9,9 @@ pub use html_epub::{
     clear_epub_cache, compile_epub_to_pdf_bytes, convert_epub_to_pdf, html_fragment_to_typst,
     html_to_typst,
 };
-pub use markdown::{markdown_to_typst, markdown_to_typst_with_assets, txt_to_typst};
+pub use markdown::{
+    find_missing_markdown_links, markdown_to_typst, markdown_to_typst_with_assets, txt_to_typst,
+};
 pub use models::{
     DocConvertOptions, DocConvertResult, DocFont, DocInputKind, DocTheme, EngineStatus,
     HtmlRenderMode, HtmlStepKind, HtmlStepTrigger, PageNumberFormat, PageNumberPosition,

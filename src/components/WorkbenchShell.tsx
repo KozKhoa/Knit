@@ -1,4 +1,5 @@
 import React from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import {
   Archive,
   BookOpen,
@@ -85,6 +86,9 @@ export const WorkbenchShell: React.FC<WorkbenchShellProps> = ({
   const [drawerOpen, setDrawerOpen] = React.useState(false);
   const [drawerTab, setDrawerTab] = React.useState<"logs" | "history">("logs");
   const [metrics, setMetrics] = React.useState<AppMetrics | null>(null);
+  const [appVersion, setAppVersion] = React.useState<string>(() =>
+    typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "0.2.1",
+  );
   const shellRef = React.useRef<HTMLDivElement | null>(null);
   const logsContainerRef = React.useRef<HTMLDivElement | null>(null);
   const logsPinnedToBottomRef = React.useRef(true);
@@ -122,6 +126,11 @@ export const WorkbenchShell: React.FC<WorkbenchShellProps> = ({
   React.useEffect(() => {
     if (!isTauriRuntime()) return;
     let cancelled = false;
+    void getVersion()
+      .then((v) => {
+        if (!cancelled && v) setAppVersion(v);
+      })
+      .catch(() => {});
     const poll = async () => {
       try {
         const next = await getAppMetrics();
@@ -568,6 +577,14 @@ export const WorkbenchShell: React.FC<WorkbenchShellProps> = ({
             </div>
           )}
         </div>
+      </div>
+
+      {/* Floating Bottom-Right Current Version Badge */}
+      <div
+        data-testid="app-version-badge"
+        className="pointer-events-none fixed bottom-2.5 right-3 z-30 rounded-[4px] border border-[#DEE2E6] bg-white/90 px-2 py-0.5 font-mono-code text-[11px] font-medium text-[#6C757D]"
+      >
+        v{appVersion}
       </div>
 
       {/* OS File Drag & Drop Overlay */}

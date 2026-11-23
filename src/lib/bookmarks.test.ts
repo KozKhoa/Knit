@@ -6,8 +6,11 @@ import {
   buildPageBookmarkMap,
   collectParentBookmarkKeys,
   deleteBookmarkAtPath,
+  deleteBookmarkNodesAtPaths,
   flattenVisibleBookmarks,
   moveBookmarkNode,
+  moveBookmarkNodesWithSelection,
+  pruneNestedBookmarkPaths,
   remapBookmarksAfterPageRemoval,
   updateBookmarkAtPath,
   validateBookmarks,
@@ -159,5 +162,35 @@ describe("bookmarks helpers", () => {
 
     const deleted = deleteBookmarkAtPath(withChild, [0, 0]);
     expect(deleted[0].children.map((c) => c.title)).toEqual(["Ch 2 Edited"]);
+  });
+
+  it("prunes nested paths, batch-deletes, and batch-moves selected sections while preserving tree order", () => {
+    const tree: BookmarkNode[] = [
+      {
+        title: "A",
+        target_page_index: 0,
+        children: [{ title: "A1", target_page_index: 1, children: [] }],
+      },
+      { title: "B", target_page_index: 2, children: [] },
+      { title: "C", target_page_index: 3, children: [] },
+      { title: "D", target_page_index: 4, children: [] },
+    ];
+
+    // Prune descendant [0, 0] when parent [0] is selected
+    expect(pruneNestedBookmarkPaths([[2], [0, 0], [0]])).toEqual([[0], [2]]);
+
+    // Batch move [A (with A1), C] after D -> [B, D, A (with A1), C]
+    const moved = moveBookmarkNodesWithSelection(tree, [[0], [0, 0], [2]], [3], "after");
+    expect(moved.nodes.map((n) => n.title)).toEqual(["B", "D", "A", "C"]);
+    expect(moved.nodes[2].children.map((c) => c.title)).toEqual(["A1"]);
+    expect(moved.nextSelectedKeys).toEqual(["2", "3"]);
+
+    // Cycle guard: cannot drop [A, C] inside A1
+    const blocked = moveBookmarkNodesWithSelection(tree, [[0], [2]], [0, 0], "inside");
+    expect(blocked.nodes).toBe(tree);
+
+    // Batch delete [A, C] -> [B, D]
+    const afterDelete = deleteBookmarkNodesAtPaths(tree, [[0], [0, 0], [2]]);
+    expect(afterDelete.map((n) => n.title)).toEqual(["B", "D"]);
   });
 });

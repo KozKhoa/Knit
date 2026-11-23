@@ -985,3 +985,100 @@ pub fn markdown_to_typst_with_assets(
 
     (out, assets)
 }
+
+fn percent_decode_url(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    let hex = |b: u8| -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    };
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                out.push((h << 4) | l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn local_target_exists(raw_url: &str, base_dir: Option<&std::path::Path>) -> Option<String> {
+    let trimmed = raw_url.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("mailto:")
+        || lower.starts_with("tel:")
+        || lower.starts_with("data:")
+        || lower.starts_with("javascript:")
+    {
+        return None;
+    }
+
+    let stripped_file = trimmed
+        .strip_prefix("file://")
+        .unwrap_or(trimmed)
+        .split(['#', '?'])
+        .next()
+        .unwrap_or(trimmed)
+        .trim();
+    if stripped_file.is_empty() {
+        return None;
+    }
+
+    let decoded = percent_decode_url(stripped_file);
+    let candidates = [stripped_file, decoded.as_str()];
+    for cand in candidates {
+        let p = std::path::Path::new(cand);
+        if p.is_absolute() {
+            if p.exists() {
+                return None;
+            }
+        } else if let Some(base) = base_dir {
+            if base.join(p).exists() {
+                return None;
+            }
+        }
+    }
+
+    Some(trimmed.to_string())
+}
+
+/// Kiểm tra các đường dẫn tệp/thư mục cục bộ trong Markdown (`![alt](path)` và `[text](path)`)
+/// và trả về danh sách các đường dẫn không tồn tại trên đĩa.
+pub fn find_missing_markdown_links(
+    md: &str,
+    base_dir: Option<&std::path::Path>,
+) -> Vec<String> {
+    let mut missing = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let parser = Parser::new_ext(md, Options::all());
+    for event in parser {
+        let url_opt = match event {
+            Event::Start(Tag::Image { dest_url, .. }) => Some(dest_url.to_string()),
+            Event::Start(Tag::Link { dest_url, .. }) => Some(dest_url.to_string()),
+            _ => None,
+        };
+        if let Some(url) = url_opt {
+            if let Some(miss) = local_target_exists(&url, base_dir) {
+                if seen.insert(miss.clone()) {
+                    missing.push(miss);
+                }
+            }
+        }
+    }
+    missing
+}

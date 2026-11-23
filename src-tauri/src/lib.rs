@@ -1012,6 +1012,21 @@ async fn docs_engine_status() -> Result<EngineStatus, String> {
 }
 
 #[tauri::command]
+async fn docs_check_missing_links(
+    content: String,
+    base_dir: Option<PathBuf>,
+) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(knit_docs::find_missing_markdown_links(
+            &content,
+            base_dir.as_deref(),
+        ))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 async fn docs_convert_to_pdf(
     job_id: String,
     input_path: PathBuf,
@@ -1743,6 +1758,7 @@ pub fn run() {
             pdf_split,
             pdf_split_multi,
             docs_engine_status,
+            docs_check_missing_links,
             docs_convert_to_pdf,
             docs_read_text_file,
             docs_write_text_file,
