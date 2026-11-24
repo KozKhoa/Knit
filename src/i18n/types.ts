@@ -424,6 +424,8 @@ export interface Translations {
       string
     >;
     syntaxErrorCount: (n: number) => string;
+    syntaxErrorBadgeWithLine: (n: number, line: number) => string;
+    jumpToErrorLineTitle: string;
     previewTitle: string;
     saveMdBtn: string;
     saveFileBtn: (ext: string) => string;
@@ -690,5 +692,11 @@ export interface Translations {
     aiClearedStatus: string;
     aiSaving: string;
     aiTesting: string;
+    aiFetchModelsBtn: string;
+    aiFetchingModels: string;
+    aiModelsFetchedStatus: (count: number) => string;
+    aiCustomModelPlaceholder: string;
+    aiApplyModelBtn: string;
+    aiModelSavedStatus: (model: string) => string;
   };
 }

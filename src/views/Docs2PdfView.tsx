@@ -18,7 +18,9 @@ import {
   type MarkdownCodeEditorHandle,
 } from "../components/MarkdownCodeEditor";
 import type { PdfJsPreviewHandle } from "../components/PdfJsPreview";
+import { PaneResizeHandle } from "../components/PaneResizeHandle";
 import { ViewHeader } from "../components/ViewHeader";
+import { useHorizontalRatioResize } from "../hooks/useHorizontalRatioResize";
 import { useVerticalResize } from "../hooks/useVerticalResize";
 import { useI18n } from "../i18n";
 import {
@@ -233,16 +235,6 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
     "knit.docs.pageNumFormat",
     "number_only",
   );
-  const [workspaceHeightPx, setWorkspaceHeightPx] = usePersistentState<number>(
-    "knit.docs.workspaceHeightPx",
-    560,
-  );
-  const { height: liveHeightPx, handlePointerDown: handleStartHeightResize } = useVerticalResize({
-    value: workspaceHeightPx,
-    min: 320,
-    max: 4000,
-    onCommit: setWorkspaceHeightPx,
-  });
   const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
 
   const [previewLoading, setPreviewLoading] = React.useState(false);
@@ -286,6 +278,58 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
     (docKind === "epub" && Boolean(inputPath)) ||
     (isOfficeFile && Boolean(inputPath));
   const isDirty = isEditableText && editorText !== savedText;
+
+  const isNoEditorSplit = isPreviewableDoc && !isEditableText;
+  const noEditorSplitRef = React.useRef<HTMLDivElement | null>(null);
+  const noEditorControlsInnerRef = React.useRef<HTMLDivElement | null>(null);
+  const [noEditorPreviewRatio, setNoEditorPreviewRatio] = usePersistentState<number>(
+    "knit.docs.noEditorPreviewRatio",
+    0.58,
+  );
+  const { ratio: liveNoEditorPreviewRatio, handlePointerDown: handleStartNoEditorWidthResize } =
+    useHorizontalRatioResize({
+      value: noEditorPreviewRatio,
+      min: 0.35,
+      max: 0.75,
+      containerRef: noEditorSplitRef,
+      cssVar: "--docs-no-editor-left",
+      onCommit: setNoEditorPreviewRatio,
+    });
+  const [controlsNaturalHeightPx, setControlsNaturalHeightPx] = React.useState<number>(0);
+
+  React.useEffect(() => {
+    if (!isNoEditorSplit) {
+      setControlsNaturalHeightPx(0);
+      return;
+    }
+    const el = noEditorControlsInnerRef.current;
+    if (!el) return;
+    const measure = () => {
+      const next = Math.round(el.getBoundingClientRect().height || el.offsetHeight || 0);
+      if (next > 0) {
+        setControlsNaturalHeightPx(next);
+      }
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [isNoEditorSplit]);
+
+  const effectiveMaxHeightPx =
+    isNoEditorSplit && controlsNaturalHeightPx >= 320 ? controlsNaturalHeightPx : 4000;
+
+  const [workspaceHeightPx, setWorkspaceHeightPx] = usePersistentState<number>(
+    "knit.docs.workspaceHeightPx",
+    560,
+  );
+  const { height: liveHeightPx, handlePointerDown: handleStartHeightResize } = useVerticalResize({
+    value: workspaceHeightPx,
+    min: 320,
+    max: effectiveMaxHeightPx,
+    onCommit: setWorkspaceHeightPx,
+  });
 
   React.useEffect(() => {
     if (!isOfficeFile || !inputPath || !isTauriRuntime()) {
@@ -1133,20 +1177,35 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
         </div>
       )}
 
-      {isPreviewableDoc && !isEditableText ? (
+      {isNoEditorSplit ? (
         <div
+          ref={noEditorSplitRef}
           data-testid="docs2pdf-no-editor-split-layout"
-          className="grid grid-cols-1 gap-4 min-[1200px]:grid-cols-12 min-[1200px]:items-start"
+          style={
+            {
+              "--docs-no-editor-left": `${(liveNoEditorPreviewRatio * 100).toFixed(2)}%`,
+            } as React.CSSProperties
+          }
+          className="grid grid-cols-1 gap-4 min-[1200px]:items-start min-[1200px]:gap-2 min-[1200px]:[grid-template-columns:var(--docs-no-editor-left)_12px_minmax(0,1fr)]"
         >
           <div
             data-testid="docs2pdf-no-editor-controls-col"
-            className="order-1 space-y-4 min-[1200px]:order-2 min-[1200px]:col-span-5"
+            className="order-1 min-[1200px]:order-3 min-[1200px]:sticky min-[1200px]:top-4"
           >
-            {controlsCluster}
+            <div ref={noEditorControlsInnerRef} className="space-y-4">
+              {controlsCluster}
+            </div>
           </div>
+          <PaneResizeHandle
+            orientation="vertical"
+            title={t.pdfOps.resizeWidthTitle}
+            ariaLabel={t.pdfOps.resizeWidthTitle}
+            onPointerDown={handleStartNoEditorWidthResize}
+            className="!hidden min-[1200px]:!flex min-[1200px]:order-2"
+          />
           <div
             data-testid="docs2pdf-no-editor-preview-col"
-            className="order-2 min-[1200px]:order-1 min-[1200px]:col-span-7"
+            className="order-2 min-[1200px]:order-1"
           >
             {workbenchNode}
           </div>

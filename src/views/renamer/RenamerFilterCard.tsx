@@ -89,7 +89,7 @@ export const RenamerFilterCard: React.FC<RenamerFilterCardProps> = ({
         placeholder={t.renamer.extensionsPlaceholder}
         value={extFilterText}
         onChange={(e) => onChangeExtFilterText(e.target.value)}
-        className="knit-control knit-input w-full px-2.5 font-mono-code text-xs"
+        className="knit-control knit-input w-full px-2.5 text-xs"
       />
       <div className="grid grid-cols-2 gap-2">
         <input
@@ -97,14 +97,14 @@ export const RenamerFilterCard: React.FC<RenamerFilterCardProps> = ({
           placeholder={t.renamer.includePlaceholder}
           value={includeText}
           onChange={(e) => onChangeIncludeText(e.target.value)}
-          className="knit-control knit-input w-full px-2.5 font-mono-code text-xs"
+          className="knit-control knit-input w-full px-2.5 text-xs"
         />
         <input
           type="text"
           placeholder={t.renamer.excludePlaceholder}
           value={excludeText}
           onChange={(e) => onChangeExcludeText(e.target.value)}
-          className="knit-control knit-input w-full px-2.5 font-mono-code text-xs"
+          className="knit-control knit-input w-full px-2.5 text-xs"
         />
       </div>
     </div>

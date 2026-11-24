@@ -100,14 +100,14 @@ export const RenamerRuleCard: React.FC<RenamerRuleCardProps> = ({
               placeholder={t.renamer.findPlaceholder}
               value={findStr}
               onChange={(e) => onChangeFindStr(e.target.value)}
-              className="knit-control knit-input px-2.5 font-mono-code text-xs"
+              className="knit-control knit-input px-2.5 text-xs"
             />
             <input
               type="text"
               placeholder={t.renamer.replacePlaceholder}
               value={replaceStr}
               onChange={(e) => onChangeReplaceStr(e.target.value)}
-              className="knit-control knit-input px-2.5 font-mono-code text-xs"
+              className="knit-control knit-input px-2.5 text-xs"
             />
           </div>
           <div className="flex gap-4 text-sm">
@@ -138,7 +138,7 @@ export const RenamerRuleCard: React.FC<RenamerRuleCardProps> = ({
             value={perlExpr}
             onChange={(e) => onChangePerlExpr(e.target.value)}
             placeholder={t.renamer.prenamePlaceholder}
-            className="knit-control knit-input w-full px-2.5 font-mono-code text-xs"
+            className="knit-control knit-input w-full px-2.5 text-xs"
           />
           <div className="mt-1.5 text-xs text-[#6C757D]">{t.renamer.prenameHint}</div>
         </div>

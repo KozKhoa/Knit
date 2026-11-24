@@ -825,7 +825,7 @@ export const PdfSplitPane: React.FC<PdfSplitPaneProps> = ({
               disabled={isPopulatingSections}
               onChange={(e) => onChangeRangesStr(e.target.value)}
               placeholder="1-3, 5, 8-10"
-              className="knit-control knit-input mt-1 w-full px-2.5 font-mono-code text-xs disabled:opacity-50"
+              className="knit-control knit-input mt-1 w-full px-2.5 text-xs disabled:opacity-50"
             />
           </div>
         )}

@@ -494,7 +494,7 @@ export const Docs2PdfSettingsCard: React.FC<Docs2PdfSettingsCardProps> = ({
                         placeholder={t.docs2pdf.htmlStepKeyCustomPlaceholder}
                         value={htmlStepKey}
                         onChange={(e) => onChangeHtmlStepKey(e.target.value)}
-                        className="knit-control-sm knit-input mt-1 w-full px-2.5 font-mono-code text-xs"
+                        className="knit-control-sm knit-input mt-1 w-full px-2.5 text-xs"
                       />
                     </div>
                   )}
@@ -512,7 +512,7 @@ export const Docs2PdfSettingsCard: React.FC<Docs2PdfSettingsCardProps> = ({
                     placeholder={t.docs2pdf.htmlStepSelectorPlaceholder}
                     value={htmlStepSelector}
                     onChange={(e) => onChangeHtmlStepSelector(e.target.value)}
-                    className="knit-control-sm knit-input mt-1 w-full px-2.5 font-mono-code text-xs"
+                    className="knit-control-sm knit-input mt-1 w-full px-2.5 text-xs"
                   />
                 </div>
               )}

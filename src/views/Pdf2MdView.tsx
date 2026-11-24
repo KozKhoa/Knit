@@ -582,6 +582,15 @@ export const Pdf2MdView: React.FC<Pdf2MdViewProps> = ({
         (ev) => onJobEvent(ev, jobId),
       );
 
+      if (res.refined_chunks === 0) {
+        const errDetail =
+          res.warnings[0] ?? t.pdf2md.aiPartialFallback(res.fallback_chunks, res.total_chunks);
+        setAiNotice(null);
+        setErrorMsg(errDetail);
+        onFinishJob(t.pdf2md.aiCardTitle, [], errDetail, "error", t.pdf2md.title, jobId);
+        return;
+      }
+
       setAiPreviousMarkdown(prevSnapshot);
       if (mode === "selection" && selected && editorRef.current) {
         editorRef.current.replaceRange(selected.from, selected.to, res.markdown);

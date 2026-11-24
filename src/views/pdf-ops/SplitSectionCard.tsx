@@ -166,7 +166,7 @@ export const SplitSectionCard: React.FC<SplitSectionCardProps> = React.memo(
               onChange={(e) => onRename(section.id, e.target.value)}
               disabled={isLocked}
               placeholder={t.pdfOps.sectionNamePlaceholder}
-              className="knit-control-sm knit-input min-w-0 flex-1 px-2.5 font-mono-code text-xs disabled:opacity-50"
+              className="knit-control-sm knit-input min-w-0 flex-1 px-2.5 text-xs disabled:opacity-50"
             />
             <span className="shrink-0 rounded-[4px] bg-[#E9ECEF] px-2 py-0.5 font-mono-code text-xs font-semibold text-[#495057]">
               {t.pdfOps.sectionPagesCount(section.pages.length)}

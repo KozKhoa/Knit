@@ -199,11 +199,16 @@ describe("Review 1.18 items", () => {
     const previewCol = screen.getByTestId("docs2pdf-no-editor-preview-col");
 
     expect(splitRoot.className).toContain("grid-cols-1");
-    expect(splitRoot.className).toContain("min-[1200px]:grid-cols-12");
+    expect(splitRoot.className).toContain(
+      "min-[1200px]:[grid-template-columns:var(--docs-no-editor-left)_12px_minmax(0,1fr)]",
+    );
     expect(previewCol.className).toContain("min-[1200px]:order-1");
-    expect(previewCol.className).toContain("min-[1200px]:col-span-7");
-    expect(controlsCol.className).toContain("min-[1200px]:order-2");
-    expect(controlsCol.className).toContain("min-[1200px]:col-span-5");
+    expect(controlsCol.className).toContain("min-[1200px]:order-3");
+    expect(controlsCol.className).toContain("min-[1200px]:sticky");
+    expect(controlsCol.className).toContain("min-[1200px]:top-4");
+    expect(
+      splitRoot.querySelector('[role="separator"][aria-orientation="vertical"]'),
+    ).toBeTruthy();
     expect(previewCol.textContent).toContain("Xem trước PDF trực tiếp");
     expect(controlsCol.textContent).toContain("/books/novel.epub");
     expect(screen.queryByText("Chọn hoặc kéo thả tài liệu")).toBeNull();

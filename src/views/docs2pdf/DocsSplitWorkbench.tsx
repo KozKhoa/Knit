@@ -6,6 +6,7 @@ import {
   editorLanguageExtension,
   MarkdownCodeEditor,
   type EditorLanguage,
+  type EditorSyntaxSummary,
   type MarkdownCodeEditorHandle,
 } from "../../components/MarkdownCodeEditor";
 import { PaneResizeHandle } from "../../components/PaneResizeHandle";
@@ -13,6 +14,7 @@ import { PdfJsPreview, type PdfJsPreviewHandle } from "../../components/PdfJsPre
 import { Select } from "../../components/Select";
 import { useHorizontalRatioResize } from "../../hooks/useHorizontalRatioResize";
 import { useI18n } from "../../i18n";
+import { findAllTextMatches } from "../../lib/markdownSearch";
 import { usePersistentState } from "../../lib/storage";
 
 interface DocsSplitWorkbenchProps {
@@ -116,7 +118,14 @@ export const DocsSplitWorkbench: React.FC<DocsSplitWorkbenchProps> = ({
 }) => {
   const { t } = useI18n();
   const splitContainerRef = React.useRef<HTMLDivElement | null>(null);
-  const [syntaxErrorCount, setSyntaxErrorCount] = React.useState(0);
+  const [syntaxSummary, setSyntaxSummary] = React.useState<EditorSyntaxSummary>({
+    count: 0,
+    firstLine: null,
+    firstFrom: null,
+    firstTo: null,
+    firstMessage: null,
+  });
+  const syntaxErrorCount = syntaxSummary.count;
   const [leftRatio, setLeftRatio] = usePersistentState<number>("knit.docs.leftRatio", 0.5);
   const { ratio: liveLeftRatio, handlePointerDown: handleStartWidthResize } =
     useHorizontalRatioResize({
@@ -130,6 +139,24 @@ export const DocsSplitWorkbench: React.FC<DocsSplitWorkbenchProps> = ({
 
   const activeExt = saveExtension ?? editorLanguageExtension(editorLanguage);
   const langLabel = t.docs2pdf.editorLanguages[editorLanguage];
+
+  const previewErrorLocation = React.useMemo(() => {
+    if (!isEditableText || !previewError || !editorText) return null;
+    const nearMatch = previewError.match(/near `([^`]+)`/);
+    if (!nearMatch) return null;
+    const rawSnippet = nearMatch[1].trim();
+    const unescapedSnippet = rawSnippet.replace(/\\([\\/#*_`@$~<>[\]()])/g, "$1");
+    const candidates = [rawSnippet, unescapedSnippet].filter(Boolean);
+    for (const q of candidates) {
+      const hits = findAllTextMatches(editorText, q);
+      if (hits.length > 0) {
+        const hit = hits[0];
+        const line = editorText.slice(0, hit.from).split("\n").length;
+        return { from: hit.from, to: hit.to, line };
+      }
+    }
+    return null;
+  }, [editorText, isEditableText, previewError]);
 
   return (
     <div className="space-y-2">
@@ -174,13 +201,44 @@ export const DocsSplitWorkbench: React.FC<DocsSplitWorkbenchProps> = ({
                   />
                 )}
                 {syntaxErrorCount > 0 && (
-                  <span
+                  <button
+                    type="button"
                     data-testid="editor-syntax-error-badge"
-                    className="inline-flex items-center gap-1 rounded-[4px] border border-[#F5C6CB] bg-[#F8D7DA] px-2 py-0.5 text-xs font-semibold text-[#842029]"
+                    title={syntaxSummary.firstMessage ?? t.docs2pdf.jumpToErrorLineTitle}
+                    onClick={() => {
+                      if (syntaxSummary.firstFrom !== null) {
+                        editorRef.current?.jumpToRange(
+                          syntaxSummary.firstFrom,
+                          syntaxSummary.firstTo ?? syntaxSummary.firstFrom,
+                          true,
+                        );
+                      }
+                    }}
+                    className="inline-flex cursor-pointer items-center gap-1 rounded-[4px] border border-[#F5C6CB] bg-[#F8D7DA] px-2 py-0.5 text-xs font-semibold text-[#842029] hover:bg-[#F1B0B7]"
                   >
                     <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-                    {t.docs2pdf.syntaxErrorCount(syntaxErrorCount)}
-                  </span>
+                    {syntaxSummary.firstLine !== null
+                      ? t.docs2pdf.syntaxErrorBadgeWithLine(syntaxErrorCount, syntaxSummary.firstLine)
+                      : t.docs2pdf.syntaxErrorCount(syntaxErrorCount)}
+                  </button>
+                )}
+                {syntaxErrorCount === 0 && previewErrorLocation && (
+                  <button
+                    type="button"
+                    data-testid="preview-error-jump-badge"
+                    title={previewError ?? t.docs2pdf.jumpToErrorLineTitle}
+                    onClick={() => {
+                      editorRef.current?.jumpToRange(
+                        previewErrorLocation.from,
+                        previewErrorLocation.to,
+                        true,
+                      );
+                    }}
+                    className="inline-flex cursor-pointer items-center gap-1 rounded-[4px] border border-[#F5C6CB] bg-[#F8D7DA] px-2 py-0.5 text-xs font-semibold text-[#842029] hover:bg-[#F1B0B7]"
+                  >
+                    <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                    {t.docs2pdf.syntaxErrorBadgeWithLine(1, previewErrorLocation.line)}
+                  </button>
                 )}
                 {saveFeedback && (
                   <span className="rounded-[4px] bg-[#D4EDDA] px-2 py-0.5 text-xs font-semibold text-[#155724]">
@@ -240,7 +298,7 @@ export const DocsSplitWorkbench: React.FC<DocsSplitWorkbenchProps> = ({
               onSave={() => onSaveText(false)}
               onOpenFind={onOpenEditorFind}
               onScrollRatioChange={onEditorScrollRatio}
-              onDiagnosticsChange={setSyntaxErrorCount}
+              onDiagnosticsDetailChange={setSyntaxSummary}
               placeholder={t.docs2pdf.newDocPlaceholder}
             />
           </div>

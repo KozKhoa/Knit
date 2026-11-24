@@ -404,6 +404,14 @@ export interface MarkdownCodeEditorHandle {
   replaceRange: (from: number, to: number, replacement: string) => void;
 }
 
+export interface EditorSyntaxSummary {
+  count: number;
+  firstLine: number | null;
+  firstFrom: number | null;
+  firstTo: number | null;
+  firstMessage: string | null;
+}
+
 interface MarkdownCodeEditorProps {
   value: string;
   language?: EditorLanguage;
@@ -412,6 +420,7 @@ interface MarkdownCodeEditorProps {
   onOpenFind?: () => void;
   onScrollRatioChange?: (ratio: number) => void;
   onDiagnosticsChange?: (count: number) => void;
+  onDiagnosticsDetailChange?: (summary: EditorSyntaxSummary) => void;
   placeholder?: string;
 }
 
@@ -553,6 +562,7 @@ export const MarkdownCodeEditor = React.forwardRef<
       onOpenFind,
       onScrollRatioChange,
       onDiagnosticsChange,
+      onDiagnosticsDetailChange,
       placeholder = "",
     },
     ref,
@@ -566,6 +576,7 @@ export const MarkdownCodeEditor = React.forwardRef<
     const onOpenFindRef = React.useRef(onOpenFind);
     const onScrollRatioRef = React.useRef(onScrollRatioChange);
     const onDiagnosticsChangeRef = React.useRef(onDiagnosticsChange);
+    const onDiagnosticsDetailChangeRef = React.useRef(onDiagnosticsDetailChange);
 
     React.useEffect(() => {
       onChangeRef.current = onChange;
@@ -586,6 +597,10 @@ export const MarkdownCodeEditor = React.forwardRef<
     React.useEffect(() => {
       onDiagnosticsChangeRef.current = onDiagnosticsChange;
     }, [onDiagnosticsChange]);
+
+    React.useEffect(() => {
+      onDiagnosticsDetailChangeRef.current = onDiagnosticsDetailChange;
+    }, [onDiagnosticsDetailChange]);
 
     React.useImperativeHandle(
       ref,
@@ -679,6 +694,30 @@ export const MarkdownCodeEditor = React.forwardRef<
         },
       ]);
 
+      const reportDiagnostics = (view: EditorView, diags: Diagnostic[]) => {
+        onDiagnosticsChangeRef.current?.(diags.length);
+        if (diags.length > 0) {
+          const first = diags[0];
+          const safeFrom = Math.max(0, Math.min(first.from, view.state.doc.length));
+          const line = view.state.doc.lineAt(safeFrom).number;
+          onDiagnosticsDetailChangeRef.current?.({
+            count: diags.length,
+            firstLine: line,
+            firstFrom: first.from,
+            firstTo: first.to,
+            firstMessage: first.message,
+          });
+        } else {
+          onDiagnosticsDetailChangeRef.current?.({
+            count: 0,
+            firstLine: null,
+            firstFrom: null,
+            firstTo: null,
+            firstMessage: null,
+          });
+        }
+      };
+
       const syntaxLinter = linter(
         (view) => {
           const diags = collectSyntaxDiagnostics(
@@ -686,7 +725,7 @@ export const MarkdownCodeEditor = React.forwardRef<
             languageRef.current,
             view.state,
           );
-          onDiagnosticsChangeRef.current?.(diags.length);
+          reportDiagnostics(view, diags);
           return diags;
         },
         { delay: 250 },
@@ -746,6 +785,25 @@ export const MarkdownCodeEditor = React.forwardRef<
       forceLinting(view);
       const diags = collectSyntaxDiagnostics(view.state.doc.toString(), language, view.state);
       onDiagnosticsChangeRef.current?.(diags.length);
+      if (diags.length > 0) {
+        const first = diags[0];
+        const safeFrom = Math.max(0, Math.min(first.from, view.state.doc.length));
+        onDiagnosticsDetailChangeRef.current?.({
+          count: diags.length,
+          firstLine: view.state.doc.lineAt(safeFrom).number,
+          firstFrom: first.from,
+          firstTo: first.to,
+          firstMessage: first.message,
+        });
+      } else {
+        onDiagnosticsDetailChangeRef.current?.({
+          count: 0,
+          firstLine: null,
+          firstFrom: null,
+          firstTo: null,
+          firstMessage: null,
+        });
+      }
     }, [language]);
 
     React.useEffect(() => {

@@ -21,12 +21,16 @@ import {
 } from "lucide-react";
 import {
   clearGeminiKey,
+  DEFAULT_GEMINI_MODELS,
   getGeminiKeyStatus,
+  listGeminiModels,
   saveGeminiKey,
+  saveGeminiModel,
   testGeminiKey,
 } from "../lib/ipc";
 import type { GeminiKeyStatus } from "../types/ipc";
 import { NumberInput } from "../components/NumberInput";
+import { Select } from "../components/Select";
 import { Slider } from "../components/Slider";
 import { ViewHeader } from "../components/ViewHeader";
 import { useI18n } from "../i18n";
@@ -60,6 +64,10 @@ const GeminiAssistantSettingsCard: React.FC = () => {
   const { t } = useI18n();
   const [status, setStatus] = React.useState<GeminiKeyStatus | null>(null);
   const [apiKeyInput, setApiKeyInput] = React.useState("");
+  const [availableModels, setAvailableModels] = React.useState<string[]>(DEFAULT_GEMINI_MODELS);
+  const [selectedModel, setSelectedModel] = React.useState("gemini-2.5-flash");
+  const [customModelInput, setCustomModelInput] = React.useState("");
+  const [fetchingModels, setFetchingModels] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [testing, setTesting] = React.useState(false);
   const [feedback, setFeedback] = React.useState<{
@@ -71,7 +79,14 @@ const GeminiAssistantSettingsCard: React.FC = () => {
     let active = true;
     void getGeminiKeyStatus()
       .then((res) => {
-        if (active) setStatus(res);
+        if (!active) return;
+        setStatus(res);
+        if (res.model) {
+          setSelectedModel(res.model);
+          setAvailableModels((prev) =>
+            prev.includes(res.model) ? prev : [res.model, ...prev],
+          );
+        }
       })
       .catch(() => {
         // Bỏ qua trong môi trường non-Tauri
@@ -100,13 +115,63 @@ const GeminiAssistantSettingsCard: React.FC = () => {
     }
   };
 
+  const handleSelectModel = async (nextModel: string) => {
+    const clean = nextModel.trim();
+    if (!clean || saving || testing || fetchingModels) return;
+    setSelectedModel(clean);
+    setAvailableModels((prev) => (prev.includes(clean) ? prev : [clean, ...prev]));
+    setFeedback(null);
+    try {
+      const next = await saveGeminiModel(clean);
+      setStatus(next);
+      setSelectedModel(next.model);
+      setFeedback({ kind: "success", text: t.settings.aiModelSavedStatus(next.model) });
+    } catch (err) {
+      setFeedback({
+        kind: "error",
+        text: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
+  const handleFetchModels = async () => {
+    if (saving || testing || fetchingModels) return;
+    setFetchingModels(true);
+    setFeedback(null);
+    try {
+      const candidate = apiKeyInput.trim() || null;
+      const models = await listGeminiModels(candidate);
+      if (models.length > 0) {
+        setAvailableModels(
+          models.includes(selectedModel) ? models : [selectedModel, ...models],
+        );
+      }
+      setFeedback({ kind: "success", text: t.settings.aiModelsFetchedStatus(models.length) });
+    } catch (err) {
+      setFeedback({
+        kind: "error",
+        text: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setFetchingModels(false);
+    }
+  };
+
   const handleTest = async () => {
-    if (saving || testing) return;
+    if (saving || testing || fetchingModels) return;
     setTesting(true);
     setFeedback(null);
     try {
       const candidate = apiKeyInput.trim() || null;
-      const res = await testGeminiKey(candidate);
+      const modelToTest = customModelInput.trim() || selectedModel.trim() || null;
+      const res = await testGeminiKey(candidate, modelToTest);
+      if (res.model) {
+        setSelectedModel(res.model);
+        setAvailableModels((prev) =>
+          prev.includes(res.model) ? prev : [res.model, ...prev],
+        );
+      }
+      setStatus((prev) => (prev ? { ...prev, model: res.model } : res));
       setFeedback({ kind: "success", text: t.settings.aiTestSuccess(res.model) });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -117,7 +182,7 @@ const GeminiAssistantSettingsCard: React.FC = () => {
   };
 
   const handleClear = async () => {
-    if (saving || testing) return;
+    if (saving || testing || fetchingModels) return;
     setSaving(true);
     setFeedback(null);
     try {
@@ -181,7 +246,7 @@ const GeminiAssistantSettingsCard: React.FC = () => {
             onChange={(e) => setApiKeyInput(e.target.value)}
             placeholder={t.settings.aiKeyPlaceholder}
             autoComplete="off"
-            className="knit-control-sm w-full rounded-[4px] border border-[#CED4DA] bg-white pr-3 pl-8 font-mono-code text-xs text-[#212529] focus:border-[#007BFF] focus:outline-none"
+            className="knit-control-sm w-full rounded-[4px] border border-[#CED4DA] bg-white pr-3 pl-8 text-xs text-[#212529] focus:border-[#007BFF] focus:outline-none"
           />
         </div>
 
@@ -221,11 +286,61 @@ const GeminiAssistantSettingsCard: React.FC = () => {
         )}
       </div>
 
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs font-semibold text-[#495057]">{t.settings.aiModelLabel}</span>
+        <Select
+          dataTestId="settings-gemini-model-select"
+          ariaLabel={t.settings.aiModelLabel}
+          size="sm"
+          value={selectedModel}
+          disabled={saving || testing || fetchingModels}
+          options={availableModels.map((m) => ({ value: m, label: m }))}
+          onChange={(val) => void handleSelectModel(val)}
+          className="min-w-[220px]"
+        />
+        <button
+          type="button"
+          data-testid="settings-gemini-fetch-models-btn"
+          disabled={(!apiKeyInput.trim() && !status?.configured) || saving || testing || fetchingModels}
+          onClick={() => void handleFetchModels()}
+          className="knit-control-sm knit-btn-secondary inline-flex items-center gap-1.5 px-3 text-xs font-semibold disabled:opacity-50"
+        >
+          {fetchingModels ? (
+            <GeminiLoaderIcon className="h-3.5 w-3.5 animate-spin text-[#007BFF]" />
+          ) : null}
+          {fetchingModels ? t.settings.aiFetchingModels : t.settings.aiFetchModelsBtn}
+        </button>
+
+        <div className="flex min-w-[240px] flex-1 items-center gap-1.5">
+          <input
+            type="text"
+            data-testid="settings-gemini-custom-model-input"
+            value={customModelInput}
+            onChange={(e) => setCustomModelInput(e.target.value)}
+            placeholder={t.settings.aiCustomModelPlaceholder}
+            className="knit-control-sm min-w-0 flex-1 rounded-[4px] border border-[#CED4DA] bg-white px-2.5 text-xs text-[#212529] focus:border-[#007BFF] focus:outline-none"
+          />
+          <button
+            type="button"
+            data-testid="settings-gemini-apply-model-btn"
+            disabled={!customModelInput.trim() || saving || testing || fetchingModels}
+            onClick={() => {
+              const target = customModelInput.trim();
+              setCustomModelInput("");
+              void handleSelectModel(target);
+            }}
+            className="knit-control-sm knit-btn-secondary px-2.5 text-xs font-semibold disabled:opacity-50"
+          >
+            {t.settings.aiApplyModelBtn}
+          </button>
+        </div>
+      </div>
+
       <div className="flex flex-wrap items-center gap-4 text-xs text-[#6C757D]">
         <span>
           {t.settings.aiModelLabel}{" "}
-          <strong className="font-mono-code text-[#343A40]">
-            {status?.model ?? "gemini-2.5-flash"}
+          <strong className="text-[#343A40]">
+            {status?.model ?? selectedModel}
           </strong>
         </span>
         <span>
@@ -548,7 +663,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               setExportDirWarning(null);
             }}
             placeholder={t.settings.exportDirPlaceholder}
-            className="knit-control min-w-[240px] flex-1 rounded-[4px] border border-[#CED4DA] px-3 font-mono-code text-xs text-[#212529] focus:border-[#007BFF] focus:outline-none"
+            className="knit-control min-w-[240px] flex-1 rounded-[4px] border border-[#CED4DA] px-3 text-xs text-[#212529] focus:border-[#007BFF] focus:outline-none"
           />
           <button
             type="button"

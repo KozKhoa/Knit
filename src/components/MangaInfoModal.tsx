@@ -292,7 +292,7 @@ export const MangaInfoModal: React.FC<MangaInfoModalProps> = ({
                     type="text"
                     value={formValues.nation_id}
                     onChange={(e) => setFormValues((p) => ({ ...p, nation_id: e.target.value }))}
-                    className="knit-control w-full rounded-[4px] border border-[#CED4DA] bg-white px-2.5 font-mono-code text-xs text-[#212529] focus:border-[#007BFF] focus:outline-none"
+                    className="knit-control w-full rounded-[4px] border border-[#CED4DA] bg-white px-2.5 text-xs text-[#212529] focus:border-[#007BFF] focus:outline-none"
                   />
                 </label>
 
@@ -328,7 +328,7 @@ export const MangaInfoModal: React.FC<MangaInfoModalProps> = ({
                     type="text"
                     value={formValues.poster_id}
                     onChange={(e) => setFormValues((p) => ({ ...p, poster_id: e.target.value }))}
-                    className="knit-control w-full rounded-[4px] border border-[#CED4DA] bg-white px-2.5 font-mono-code text-xs text-[#212529] focus:border-[#007BFF] focus:outline-none"
+                    className="knit-control w-full rounded-[4px] border border-[#CED4DA] bg-white px-2.5 text-xs text-[#212529] focus:border-[#007BFF] focus:outline-none"
                   />
                 </label>
 

@@ -42,7 +42,7 @@ export const ExportFilenameControl: React.FC<ExportFilenameControlProps> = ({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder ?? t.common.exportFilenamePlaceholder}
-          className="knit-control-sm min-w-[180px] flex-1 max-w-xs rounded-[4px] border border-[#CED4DA] bg-white px-2.5 font-mono-code text-xs text-[#212529] focus:border-[#007BFF] focus:outline-none"
+          className="knit-control-sm min-w-[180px] flex-1 max-w-xs rounded-[4px] border border-[#CED4DA] bg-white px-2.5 text-xs text-[#212529] focus:border-[#007BFF] focus:outline-none"
         />
         {(estimateText || estimating) && (
           <span

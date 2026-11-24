@@ -384,12 +384,38 @@ export async function saveGeminiKey(apiKey: string): Promise<GeminiKeyStatus> {
   return await invoke("gemini_save_key", { apiKey });
 }
 
+export const DEFAULT_GEMINI_MODELS = [
+  "gemini-2.5-flash",
+  "gemini-2.5-pro",
+  "gemini-2.5-flash-lite",
+  "gemini-2.0-flash",
+  "gemini-1.5-flash",
+  "gemini-1.5-pro",
+];
+
+export async function saveGeminiModel(model: string): Promise<GeminiKeyStatus> {
+  return await invoke("gemini_save_model", { model });
+}
+
+export async function listGeminiModels(apiKey?: string | null): Promise<string[]> {
+  if (!isTauriRuntime()) {
+    return DEFAULT_GEMINI_MODELS;
+  }
+  return await invoke("gemini_list_models", { apiKey: apiKey ?? null });
+}
+
 export async function clearGeminiKey(): Promise<GeminiKeyStatus> {
   return await invoke("gemini_clear_key");
 }
 
-export async function testGeminiKey(apiKey?: string | null): Promise<GeminiKeyStatus> {
-  return await invoke("gemini_test_key", { apiKey: apiKey ?? null });
+export async function testGeminiKey(
+  apiKey?: string | null,
+  model?: string | null,
+): Promise<GeminiKeyStatus> {
+  return await invoke("gemini_test_key", {
+    apiKey: apiKey ?? null,
+    model: model ?? null,
+  });
 }
 
 // --- PDF Merge / Split ---

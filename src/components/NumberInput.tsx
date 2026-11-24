@@ -167,7 +167,7 @@ export const NumberInput: React.FC<NumberInputProps> = ({
             commitText(text);
           }
         }}
-        className={`min-w-0 flex-1 bg-transparent px-2 font-mono-code text-[#212529] focus:outline-none disabled:cursor-not-allowed ${inputClassName}`}
+        className={`min-w-0 flex-1 bg-transparent px-2 tabular-nums text-[#212529] focus:outline-none disabled:cursor-not-allowed ${inputClassName}`}
       />
       <div className="flex w-5 shrink-0 flex-col border-l border-[#DEE2E6] bg-[#F8F9FA]">
         <button

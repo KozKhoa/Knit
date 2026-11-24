@@ -12,6 +12,8 @@ const {
   mockRefinePdfMdGemini,
   mockGetGeminiKeyStatus,
   mockSaveGeminiKey,
+  mockSaveGeminiModel,
+  mockListGeminiModels,
   mockClearGeminiKey,
   mockTestGeminiKey,
 } = vi.hoisted(() => ({
@@ -23,6 +25,8 @@ const {
   mockRefinePdfMdGemini: vi.fn(),
   mockGetGeminiKeyStatus: vi.fn(),
   mockSaveGeminiKey: vi.fn(),
+  mockSaveGeminiModel: vi.fn(),
+  mockListGeminiModels: vi.fn(),
   mockClearGeminiKey: vi.fn(),
   mockTestGeminiKey: vi.fn(),
 }));
@@ -50,6 +54,10 @@ vi.mock("../lib/ipc", async (importOriginal) => {
       mockGetGeminiKeyStatus(...args),
     saveGeminiKey: (...args: Parameters<typeof actual.saveGeminiKey>) =>
       mockSaveGeminiKey(...args),
+    saveGeminiModel: (...args: Parameters<typeof actual.saveGeminiModel>) =>
+      mockSaveGeminiModel(...args),
+    listGeminiModels: (...args: Parameters<typeof actual.listGeminiModels>) =>
+      mockListGeminiModels(...args),
     clearGeminiKey: (...args: Parameters<typeof actual.clearGeminiKey>) =>
       mockClearGeminiKey(...args),
     testGeminiKey: (...args: Parameters<typeof actual.testGeminiKey>) =>
@@ -63,8 +71,10 @@ import { BookmarkTreeEditor } from "./BookmarkTreeEditor";
 import { WorkbenchShell } from "./WorkbenchShell";
 import { ImageContextMenu } from "../views/image2pdf/ImageContextMenu";
 import { PdfPageContextMenu } from "../views/pdf-ops/PdfPageContextMenu";
+import { ExportFilenameControl } from "./ExportFilenameControl";
 import { Pdf2MdView } from "../views/Pdf2MdView";
 import { SettingsView } from "../views/SettingsView";
+import { DocsSplitWorkbench } from "../views/docs2pdf/DocsSplitWorkbench";
 
 afterEach(() => {
   cleanup();
@@ -637,7 +647,7 @@ describe("Review 1.20 components", () => {
 
     fireEvent.click(screen.getByTestId("settings-gemini-test-btn"));
     await waitFor(() => {
-      expect(mockTestGeminiKey).toHaveBeenCalledWith(null);
+      expect(mockTestGeminiKey).toHaveBeenCalledWith(null, "gemini-2.5-flash");
       expect(screen.getByText(/Kết nối Gemini thành công/)).toBeTruthy();
     });
 
@@ -646,5 +656,200 @@ describe("Review 1.20 components", () => {
       expect(mockClearGeminiKey).toHaveBeenCalledTimes(1);
       expect(screen.getByText("Chưa cấu hình")).toBeTruthy();
     });
+  });
+
+  it("Review 1.22 #1: SettingsView fetches Gemini models, applies custom model, and passes it to testGeminiKey", async () => {
+    mockGetGeminiKeyStatus.mockResolvedValueOnce({
+      configured: true,
+      masked_key: "AIza••••9999",
+      storage_backend: "keychain",
+      model: "gemini-2.5-flash",
+    });
+    mockListGeminiModels.mockResolvedValueOnce(["gemini-2.5-pro", "gemini-2.0-flash-exp"]);
+    mockSaveGeminiModel.mockResolvedValueOnce({
+      configured: true,
+      masked_key: "AIza••••9999",
+      storage_backend: "keychain",
+      model: "gemini-2.5-pro-exp-custom",
+    });
+    mockTestGeminiKey.mockResolvedValueOnce({
+      configured: true,
+      masked_key: "AIza••••9999",
+      storage_backend: "keychain",
+      model: "gemini-2.5-pro-exp-custom",
+    });
+
+    wrap(
+      <SettingsView
+        fontFamily="system"
+        onChangeFontFamily={vi.fn()}
+        fontSizePx={14}
+        onChangeFontSizePx={vi.fn()}
+        logVerbosity="minimal"
+        onChangeLogVerbosity={vi.fn()}
+        defaultExportDir=""
+        onChangeDefaultExportDir={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("settings-gemini-fetch-models-btn")).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId("settings-gemini-fetch-models-btn"));
+    await waitFor(() => {
+      expect(mockListGeminiModels).toHaveBeenCalledWith(null);
+      expect(screen.getByText(/Đã tải 2 model/)).toBeTruthy();
+    });
+
+    const customInput = screen.getByTestId("settings-gemini-custom-model-input") as HTMLInputElement;
+    expect(customInput.className).not.toContain("font-mono-code");
+    expect(screen.getByTestId("settings-gemini-key-input").className).not.toContain(
+      "font-mono-code",
+    );
+    document.querySelectorAll("input").forEach((inp) => {
+      expect(inp.className).not.toContain("font-mono-code");
+    });
+    fireEvent.change(customInput, { target: { value: "gemini-2.5-pro-exp-custom" } });
+    fireEvent.click(screen.getByTestId("settings-gemini-apply-model-btn"));
+
+    await waitFor(() => {
+      expect(mockSaveGeminiModel).toHaveBeenCalledWith("gemini-2.5-pro-exp-custom");
+      expect(screen.getByText(/Đã chọn model mặc định: gemini-2.5-pro-exp-custom/)).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId("settings-gemini-test-btn"));
+    await waitFor(() => {
+      expect(mockTestGeminiKey).toHaveBeenCalledWith(null, "gemini-2.5-pro-exp-custom");
+    });
+  });
+
+  it("Review 1.22 #3: Pdf2MdView treats refined_chunks === 0 as an error instead of success", async () => {
+    mockGetGeminiKeyStatus.mockResolvedValue({
+      configured: true,
+      masked_key: "AIza••••9999",
+      storage_backend: "keychain",
+      model: "gemini-2.5-flash",
+    });
+    mockPickFiles.mockResolvedValueOnce(["/docs/sample.pdf"]);
+    mockInspectPdf2Md.mockResolvedValueOnce({
+      source_path: "/docs/sample.pdf",
+      page_count: 5,
+      file_size_bytes: 1024,
+      outlines: [],
+      scanned_page_indices: [],
+      is_scanned_document: false,
+      extracted_image_count: 0,
+      markdown: "# Original Heading",
+      pages: [],
+    });
+    mockRefinePdfMdGemini.mockResolvedValueOnce({
+      markdown: "# Original Heading",
+      model: "gemini-2.5-flash",
+      total_chunks: 1,
+      refined_chunks: 0,
+      fallback_chunks: 1,
+      warnings: ["Chunk 1 returned HTTP 404"],
+    });
+    const onFinishJob = vi.fn();
+
+    wrap(
+      <Pdf2MdView
+        onStartJob={vi.fn()}
+        onJobEvent={vi.fn()}
+        onFinishJob={onFinishJob}
+        busy={false}
+        isActive={true}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Chọn tệp PDF/i }));
+    await waitFor(() => {
+      const btn = screen.getByTestId("pdf2md-gemini-all-btn") as HTMLButtonElement;
+      expect(btn.disabled).toBe(false);
+    });
+
+    fireEvent.click(screen.getByTestId("pdf2md-gemini-all-btn"));
+    await waitFor(() => {
+      expect(onFinishJob).toHaveBeenCalledWith(
+        expect.any(String),
+        [],
+        expect.stringContaining("HTTP 404"),
+        "error",
+        expect.any(String),
+        expect.any(String),
+      );
+      expect(screen.getByText(/Chunk 1 returned HTTP 404/)).toBeTruthy();
+    });
+  });
+
+  it("Review 1.22 #2: DocsSplitWorkbench shows error line jump badge for Typst near snippet and jumps in editor", () => {
+    const editorRef =
+      React.createRef<import("./MarkdownCodeEditor").MarkdownCodeEditorHandle | null>();
+
+    wrap(
+      <DocsSplitWorkbench
+        isEditableText={true}
+        liveHeightPx={480}
+        editorText={"# Heading\nLine 2\n/ \\Z O\nEnd"}
+        saveFeedback={null}
+        previewLoading={false}
+        previewError={"Typst compilation failed: expected colon (Typst line 18:1, near `/ \\Z O`)"}
+        previewPdfBytes={null}
+        previewTotalPages={0}
+        syncScroll={false}
+        editorFindOpen={false}
+        editorFindQuery=""
+        activeEditorMatchIdx={null}
+        editorMatchCount={0}
+        previewFindOpen={false}
+        previewFindQuery=""
+        activePreviewMatchIdx={null}
+        previewMatchCount={0}
+        editorRef={editorRef}
+        previewRef={{ current: null }}
+        editorPaneRef={{ current: null }}
+        previewPaneRef={{ current: null }}
+        editorFindInputRef={{ current: null }}
+        previewFindInputRef={{ current: null }}
+        onChangeEditorText={vi.fn()}
+        onSaveText={vi.fn()}
+        onOpenEditorFind={vi.fn()}
+        onChangeEditorFindQuery={vi.fn()}
+        onStepEditorMatch={vi.fn()}
+        onCloseEditorFind={vi.fn()}
+        onOpenPreviewFind={vi.fn()}
+        onChangePreviewFindQuery={vi.fn()}
+        onStepPreviewMatch={vi.fn()}
+        onClosePreviewFind={vi.fn()}
+        onRefreshPreview={vi.fn()}
+        onPageCountChange={vi.fn()}
+        onSearchMatchCountChange={vi.fn()}
+        onToggleSyncScroll={vi.fn()}
+        onEditorScrollRatio={vi.fn()}
+        onPreviewScrollRatio={vi.fn()}
+        onGoToInEditor={vi.fn()}
+        onStartHeightResize={vi.fn()}
+      />,
+    );
+
+    const badge = screen.getByTestId("preview-error-jump-badge");
+    expect(badge.textContent).toContain("3");
+    const spy = vi.spyOn(editorRef.current!, "jumpToRange");
+    fireEvent.click(badge);
+    expect(spy).toHaveBeenCalledWith(17, 23, true);
+  });
+
+  it("ExportFilenameControl input inherits app font instead of forcing font-mono-code", () => {
+    wrap(
+      <ExportFilenameControl
+        value="output.pdf"
+        onChange={vi.fn()}
+        defaultExportDir=""
+        existsAtDefaultDir={false}
+      />,
+    );
+    const input = screen.getByDisplayValue("output.pdf") as HTMLInputElement;
+    expect(input.className).not.toContain("font-mono-code");
   });
 });

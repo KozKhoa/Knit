@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { I18nProvider } from "../i18n";
@@ -229,39 +230,46 @@ describe("Review 1.19 items", () => {
       { title: "Sec 3", target_page_index: 8, children: [] },
     ];
     let current = initial;
-    const onChange = vi.fn((next: BookmarkNode[]) => {
-      current = next;
-    });
+
+    const Harness: React.FC = () => {
+      const [nodes, setNodes] = React.useState<BookmarkNode[]>(initial);
+      current = nodes;
+      return <BookmarkTreeEditor nodes={nodes} totalPages={20} onChange={setNodes} />;
+    };
 
     render(
       <I18nProvider>
-        <BookmarkTreeEditor nodes={initial} totalPages={20} onChange={onChange} />
+        <Harness />
       </I18nProvider>,
     );
+
+    const editorRoot = document.querySelector('[data-bookmark-editor="true"]') as HTMLElement;
+    const insertGroup = editorRoot.querySelector('[role="group"]') as HTMLElement;
+    expect(insertGroup.className).toContain("knit-control-sm");
 
     const row0 = document.querySelector('[data-bookmark-path="0"]') as HTMLElement;
     const row2 = document.querySelector('[data-bookmark-path="2"]') as HTMLElement;
 
-    // Long-press 400ms on Sec 1 enters selection mode
+    // Dolphin single click selects 1 row while keeping single-row controls enabled
     fireEvent.pointerDown(row0, { clientX: 150, clientY: 20, button: 0, pointerType: "mouse" });
-    act(() => {
-      vi.advanceTimersByTime(420);
-    });
     fireEvent.pointerUp(window, { clientX: 150, clientY: 20 });
+    expect(row0.getAttribute("data-bookmark-selected")).toBe("true");
+    expect(screen.queryByTestId("bookmark-selection-bar")).toBeNull();
 
-    expect(screen.getByTestId("bookmark-selection-bar")).toBeTruthy();
-    expect(screen.getByTestId("bookmark-selection-count").textContent).toContain("1");
-
-    // Title double-click edit, page NumberInput, and add-child button are disabled in selection mode
-    const titleSpan = row0.querySelector("[data-bookmark-title]") as HTMLElement;
-    fireEvent.doubleClick(titleSpan);
-    expect(row0.querySelectorAll("input")).toHaveLength(1);
     const pageInput = row0.querySelector("input") as HTMLInputElement;
-    expect(pageInput.disabled).toBe(true);
+    expect(pageInput.disabled).toBe(false);
     const addChildBtn = row0.querySelector('button[title*="child"], button[title*="mục con"]') as HTMLButtonElement;
-    expect(addChildBtn.disabled).toBe(true);
+    expect(addChildBtn.disabled).toBe(false);
 
-    // Ctrl+Click Sec 3 adds it to selection
+    // F2 renames the selected single row cleanly, Escape cancels
+    fireEvent.keyDown(editorRoot, { key: "F2" });
+    expect(row0.querySelectorAll("input")).toHaveLength(2);
+    const inlineInput = row0.querySelector('input:not([inputmode="decimal"])') as HTMLInputElement;
+    expect(inlineInput).toBeTruthy();
+    fireEvent.keyDown(inlineInput, { key: "Escape" });
+    expect(row0.querySelectorAll("input")).toHaveLength(1);
+
+    // Ctrl+Click Sec 3 enters multi-select mode (2 rows) and shows selection bar
     fireEvent.pointerDown(row2, {
       clientX: 150,
       clientY: 100,
@@ -269,12 +277,19 @@ describe("Review 1.19 items", () => {
       pointerType: "mouse",
       ctrlKey: true,
     });
+    expect(screen.getByTestId("bookmark-selection-bar")).toBeTruthy();
     expect(screen.getByTestId("bookmark-selection-count").textContent).toContain("2");
+    expect((row0.querySelector("input") as HTMLInputElement).disabled).toBe(true);
+    expect((row0.querySelector('button[title*="child"], button[title*="mục con"]') as HTMLButtonElement).disabled).toBe(true);
 
-    // Batch delete removes Sec 1 and Sec 3, leaving Sec 2
-    fireEvent.click(screen.getByTestId("bookmark-delete-selected-btn"));
+    // Delete key removes Sec 1 and Sec 3, leaving Sec 2
+    fireEvent.keyDown(editorRoot, { key: "Delete" });
     expect(current.map((n) => n.title)).toEqual(["Sec 2"]);
     expect(screen.queryByTestId("bookmark-selection-bar")).toBeNull();
+
+    // Ctrl+A selects all remaining rows
+    fireEvent.keyDown(editorRoot, { key: "a", ctrlKey: true });
+    expect(document.querySelector('[data-bookmark-path="0"]')?.getAttribute("data-bookmark-selected")).toBe("true");
   });
 
   it("Item 4: WorkbenchShell displays floating bottom-right app version badge", async () => {
