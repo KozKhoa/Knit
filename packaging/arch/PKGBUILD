@@ -1,6 +1,6 @@
 # Maintainer: Knit Contributors
 pkgname=knit-bin
-pkgver=0.2.1
+pkgver=0.2.2
 pkgrel=1
 pkgdesc="Offline desktop workbench for images/docs to PDF, PDF merge/split, encrypted archives, manga packing, and batch renaming"
 arch=('x86_64')

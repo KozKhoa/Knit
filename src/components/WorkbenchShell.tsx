@@ -89,7 +89,7 @@ export const WorkbenchShell: React.FC<WorkbenchShellProps> = ({
   const [drawerTab, setDrawerTab] = React.useState<"logs" | "history">("logs");
   const [metrics, setMetrics] = React.useState<AppMetrics | null>(null);
   const [appVersion, setAppVersion] = React.useState<string>(() =>
-    typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "0.2.1",
+    typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "0.2.2",
   );
   const shellRef = React.useRef<HTMLDivElement | null>(null);
   const mainRef = React.useRef<HTMLElement | null>(null);

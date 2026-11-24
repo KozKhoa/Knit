@@ -19,7 +19,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 vi.mock("@tauri-apps/api/app", () => ({
-  getVersion: vi.fn().mockResolvedValue("0.2.1"),
+  getVersion: vi.fn().mockResolvedValue("0.2.2"),
 }));
 
 vi.mock("../lib/ipc", () => ({
@@ -313,6 +313,6 @@ describe("Review 1.19 items", () => {
     });
 
     const badge = screen.getByTestId("app-version-badge");
-    expect(badge.textContent).toBe("v0.2.1");
+    expect(badge.textContent).toBe("v0.2.2");
   });
 });
