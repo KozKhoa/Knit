@@ -1354,9 +1354,31 @@ async fn gemini_clear_key() -> Result<knit_docs::GeminiKeyStatus, String> {
 }
 
 #[tauri::command]
-async fn gemini_test_key(api_key: Option<String>) -> Result<knit_docs::GeminiKeyStatus, String> {
+async fn gemini_save_model(model: String) -> Result<knit_docs::GeminiKeyStatus, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        knit_docs::test_gemini_connection(api_key.as_deref()).map_err(|e| e.to_string())
+        knit_docs::save_gemini_model(&model).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn gemini_list_models(api_key: Option<String>) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        knit_docs::list_gemini_models(api_key.as_deref()).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn gemini_test_key(
+    api_key: Option<String>,
+    model: Option<String>,
+) -> Result<knit_docs::GeminiKeyStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        knit_docs::test_gemini_connection(api_key.as_deref(), model.as_deref())
+            .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1937,6 +1959,8 @@ pub fn run() {
             pdf2md_gemini_refine,
             gemini_get_key_status,
             gemini_save_key,
+            gemini_save_model,
+            gemini_list_models,
             gemini_clear_key,
             gemini_test_key,
             get_file_size_bytes,

@@ -8,10 +8,11 @@ pub mod pdf_to_md;
 pub mod world;
 
 pub use gemini::{
-    clear_gemini_key, get_gemini_key_status, mask_api_key, redact_api_key,
+    clear_gemini_key, get_gemini_key_status, list_gemini_models, mask_api_key, redact_api_key,
     refine_markdown_with_gemini, refine_markdown_with_gemini_using, save_gemini_key,
-    split_markdown_into_page_chunks, test_gemini_connection, validate_refined_markdown_sanity,
-    GeminiKeyStatus, GeminiRefineDocumentResult, MarkdownChunk, DEFAULT_GEMINI_MODEL,
+    save_gemini_model, split_markdown_into_page_chunks, test_gemini_connection,
+    validate_refined_markdown_sanity, GeminiKeyStatus, GeminiRefineDocumentResult, MarkdownChunk,
+    DEFAULT_GEMINI_MODEL, DEFAULT_GEMINI_MODELS,
 };
 pub use html_epub::{
     clear_epub_cache, compile_epub_to_pdf_bytes, convert_epub_to_pdf, html_fragment_to_typst,

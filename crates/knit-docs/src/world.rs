@@ -11,7 +11,7 @@ use typst::introspection::Introspector;
 use typst::syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot};
 use typst::text::{Font, FontBook};
 use typst::utils::LazyHash;
-use typst::{Library, LibraryExt, World};
+use typst::{Library, LibraryExt, World, WorldExt};
 use typst_layout::PagedDocument;
 
 const AFACAD_REGULAR_TTF: &[u8] =
@@ -247,16 +247,39 @@ pub fn compile_typst_to_pdf(
     compile_typst_to_pdf_with_toc(markup, base_dir, virtual_files, None)
 }
 
-fn format_typst_compile_error(errs: &[typst::diag::SourceDiagnostic], fallback_prefix: &str) -> KnitError {
+fn format_typst_compile_error(
+    errs: &[typst::diag::SourceDiagnostic],
+    world: Option<&KnitTypstWorld>,
+    fallback_prefix: &str,
+) -> KnitError {
     let msgs: Vec<String> = errs
         .iter()
         .map(|e| {
             let msg = e.message.to_string();
             if let Some(rest) = msg.strip_prefix("file not found") {
-                format!("Not found{rest}")
-            } else {
-                msg
+                return format!("Not found{rest}");
             }
+            if let Some(w) = world {
+                if let Some(range) = w.range(e.span) {
+                    let full_text = w.source.text();
+                    let start = range.start.min(full_text.len());
+                    let prefix = &full_text[..start];
+                    let line_idx = prefix.bytes().filter(|&b| b == b'\n').count();
+                    let line_no = line_idx + 1;
+                    let col_no = prefix
+                        .rsplit('\n')
+                        .next()
+                        .map(|s| s.chars().count() + 1)
+                        .unwrap_or(1);
+                    let line_text = full_text.lines().nth(line_idx).unwrap_or("").trim();
+                    let snippet: String = line_text.chars().take(72).collect();
+                    if snippet.is_empty() {
+                        return format!("{msg} (Typst line {line_no}:{col_no})");
+                    }
+                    return format!("{msg} (Typst line {line_no}:{col_no}, near `{snippet}`)");
+                }
+            }
+            msg
         })
         .collect();
     let joined = msgs.join("; ");
@@ -274,10 +297,11 @@ fn compile_typst_doc(
 ) -> Result<PagedDocument> {
     let world = KnitTypstWorld::new(markup, base_dir, Arc::clone(virtual_files));
     let warned = typst::compile::<PagedDocument>(&world);
+    let res = warned.output.map_err(|errs| {
+        format_typst_compile_error(&errs, Some(&world), "Typst compilation failed")
+    });
     drop(world);
-    warned
-        .output
-        .map_err(|errs| format_typst_compile_error(&errs, "Typst compilation failed"))
+    res
 }
 
 fn strip_knit_blk_markers(markup: &str) -> String {
@@ -446,7 +470,7 @@ pub(crate) fn compile_typst_with_prepared_assets(
     check_cancel()?;
     let pages = final_doc.pages().len();
     let pdf_bytes = typst_pdf::pdf(&final_doc, &typst_pdf::PdfOptions::default())
-        .map_err(|errs| format_typst_compile_error(&errs, "Typst PDF export failed"))?;
+        .map_err(|errs| format_typst_compile_error(&errs, None, "Typst PDF export failed"))?;
     drop(final_doc);
     Ok((pdf_bytes, pages))
 }

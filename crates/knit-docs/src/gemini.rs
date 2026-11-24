@@ -11,6 +11,14 @@ use std::process::{Command, Stdio};
 use tempfile::NamedTempFile;
 
 pub const DEFAULT_GEMINI_MODEL: &str = "gemini-2.5-flash";
+pub const DEFAULT_GEMINI_MODELS: &[&str] = &[
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+];
 const KEYCHAIN_SERVICE: &str = "knit-desktop";
 const KEYCHAIN_ACCOUNT: &str = "gemini_api_key";
 
@@ -38,6 +46,8 @@ pub struct GeminiRefineDocumentResult {
 struct StoredAssistantConfig {
     #[serde(default)]
     api_key: String,
+    #[serde(default)]
+    model: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,22 +114,33 @@ fn apply_background_process_flags(cmd: &mut Command) {
     let _ = cmd;
 }
 
-fn read_key_from_config_file_at(path: &PathBuf) -> Result<Option<String>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let bytes = fs::read(path)?;
-    let parsed: StoredAssistantConfig = serde_json::from_slice(&bytes)
-        .map_err(|e| KnitError::InvalidInput(format!("Invalid AI assistant config: {e}")))?;
-    let trimmed = parsed.api_key.trim().to_string();
+fn validate_gemini_model(raw: &str) -> Result<String> {
+    let trimmed = raw.trim().strip_prefix("models/").unwrap_or(raw.trim()).trim();
     if trimmed.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(trimmed))
+        return Err(KnitError::InvalidInput("Gemini model name cannot be empty".into()));
     }
+    if trimmed.len() > 120
+        || trimmed
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '/' | '\\' | '?' | '#' | '"' | '\''))
+    {
+        return Err(KnitError::InvalidInput(
+            "Gemini model name contains invalid characters".into(),
+        ));
+    }
+    Ok(trimmed.to_string())
 }
 
-fn write_key_to_config_file_at(path: &PathBuf, key: &str) -> Result<()> {
+fn read_config_at(path: &PathBuf) -> Result<StoredAssistantConfig> {
+    if !path.exists() {
+        return Ok(StoredAssistantConfig::default());
+    }
+    let bytes = fs::read(path)?;
+    serde_json::from_slice(&bytes)
+        .map_err(|e| KnitError::InvalidInput(format!("Invalid AI assistant config: {e}")))
+}
+
+fn write_config_at(path: &PathBuf, cfg: &StoredAssistantConfig) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
         #[cfg(unix)]
@@ -128,10 +149,7 @@ fn write_key_to_config_file_at(path: &PathBuf, key: &str) -> Result<()> {
             let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
         }
     }
-    let cfg = StoredAssistantConfig {
-        api_key: key.to_string(),
-    };
-    let json = serde_json::to_vec_pretty(&cfg)
+    let json = serde_json::to_vec_pretty(cfg)
         .map_err(|e| KnitError::Internal(format!("Serialize config failed: {e}")))?;
     atomic_write_file(path, |f| {
         f.write_all(&json)?;
@@ -145,9 +163,51 @@ fn write_key_to_config_file_at(path: &PathBuf, key: &str) -> Result<()> {
     Ok(())
 }
 
+fn read_key_from_config_file_at(path: &PathBuf) -> Result<Option<String>> {
+    let parsed = read_config_at(path)?;
+    let trimmed = parsed.api_key.trim().to_string();
+    if trimmed.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(trimmed))
+    }
+}
+
+fn read_model_from_config_file_at(path: &PathBuf) -> String {
+    read_config_at(path)
+        .ok()
+        .and_then(|c| validate_gemini_model(&c.model).ok())
+        .unwrap_or_else(|| DEFAULT_GEMINI_MODEL.to_string())
+}
+
+fn read_stored_model() -> String {
+    read_model_from_config_file_at(&config_file_path())
+}
+
+fn write_key_to_config_file_at(path: &PathBuf, key: &str) -> Result<()> {
+    let mut cfg = read_config_at(path).unwrap_or_default();
+    cfg.api_key = key.to_string();
+    write_config_at(path, &cfg)
+}
+
+fn write_model_to_config_file_at(path: &PathBuf, raw_model: &str) -> Result<String> {
+    let clean_model = validate_gemini_model(raw_model)?;
+    let mut cfg = read_config_at(path).unwrap_or_default();
+    cfg.model = clean_model.clone();
+    write_config_at(path, &cfg)?;
+    Ok(clean_model)
+}
+
 fn clear_config_file_at(path: &PathBuf) -> Result<()> {
-    if path.exists() {
+    if !path.exists() {
+        return Ok(());
+    }
+    let mut cfg = read_config_at(path).unwrap_or_default();
+    if cfg.model.trim().is_empty() {
         fs::remove_file(path)?;
+    } else {
+        cfg.api_key.clear();
+        write_config_at(path, &cfg)?;
     }
     Ok(())
 }
@@ -223,18 +283,19 @@ fn load_gemini_key_with_backend() -> Result<Option<(String, String)>> {
 
 /// Lấy trạng thái cấu hình Gemini API Key (đã che khóa).
 pub fn get_gemini_key_status() -> Result<GeminiKeyStatus> {
+    let model = read_stored_model();
     match load_gemini_key_with_backend()? {
         Some((key, backend)) => Ok(GeminiKeyStatus {
             configured: true,
             masked_key: Some(mask_api_key(&key)),
             storage_backend: backend,
-            model: DEFAULT_GEMINI_MODEL.to_string(),
+            model,
         }),
         None => Ok(GeminiKeyStatus {
             configured: false,
             masked_key: None,
             storage_backend: "none".to_string(),
-            model: DEFAULT_GEMINI_MODEL.to_string(),
+            model,
         }),
     }
 }
@@ -243,6 +304,7 @@ pub fn get_gemini_key_status() -> Result<GeminiKeyStatus> {
 pub fn save_gemini_key(raw_key: &str) -> Result<GeminiKeyStatus> {
     let key = validate_raw_api_key(raw_key)?;
     let cfg_path = config_file_path();
+    let model = read_stored_model();
 
     if try_secret_tool_store(&key) {
         let _ = clear_config_file_at(&cfg_path);
@@ -250,7 +312,7 @@ pub fn save_gemini_key(raw_key: &str) -> Result<GeminiKeyStatus> {
             configured: true,
             masked_key: Some(mask_api_key(&key)),
             storage_backend: "keychain".to_string(),
-            model: DEFAULT_GEMINI_MODEL.to_string(),
+            model,
         });
     }
 
@@ -259,8 +321,14 @@ pub fn save_gemini_key(raw_key: &str) -> Result<GeminiKeyStatus> {
         configured: true,
         masked_key: Some(mask_api_key(&key)),
         storage_backend: "config_file".to_string(),
-        model: DEFAULT_GEMINI_MODEL.to_string(),
+        model,
     })
+}
+
+/// Lưu tên model Gemini ưa thích vào file cấu hình nội bộ.
+pub fn save_gemini_model(raw_model: &str) -> Result<GeminiKeyStatus> {
+    write_model_to_config_file_at(&config_file_path(), raw_model)?;
+    get_gemini_key_status()
 }
 
 /// Xóa Gemini API Key khỏi cả OS keychain lẫn file cấu hình.
@@ -271,17 +339,24 @@ pub fn clear_gemini_key() -> Result<GeminiKeyStatus> {
         configured: false,
         masked_key: None,
         storage_backend: "none".to_string(),
-        model: DEFAULT_GEMINI_MODEL.to_string(),
+        model: read_stored_model(),
     })
 }
 
 /// Kiểm tra kết nối tới Gemini API bằng khóa đã lưu hoặc một khóa tạm truyền trực tiếp để test.
-pub fn test_gemini_connection(candidate_key: Option<&str>) -> Result<GeminiKeyStatus> {
+pub fn test_gemini_connection(
+    candidate_key: Option<&str>,
+    candidate_model: Option<&str>,
+) -> Result<GeminiKeyStatus> {
     let (key, backend) = match candidate_key.map(str::trim).filter(|s| !s.is_empty()) {
         Some(raw) => (validate_raw_api_key(raw)?, "unsaved_input".to_string()),
         None => load_gemini_key_with_backend()?.ok_or_else(|| {
             KnitError::InvalidInput("Gemini API key is not configured yet".into())
         })?,
+    };
+    let model = match candidate_model.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(raw_m) => validate_gemini_model(raw_m)?,
+        None => read_stored_model(),
     };
 
     let payload = serde_json::json!({
@@ -297,15 +372,68 @@ pub fn test_gemini_connection(candidate_key: Option<&str>) -> Result<GeminiKeySt
     let body = serde_json::to_string(&payload)
         .map_err(|e| KnitError::Internal(format!("JSON build failed: {e}")))?;
 
-    let response = execute_gemini_curl(&key, DEFAULT_GEMINI_MODEL, &body)?;
+    let response = execute_gemini_curl(&key, &model, &body)?;
     let _ = parse_gemini_candidate_text(&response, &key)?;
+
+    if candidate_model.map(str::trim).is_some_and(|s| !s.is_empty()) {
+        let _ = write_model_to_config_file_at(&config_file_path(), &model);
+    }
 
     Ok(GeminiKeyStatus {
         configured: backend != "unsaved_input",
         masked_key: Some(mask_api_key(&key)),
         storage_backend: backend,
-        model: DEFAULT_GEMINI_MODEL.to_string(),
+        model,
     })
+}
+
+/// Lấy danh sách các model Gemini hỗ trợ `generateContent` từ API bằng khóa hiện có.
+pub fn list_gemini_models(candidate_key: Option<&str>) -> Result<Vec<String>> {
+    let key = match candidate_key.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(raw) => validate_raw_api_key(raw)?,
+        None => load_gemini_key_with_backend()?
+            .map(|(k, _)| k)
+            .ok_or_else(|| KnitError::InvalidInput("Gemini API key is not configured yet".into()))?,
+    };
+
+    let resp = execute_gemini_get_curl(
+        &key,
+        "https://generativelanguage.googleapis.com/v1beta/models?pageSize=100",
+    )?;
+    let val: Value = serde_json::from_str(&resp).map_err(|e| {
+        KnitError::Internal(redact_api_key(
+            &format!("Invalid Gemini models JSON response: {e}"),
+            &key,
+        ))
+    })?;
+
+    let mut models = Vec::new();
+    if let Some(arr) = val.get("models").and_then(|m| m.as_array()) {
+        for item in arr {
+            let supports_generate = item
+                .get("supportedGenerationMethods")
+                .and_then(|m| m.as_array())
+                .is_some_and(|methods| {
+                    methods.iter().any(|v| v.as_str() == Some("generateContent"))
+                });
+            if !supports_generate {
+                continue;
+            }
+            if let Some(raw_name) = item.get("name").and_then(|n| n.as_str()) {
+                let clean = raw_name.strip_prefix("models/").unwrap_or(raw_name).trim();
+                if clean.starts_with("gemini-") && !models.iter().any(|m| m == clean) {
+                    models.push(clean.to_string());
+                }
+            }
+        }
+    }
+
+    for preset in DEFAULT_GEMINI_MODELS {
+        if !models.iter().any(|m| m == preset) {
+            models.push((*preset).to_string());
+        }
+    }
+    Ok(models)
 }
 
 /// Chia Markdown thành các batch 3–5 trang dựa theo marker `<!-- page: N -->`, hoặc chia theo đoạn nếu không có marker.
@@ -484,22 +612,33 @@ pub fn refine_markdown_with_gemini(
     let (key, _) = load_gemini_key_with_backend()?.ok_or_else(|| {
         KnitError::InvalidInput("Gemini API key is not configured".into())
     })?;
+    let active_model = read_stored_model();
     let noop = NoopReporter;
     let rep: &dyn JobReporter = reporter.unwrap_or(&noop);
 
     refine_markdown_with_gemini_using(
         markdown,
         user_instruction,
-        DEFAULT_GEMINI_MODEL,
+        &active_model,
         cancel,
         rep,
         |prompt| {
             let body = build_gemini_request_body(prompt)?;
-            let raw = execute_gemini_curl(&key, DEFAULT_GEMINI_MODEL, &body)?;
+            let raw = execute_gemini_curl(&key, &active_model, &body)?;
             parse_gemini_candidate_text(&raw, &key)
         },
         &key,
     )
+}
+
+fn is_fatal_gemini_api_error(message: &str) -> bool {
+    message.contains("HTTP 400")
+        || message.contains("HTTP 401")
+        || message.contains("HTTP 403")
+        || message.contains("HTTP 404")
+        || message.contains("API key not valid")
+        || message.contains("is no longer available")
+        || message.contains("not found for API version")
 }
 
 pub fn refine_markdown_with_gemini_using<F>(
@@ -534,6 +673,7 @@ where
     let mut output_chunks = Vec::with_capacity(total_chunks);
     let mut refined_chunks = 0usize;
     let mut fallback_chunks = 0usize;
+    let mut transport_errors = 0usize;
     let mut warnings = Vec::new();
     let extra_note = user_instruction
         .map(str::trim)
@@ -565,12 +705,17 @@ where
             },
             Err(KnitError::Cancelled) => return Err(KnitError::Cancelled),
             Err(err) => {
+                let redacted = redact_api_key(&err.to_string(), secret_to_redact);
+                if is_fatal_gemini_api_error(&redacted) {
+                    return Err(KnitError::Internal(redacted));
+                }
+                transport_errors += 1;
                 fallback_chunks += 1;
                 warnings.push(format!(
                     "Chunk {}/{}: {} — kept offline Markdown.",
                     idx + 1,
                     total_chunks,
-                    redact_api_key(&err.to_string(), secret_to_redact)
+                    redacted
                 ));
                 output_chunks.push(chunk.body.clone());
             }
@@ -584,6 +729,14 @@ where
             bytes_total: 0,
             current_item: format!("Refined chunk {}/{}", idx + 1, total_chunks),
         });
+    }
+
+    if refined_chunks == 0 && transport_errors > 0 {
+        let detail = warnings
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "Gemini refinement failed for all chunks".to_string());
+        return Err(KnitError::Internal(detail));
     }
 
     let joined = nfc_normalize(&output_chunks.join("\n\n"));
@@ -630,28 +783,7 @@ fn build_gemini_request_body(prompt: &str) -> Result<String> {
         .map_err(|e| KnitError::Internal(format!("Failed to build Gemini payload: {e}")))
 }
 
-fn execute_gemini_curl(api_key: &str, model: &str, request_json: &str) -> Result<String> {
-    let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    );
-    let mut body_file = NamedTempFile::new()?;
-    body_file.write_all(request_json.as_bytes())?;
-    body_file.flush()?;
-    let body_path = body_file.path().to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
-
-    // Truyền header x-goog-api-key qua stdin (`--config -`) để không lộ khóa trong danh sách tiến trình OS.
-    let curl_config = format!(
-        "url = \"{url}\"\n\
-         header = \"Content-Type: application/json\"\n\
-         header = \"x-goog-api-key: {api_key}\"\n\
-         data-binary = \"@{body_path}\"\n\
-         silent\n\
-         show-error\n\
-         location\n\
-         max-time = 45\n\
-         write-out = \"\\n__KNIT_HTTP_STATUS__:%{{http_code}}\"\n"
-    );
-
+fn run_gemini_curl_request(api_key: &str, curl_config: &str) -> Result<String> {
     let mut cmd = Command::new("curl");
     cmd.args(["--config", "-"])
         .stdin(Stdio::piped())
@@ -704,6 +836,44 @@ fn execute_gemini_curl(api_key: &str, model: &str, request_json: &str) -> Result
     }
 
     Ok(resp_body.to_string())
+}
+
+fn execute_gemini_get_curl(api_key: &str, url: &str) -> Result<String> {
+    let curl_config = format!(
+        "url = \"{url}\"\n\
+         header = \"x-goog-api-key: {api_key}\"\n\
+         silent\n\
+         show-error\n\
+         location\n\
+         max-time = 25\n\
+         write-out = \"\\n__KNIT_HTTP_STATUS__:%{{http_code}}\"\n"
+    );
+    run_gemini_curl_request(api_key, &curl_config)
+}
+
+fn execute_gemini_curl(api_key: &str, model: &str, request_json: &str) -> Result<String> {
+    let url = format!(
+        "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    );
+    let mut body_file = NamedTempFile::new()?;
+    body_file.write_all(request_json.as_bytes())?;
+    body_file.flush()?;
+    let body_path = body_file.path().to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+
+    // Truyền header x-goog-api-key qua stdin (`--config -`) để không lộ khóa trong danh sách tiến trình OS.
+    let curl_config = format!(
+        "url = \"{url}\"\n\
+         header = \"Content-Type: application/json\"\n\
+         header = \"x-goog-api-key: {api_key}\"\n\
+         data-binary = \"@{body_path}\"\n\
+         silent\n\
+         show-error\n\
+         location\n\
+         max-time = 45\n\
+         write-out = \"\\n__KNIT_HTTP_STATUS__:%{{http_code}}\"\n"
+    );
+
+    run_gemini_curl_request(api_key, &curl_config)
 }
 
 fn extract_gemini_error_message(resp_body: &str) -> String {
@@ -783,7 +953,10 @@ mod unit_tests {
         );
         assert_eq!(mask_api_key(fake_key), "AIza••••ABCD");
         assert!(!redact_api_key(&format!("err {fake_key}"), fake_key).contains(fake_key));
+        write_model_to_config_file_at(&path, "models/gemini-2.5-pro").unwrap();
+        assert_eq!(read_model_from_config_file_at(&path), "gemini-2.5-pro");
         clear_config_file_at(&path).unwrap();
         assert!(read_key_from_config_file_at(&path).unwrap().is_none());
+        assert_eq!(read_model_from_config_file_at(&path), "gemini-2.5-pro");
     }
 }

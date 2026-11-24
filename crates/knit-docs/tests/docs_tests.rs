@@ -1199,3 +1199,53 @@ Trong căn phòng màu trắng, tôi đột nhiên nghe được những lời n
 
     knit_docs::evict_pdf_to_md_cache_paths(std::slice::from_ref(&pdf_path));
 }
+
+#[test]
+fn markdown_with_br_leading_slash_and_special_lines_compiles_without_expected_colon() {
+    let md = "\
+# Test Slash After Break
+
+<!-- Start of picture text -->
+i IZ<br>/ \\Z O<br>/ term without colon<br>End
+<!-- End of picture text -->
+";
+    let (pdf_bytes, pages) = compile_text_to_pdf_bytes(
+        md,
+        DocInputKind::Markdown,
+        None,
+        &DocConvertOptions::default(),
+    )
+    .expect("Markdown with <br>/ ... must escape slash and compile cleanly");
+    assert!(pages >= 1);
+    assert!(pdf_bytes.starts_with(b"%PDF-"));
+}
+
+#[test]
+fn typst_compile_error_includes_line_and_snippet_and_gemini_fails_on_http_404_or_all_transport_errors() {
+    let err = knit_docs::compile_typst_to_pdf("= Title\n#invalid_call(", None, &std::collections::HashMap::new())
+        .expect_err("Invalid raw Typst must fail");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("Typst line") && msg.contains("near `#invalid_call(`"),
+        "Expected line & snippet in Typst error, got: {msg}"
+    );
+
+    let doc = "<!-- page: 1 -->\n\nParagraph text for error propagation check.";
+    let secret = "AIzaSecretFailCheck987654321";
+    let res = knit_docs::refine_markdown_with_gemini_using(
+        doc,
+        None,
+        "gemini-2.5-flash",
+        &CancellationToken::new(),
+        &NoopReporter,
+        |_prompt| {
+            Err(knit_core::KnitError::Internal(format!(
+                "Gemini API error (HTTP 404): models/gemini-2.5-flash is no longer available ({secret})"
+            )))
+        },
+        secret,
+    );
+    let err_msg = res.expect_err("HTTP 404 must return Err instead of 0/1 success").to_string();
+    assert!(err_msg.contains("HTTP 404"));
+    assert!(!err_msg.contains(secret));
+}
