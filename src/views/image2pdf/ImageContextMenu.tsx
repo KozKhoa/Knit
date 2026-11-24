@@ -1,5 +1,6 @@
 import React from "react";
 import {
+  BookmarkMinus,
   BookmarkPlus,
   CheckSquare,
   Copy,
@@ -16,6 +17,7 @@ import type { PageDraft } from "../../types/ipc";
 interface ImageContextMenuProps {
   page: PageDraft | null;
   pageIndex: number;
+  hasBookmark?: boolean;
   x: number;
   y: number;
   onClose: () => void;
@@ -25,12 +27,14 @@ interface ImageContextMenuProps {
   onCopyImagePath: (path: string) => void;
   onCopyFolderPath: (path: string) => void;
   onAttachBookmark: (page: PageDraft, pageIndex: number) => void;
+  onRemoveBookmark?: (pageIndex: number) => void;
   onSelectPage: (pageId: string) => void;
 }
 
 export const ImageContextMenu: React.FC<ImageContextMenuProps> = ({
   page,
   pageIndex,
+  hasBookmark = false,
   x,
   y,
   onClose,
@@ -40,6 +44,7 @@ export const ImageContextMenu: React.FC<ImageContextMenuProps> = ({
   onCopyImagePath,
   onCopyFolderPath,
   onAttachBookmark,
+  onRemoveBookmark,
   onSelectPage,
 }) => {
   const { t } = useI18n();
@@ -169,6 +174,21 @@ export const ImageContextMenu: React.FC<ImageContextMenuProps> = ({
         <BookmarkPlus className="h-3.5 w-3.5 shrink-0 text-[#007BFF]" />
         <span>{t.image2pdf.ctxAttachBookmark}</span>
       </button>
+
+      {hasBookmark && onRemoveBookmark && (
+        <button
+          type="button"
+          role="menuitem"
+          className={itemClass}
+          onClick={() => {
+            onRemoveBookmark(pageIndex);
+            onClose();
+          }}
+        >
+          <BookmarkMinus className="h-3.5 w-3.5 shrink-0 text-[#DC3545]" />
+          <span>{t.image2pdf.ctxRemoveBookmark}</span>
+        </button>
+      )}
 
       <button
         type="button"

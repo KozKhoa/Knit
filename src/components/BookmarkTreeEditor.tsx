@@ -5,9 +5,11 @@ import {
   CheckSquare,
   ChevronDown,
   ChevronRight,
+  Copy,
   FolderPlus,
   GripHorizontal,
   GripVertical,
+  Scissors,
   Trash2,
   Undo2,
   X,
@@ -17,14 +19,17 @@ import { useI18n } from "../i18n";
 import {
   addChildBookmarkAtPath,
   bookmarkPathKey,
+  collectBookmarkNodesAtPaths,
   collectParentBookmarkKeys,
   deleteBookmarkAtPath,
   deleteBookmarkNodesAtPaths,
   flattenVisibleBookmarks,
+  insertBookmarkNodesAt,
   isBookmarkDescendantOrSame,
   moveBookmarkNode,
   moveBookmarkNodesWithSelection,
   parseBookmarkPathKey,
+  pruneNestedBookmarkPaths,
   updateBookmarkAtPath,
   validateBookmarks,
   type BookmarkDropPosition,
@@ -33,6 +38,12 @@ import {
 import { usePersistentState } from "../lib/storage";
 import type { BookmarkNode } from "../types/ipc";
 import { NumberInput } from "./NumberInput";
+import { Select, type SelectOption } from "./Select";
+
+export interface BookmarkPresetOption {
+  id: string;
+  label: string;
+}
 
 interface BookmarkTreeEditorProps {
   nodes: BookmarkNode[];
@@ -41,12 +52,75 @@ interface BookmarkTreeEditorProps {
   disabled?: boolean;
   /** When true, Ctrl+Z works globally when not typing in an input; otherwise works when focus is inside the bookmark panel. */
   enableGlobalUndoShortcut?: boolean;
+  presets?: BookmarkPresetOption[];
+  onApplyPreset?: (presetId: string) => BookmarkNode[] | void;
 }
 
 interface DropTargetState {
   targetPath: number[];
   targetKey: string;
   position: BookmarkDropPosition;
+}
+
+interface ClipboardMarkState {
+  mode: "copy" | "cut";
+  rootRefs: Set<BookmarkNode>;
+  allRefs: Set<BookmarkNode>;
+  clones: BookmarkNode[];
+}
+
+function collectClipboardMarkRefs(
+  nodes: BookmarkNode[],
+  paths: readonly number[][],
+): { rootRefs: Set<BookmarkNode>; allRefs: Set<BookmarkNode> } {
+  const pruned = pruneNestedBookmarkPaths(paths);
+  const rootRefs = new Set<BookmarkNode>();
+  const allRefs = new Set<BookmarkNode>();
+
+  const addSubtree = (node: BookmarkNode) => {
+    allRefs.add(node);
+    for (const child of node.children) {
+      addSubtree(child);
+    }
+  };
+
+  for (const p of pruned) {
+    let list = nodes;
+    let found: BookmarkNode | null = null;
+    for (const idx of p) {
+      if (idx < 0 || idx >= list.length) {
+        found = null;
+        break;
+      }
+      found = list[idx];
+      list = found.children;
+    }
+    if (found) {
+      rootRefs.add(found);
+      addSubtree(found);
+    }
+  }
+  return { rootRefs, allRefs };
+}
+
+function findPathsForNodeRefs(
+  nodes: BookmarkNode[],
+  targetRefs: ReadonlySet<BookmarkNode>,
+): number[][] {
+  const out: number[][] = [];
+  const walk = (list: BookmarkNode[], prefix: number[]) => {
+    for (let i = 0; i < list.length; i++) {
+      const node = list[i];
+      const path = [...prefix, i];
+      if (targetRefs.has(node)) {
+        out.push(path);
+      } else if (node.children.length > 0) {
+        walk(node.children, path);
+      }
+    }
+  };
+  walk(nodes, []);
+  return out;
 }
 
 const DEFAULT_ROW_STRIDE_PX = 50;
@@ -59,12 +133,20 @@ export const BookmarkTreeEditor: React.FC<BookmarkTreeEditorProps> = React.memo(
   onChange,
   disabled = false,
   enableGlobalUndoShortcut = false,
+  presets,
+  onApplyPreset,
 }) => {
   const { t } = useI18n();
   const [treeHeightPx, setTreeHeightPx] = usePersistentState<number>(
     "knit.img2pdf.bookmarkHeightPx",
     360,
   );
+  const [insertPosition, setInsertPosition] = usePersistentState<"end" | "start">(
+    "knit.bookmarks.insertPosition",
+    "end",
+  );
+  const insertPositionRef = React.useRef<"end" | "start">(insertPosition);
+  insertPositionRef.current = insertPosition;
   const { height: liveHeightPx, handlePointerDown: handleResizeStart } = useVerticalResize({
     value: treeHeightPx,
     min: 180,
@@ -76,7 +158,20 @@ export const BookmarkTreeEditor: React.FC<BookmarkTreeEditorProps> = React.memo(
 
   const undoStackRef = React.useRef<BookmarkNode[][]>([]);
   const [undoCount, setUndoCount] = React.useState(0);
-  const titleSessionSnapshotRef = React.useRef<BookmarkNode[] | null>(null);
+  const [clipboardMark, setClipboardMark] = React.useState<ClipboardMarkState | null>(null);
+  const clipboardMarkRef = React.useRef<ClipboardMarkState | null>(clipboardMark);
+  clipboardMarkRef.current = clipboardMark;
+  const [clipboardNotice, setClipboardNotice] = React.useState<string | null>(null);
+  const clipboardNoticeTimerRef = React.useRef<number | null>(null);
+  const [focusedKey, setFocusedKey] = React.useState<string | null>(null);
+  const focusedKeyRef = React.useRef<string | null>(focusedKey);
+  focusedKeyRef.current = focusedKey;
+  const [editingPathKey, setEditingPathKey] = React.useState<string | null>(null);
+  const editingPathKeyRef = React.useRef<string | null>(editingPathKey);
+  editingPathKeyRef.current = editingPathKey;
+  const [editingDraftTitle, setEditingDraftTitle] = React.useState<string>("");
+  const [editingOriginalTitle, setEditingOriginalTitle] = React.useState<string>("");
+  const [selectedPresetId, setSelectedPresetId] = React.useState<string>("");
 
   const validation = React.useMemo(
     () => validateBookmarks(nodes, totalPages),
@@ -191,8 +286,14 @@ export const BookmarkTreeEditor: React.FC<BookmarkTreeEditorProps> = React.memo(
   const inSelectionMode = selectedKeys.size > 0;
 
   React.useEffect(() => {
-    if (selectedKeysRef.current.size === 0) return;
     const valid = new Set(flatRows.map((r) => r.pathKey));
+    if (focusedKeyRef.current && !valid.has(focusedKeyRef.current)) {
+      setFocusedKey(null);
+    }
+    if (editingPathKeyRef.current && !valid.has(editingPathKeyRef.current)) {
+      setEditingPathKey(null);
+    }
+    if (selectedKeysRef.current.size === 0) return;
     let changed = false;
     const next = new Set<string>();
     for (const k of selectedKeysRef.current) {
@@ -206,6 +307,17 @@ export const BookmarkTreeEditor: React.FC<BookmarkTreeEditorProps> = React.memo(
       setSelectedKeys(next);
     }
   }, [flatRows]);
+
+  const showClipboardNotice = React.useCallback((msg: string) => {
+    if (clipboardNoticeTimerRef.current !== null) {
+      window.clearTimeout(clipboardNoticeTimerRef.current);
+    }
+    setClipboardNotice(msg);
+    clipboardNoticeTimerRef.current = window.setTimeout(() => {
+      clipboardNoticeTimerRef.current = null;
+      setClipboardNotice(null);
+    }, 2200);
+  }, []);
 
   const clearLongPressTimer = React.useCallback(() => {
     if (longPressTimerRef.current !== null) {
@@ -232,19 +344,40 @@ export const BookmarkTreeEditor: React.FC<BookmarkTreeEditorProps> = React.memo(
     const prev = undoStackRef.current.pop();
     if (!prev) return;
     setUndoCount(undoStackRef.current.length);
-    titleSessionSnapshotRef.current = null;
+    setEditingPathKey(null);
+    if (clipboardMarkRef.current?.mode === "cut") {
+      setClipboardMark(null);
+      setClipboardNotice(null);
+    }
     onChangeRef.current(prev);
   }, []);
 
   React.useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (disabledRef.current) return;
-      if (e.key === "Escape" && selectedKeysRef.current.size > 0) {
-        e.preventDefault();
-        exitSelectionMode();
+      if (e.key === "Escape") {
+        if (selectedKeysRef.current.size > 0) {
+          e.preventDefault();
+          exitSelectionMode();
+          return;
+        }
+        if (
+          clipboardMarkRef.current &&
+          containerRef.current &&
+          e.target instanceof Node &&
+          containerRef.current.contains(e.target)
+        ) {
+          e.preventDefault();
+          setClipboardMark(null);
+          setClipboardNotice(null);
+          return;
+        }
+      }
+      if (!(e.ctrlKey || e.metaKey) || e.shiftKey) return;
+      const keyLower = e.key.toLowerCase();
+      if (keyLower !== "z" && keyLower !== "c" && keyLower !== "x" && keyLower !== "v") {
         return;
       }
-      if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.key.toLowerCase() !== "z") return;
       const target = e.target as HTMLElement | null;
       if (
         target &&
@@ -258,19 +391,138 @@ export const BookmarkTreeEditor: React.FC<BookmarkTreeEditorProps> = React.memo(
       const insideEditor = Boolean(
         containerRef.current && target instanceof Node && containerRef.current.contains(target),
       );
-      if (!enableGlobalUndoShortcut && !insideEditor) return;
-      if (undoStackRef.current.length === 0) return;
-      e.preventDefault();
-      e.stopPropagation();
-      handleUndo();
+      if (keyLower === "z") {
+        if (!enableGlobalUndoShortcut && !insideEditor) return;
+        if (undoStackRef.current.length === 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        handleUndo();
+        return;
+      }
+
+      if (!insideEditor) return;
+
+      const activePaths: number[][] =
+        selectedKeysRef.current.size > 0
+          ? Array.from(selectedKeysRef.current)
+              .map(parseBookmarkPathKey)
+              .filter((p) => p.length > 0)
+          : focusedKeyRef.current
+            ? [parseBookmarkPathKey(focusedKeyRef.current)].filter((p) => p.length > 0)
+            : [];
+
+      if (keyLower === "c" || keyLower === "x") {
+        if (activePaths.length === 0) return;
+        const copied = collectBookmarkNodesAtPaths(nodesRef.current, activePaths);
+        if (copied.length === 0) return;
+        const { rootRefs, allRefs } = collectClipboardMarkRefs(nodesRef.current, activePaths);
+        if (rootRefs.size === 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const mode: "copy" | "cut" = keyLower === "x" ? "cut" : "copy";
+        setClipboardMark({ mode, rootRefs, allRefs, clones: copied });
+        if (selectedKeysRef.current.size > 0) {
+          exitSelectionMode();
+        }
+        if (activePaths.length === 1) {
+          setFocusedKey(bookmarkPathKey(activePaths[0]));
+        }
+        showClipboardNotice(
+          mode === "cut"
+            ? t.bookmarks.clipboardCut(copied.length)
+            : t.bookmarks.clipboardCopied(copied.length),
+        );
+        return;
+      }
+
+      if (keyLower === "v") {
+        const mark = clipboardMarkRef.current;
+        if (!mark || mark.clones.length === 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        let afterPath: number[] | null = null;
+        if (selectedKeysRef.current.size > 0) {
+          const orderedSelected = flatRowsRef.current.filter((r) =>
+            selectedKeysRef.current.has(r.pathKey),
+          );
+          const last = orderedSelected[orderedSelected.length - 1];
+          if (last) afterPath = last.path;
+        } else if (focusedKeyRef.current) {
+          const parsed = parseBookmarkPathKey(focusedKeyRef.current);
+          if (parsed.length > 0) afterPath = parsed;
+        }
+
+        if (mark.mode === "cut") {
+          const currentCutPaths = findPathsForNodeRefs(nodesRef.current, mark.rootRefs);
+          setClipboardMark(null);
+          setClipboardNotice(null);
+          if (currentCutPaths.length > 0) {
+            if (afterPath && afterPath.length > 0) {
+              if (currentCutPaths.some((src) => isBookmarkDescendantOrSame(src, afterPath!))) {
+                return;
+              }
+              const res = moveBookmarkNodesWithSelection(
+                nodesRef.current,
+                currentCutPaths,
+                afterPath,
+                "after",
+              );
+              if (res.nodes !== nodesRef.current) {
+                pushUndoSnapshot(nodesRef.current);
+                onChangeRef.current(res.nodes);
+                if (res.nextSelectedKeys.length > 0) {
+                  setFocusedKey(res.nextSelectedKeys[0]);
+                }
+              }
+              return;
+            }
+            const afterDelete = deleteBookmarkNodesAtPaths(nodesRef.current, currentCutPaths);
+            const { nodes: next, insertedPaths } = insertBookmarkNodesAt(
+              afterDelete,
+              mark.clones,
+              null,
+              insertPositionRef.current === "start",
+            );
+            pushUndoSnapshot(nodesRef.current);
+            onChangeRef.current(next);
+            if (insertedPaths.length > 0) {
+              setFocusedKey(bookmarkPathKey(insertedPaths[0]));
+            }
+            return;
+          }
+        }
+
+        const { nodes: next, insertedPaths } = insertBookmarkNodesAt(
+          nodesRef.current,
+          mark.clones,
+          afterPath,
+          insertPositionRef.current === "start",
+        );
+        pushUndoSnapshot(nodesRef.current);
+        onChangeRef.current(next);
+        if (insertedPaths.length > 0) {
+          setFocusedKey(bookmarkPathKey(insertedPaths[0]));
+        }
+      }
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [enableGlobalUndoShortcut, exitSelectionMode, handleUndo]);
+  }, [
+    enableGlobalUndoShortcut,
+    exitSelectionMode,
+    handleUndo,
+    pushUndoSnapshot,
+    showClipboardNotice,
+    t.bookmarks,
+  ]);
 
   React.useEffect(() => {
     return () => {
       clearLongPressTimer();
+      if (clipboardNoticeTimerRef.current !== null) {
+        window.clearTimeout(clipboardNoticeTimerRef.current);
+        clipboardNoticeTimerRef.current = null;
+      }
       dragCleanupRef.current?.();
       dragCleanupRef.current = null;
       rowHoldCleanupRef.current?.();
@@ -309,6 +561,7 @@ export const BookmarkTreeEditor: React.FC<BookmarkTreeEditorProps> = React.memo(
         setDragSourceKeys(activeSourceKeys);
         document.body.style.userSelect = "none";
         document.body.style.cursor = "grabbing";
+        window.getSelection()?.removeAllRanges();
       }
 
       const hitTestDrop = (clientX: number, clientY: number): DropTargetState | null => {
@@ -442,6 +695,7 @@ export const BookmarkTreeEditor: React.FC<BookmarkTreeEditorProps> = React.memo(
           setDragSourceKeys(activeSourceKeys);
           document.body.style.userSelect = "none";
           document.body.style.cursor = "grabbing";
+          window.getSelection()?.removeAllRanges();
         }
         if (rafId === null) {
           rafId = window.requestAnimationFrame(tickDrag);
@@ -577,9 +831,26 @@ export const BookmarkTreeEditor: React.FC<BookmarkTreeEditorProps> = React.memo(
 
       if (e.shiftKey || e.ctrlKey || e.metaKey) {
         e.preventDefault();
+        containerRef.current?.focus({ preventScroll: true });
         applyRowSelectionClick(pathKey, e.shiftKey, e.ctrlKey || e.metaKey);
         suppressRowClickUntilRef.current = performance.now() + 250;
         return;
+      }
+
+      containerRef.current?.focus({ preventScroll: true });
+      if (selectedKeysRef.current.size === 0) {
+        setFocusedKey(pathKey);
+      }
+
+      // Double-click trên tiêu đề: không mở timer kéo/chọn nhiều
+      if (e.detail >= 2 && target?.closest("[data-bookmark-title]")) {
+        e.preventDefault();
+        return;
+      }
+
+      const startedOnTitle = Boolean(target?.closest("[data-bookmark-title]"));
+      if (startedOnTitle) {
+        e.preventDefault();
       }
 
       rowHoldCleanupRef.current?.();
@@ -617,6 +888,9 @@ export const BookmarkTreeEditor: React.FC<BookmarkTreeEditorProps> = React.memo(
           if (currentlyInSelection && selectedKeysRef.current.has(pathKey)) {
             cleanupHold();
             startBookmarkDrag(startX, startY, path, true, true);
+          } else if (!longPressTriggered && startedOnTitle && !currentlyInSelection) {
+            cleanupHold();
+            startBookmarkDrag(startX, startY, path, false, true);
           } else if (!longPressTriggered) {
             cleanupHold();
           }
@@ -677,23 +951,35 @@ export const BookmarkTreeEditor: React.FC<BookmarkTreeEditorProps> = React.memo(
     }
   }, []);
 
-  const handleTitleFocus = React.useCallback(() => {
-    if (titleSessionSnapshotRef.current === null) {
-      titleSessionSnapshotRef.current = nodesRef.current;
-    }
-  }, []);
+  const handleStartEditTitle = React.useCallback((pathKey: string, currentTitle: string) => {
+    if (disabledRef.current || selectedKeysRef.current.size > 0) return;
+    rowHoldCleanupRef.current?.();
+    clearLongPressTimer();
+    setFocusedKey(pathKey);
+    setEditingPathKey(pathKey);
+    setEditingDraftTitle(currentTitle);
+    setEditingOriginalTitle(currentTitle);
+  }, [clearLongPressTimer]);
 
-  const handleTitleBlur = React.useCallback(() => {
-    const startSnap = titleSessionSnapshotRef.current;
-    titleSessionSnapshotRef.current = null;
-    if (startSnap && startSnap !== nodesRef.current) {
-      pushUndoSnapshot(startSnap);
-    }
-  }, [pushUndoSnapshot]);
+  const handleCommitEditTitle = React.useCallback(
+    (path: number[], draftTitle: string) => {
+      const currentKey = editingPathKeyRef.current;
+      if (!currentKey) return;
+      editingPathKeyRef.current = null;
+      setEditingPathKey(null);
+      if (disabledRef.current) return;
+      if (draftTitle !== editingOriginalTitle) {
+        pushUndoSnapshot(nodesRef.current);
+        onChangeRef.current(updateBookmarkAtPath(nodesRef.current, path, { title: draftTitle }));
+      }
+    },
+    [editingOriginalTitle, pushUndoSnapshot],
+  );
 
-  const handleUpdateTitle = React.useCallback((path: number[], title: string) => {
-    if (disabledRef.current) return;
-    onChangeRef.current(updateBookmarkAtPath(nodesRef.current, path, { title }));
+  const handleCancelEditTitle = React.useCallback(() => {
+    editingPathKeyRef.current = null;
+    setEditingPathKey(null);
+    containerRef.current?.focus({ preventScroll: true });
   }, []);
 
   const handleUpdatePage = React.useCallback(
@@ -766,15 +1052,41 @@ export const BookmarkTreeEditor: React.FC<BookmarkTreeEditorProps> = React.memo(
   const addRootBookmark = () => {
     if (disabled) return;
     pushUndoSnapshot(nodes);
-    onChange([
-      ...nodes,
-      {
-        title: t.bookmarks.defaultRootTitle(nodes.length + 1),
-        target_page_index: 0,
-        children: [],
-      },
-    ]);
+    const newNode: BookmarkNode = {
+      title: t.bookmarks.defaultRootTitle(nodes.length + 1),
+      target_page_index: 0,
+      children: [],
+    };
+    const next = insertPosition === "start" ? [newNode, ...nodes] : [...nodes, newNode];
+    onChange(next);
+    setFocusedKey(insertPosition === "start" ? "0" : String(next.length - 1));
   };
+
+  const presetOptions = React.useMemo<SelectOption<string>[]>(
+    () => (presets ?? []).map((p) => ({ value: p.id, label: p.label })),
+    [presets],
+  );
+
+  React.useEffect(() => {
+    if (selectedPresetId && !presetOptions.some((o) => o.value === selectedPresetId)) {
+      setSelectedPresetId("");
+    }
+  }, [presetOptions, selectedPresetId]);
+
+  const handleSelectPreset = React.useCallback(
+    (presetId: string) => {
+      if (disabled || !onApplyPreset || !presetId) return;
+      setSelectedPresetId(presetId);
+      const result = onApplyPreset(presetId);
+      if (Array.isArray(result)) {
+        pushUndoSnapshot(nodesRef.current);
+        onChangeRef.current(result);
+        setFocusedKey(null);
+        setEditingPathKey(null);
+      }
+    },
+    [disabled, onApplyPreset, pushUndoSnapshot],
+  );
 
   const safeStart = Math.min(visibleRange.start, flatRows.length);
   const safeEnd = Math.min(Math.max(safeStart, visibleRange.end), flatRows.length);
@@ -785,8 +1097,9 @@ export const BookmarkTreeEditor: React.FC<BookmarkTreeEditorProps> = React.memo(
   return (
     <div
       ref={containerRef}
+      tabIndex={-1}
       data-bookmark-editor="true"
-      className="rounded-[4px] border border-[#DEE2E6] bg-white p-3.5"
+      className="rounded-[4px] border border-[#DEE2E6] bg-white p-3.5 focus:outline-none"
     >
       <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
@@ -800,8 +1113,60 @@ export const BookmarkTreeEditor: React.FC<BookmarkTreeEditorProps> = React.memo(
               {t.bookmarks.warningSummary(validation.totalWarnings)}
             </span>
           )}
+          {clipboardNotice && (
+            <span
+              data-testid="bookmark-clipboard-notice"
+              className="inline-flex items-center rounded-[4px] border border-[#B8DAFF] bg-[#E7F1FF] px-2 py-0.5 text-[11px] font-semibold text-[#0056B3]"
+            >
+              {clipboardNotice}
+            </span>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
+          {presetOptions.length > 0 && onApplyPreset && (
+            <Select
+              ariaLabel={t.bookmarks.presetsLabel}
+              size="sm"
+              disabled={disabled || inSelectionMode}
+              value={selectedPresetId}
+              placeholder={t.bookmarks.presetPlaceholder}
+              options={presetOptions}
+              onChange={handleSelectPreset}
+              className="min-w-[170px]"
+            />
+          )}
+          <div
+            role="group"
+            aria-label={t.bookmarks.insertAtLabel}
+            className="inline-flex items-center rounded-[4px] border border-[#CED4DA] bg-[#F8F9FA] p-0.5 text-[11px]"
+          >
+            <button
+              type="button"
+              data-testid="bookmark-insert-start-btn"
+              disabled={disabled}
+              onClick={() => setInsertPosition("start")}
+              className={`rounded-[3px] px-1.5 py-0.5 font-medium transition-colors ${
+                insertPosition === "start"
+                  ? "bg-[#007BFF] text-white"
+                  : "text-[#495057] hover:bg-[#E9ECEF]"
+              }`}
+            >
+              {t.bookmarks.insertAtStart}
+            </button>
+            <button
+              type="button"
+              data-testid="bookmark-insert-end-btn"
+              disabled={disabled}
+              onClick={() => setInsertPosition("end")}
+              className={`rounded-[3px] px-1.5 py-0.5 font-medium transition-colors ${
+                insertPosition === "end"
+                  ? "bg-[#007BFF] text-white"
+                  : "text-[#495057] hover:bg-[#E9ECEF]"
+              }`}
+            >
+              {t.bookmarks.insertAtEnd}
+            </button>
+          </div>
           <button
             type="button"
             disabled={disabled || undoCount === 0}
@@ -891,7 +1256,7 @@ export const BookmarkTreeEditor: React.FC<BookmarkTreeEditorProps> = React.memo(
           <div
             ref={scrollRef}
             style={{ height: `${liveHeightPx}px` }}
-            className={`overflow-y-auto pr-1 ${disabled ? "pointer-events-none opacity-60" : ""}`}
+            className={`overscroll-contain overflow-y-auto pr-1 ${disabled ? "pointer-events-none opacity-60" : ""}`}
           >
             <div
               style={{
@@ -904,6 +1269,11 @@ export const BookmarkTreeEditor: React.FC<BookmarkTreeEditorProps> = React.memo(
                   const warnings = validation.warningsByPath.get(item.pathKey);
                   const activeDropPos =
                     dropTarget?.targetKey === item.pathKey ? dropTarget.position : null;
+                  const isEditingThis = editingPathKey === item.pathKey;
+                  const clipboardState = clipboardMark?.allRefs.has(item.node)
+                    ? clipboardMark.mode
+                    : null;
+                  const isClipboardRoot = Boolean(clipboardMark?.rootRefs.has(item.node));
                   return (
                     <BookmarkRow
                       key={item.pathKey}
@@ -914,19 +1284,27 @@ export const BookmarkTreeEditor: React.FC<BookmarkTreeEditorProps> = React.memo(
                       depth={item.depth}
                       hasChildren={item.hasChildren}
                       isCollapsed={item.isCollapsed}
+                      isLastSibling={item.isLastSibling}
+                      ancestorHasNextSibling={item.ancestorHasNextSibling}
                       totalPages={totalPages}
                       warnings={warnings}
                       disabled={disabled}
                       inSelectionMode={inSelectionMode}
                       isSelected={selectedKeys.has(item.pathKey)}
+                      isFocused={!inSelectionMode && focusedKey === item.pathKey}
+                      clipboardState={clipboardState}
+                      isClipboardRoot={isClipboardRoot}
+                      isEditingTitle={isEditingThis}
+                      draftTitle={isEditingThis ? editingDraftTitle : item.node.title}
                       isDragged={dragSourceKeys.has(item.pathKey)}
                       activeDropPos={activeDropPos}
                       onRowPointerDown={handleRowPointerDown}
                       onRowClick={handleRowClick}
                       onStartDrag={handleRowDragStart}
-                      onTitleFocus={handleTitleFocus}
-                      onTitleBlur={handleTitleBlur}
-                      onUpdateTitle={handleUpdateTitle}
+                      onStartEditTitle={handleStartEditTitle}
+                      onChangeDraftTitle={setEditingDraftTitle}
+                      onCommitEditTitle={handleCommitEditTitle}
+                      onCancelEditTitle={handleCancelEditTitle}
                       onUpdatePage={handleUpdatePage}
                       onAddChild={handleAddChildAtPath}
                       onDelete={handleDeleteAtPath}
@@ -937,6 +1315,7 @@ export const BookmarkTreeEditor: React.FC<BookmarkTreeEditorProps> = React.memo(
               </div>
             </div>
           </div>
+          <div className="mt-1.5 text-[11px] text-[#6C757D]">{t.bookmarks.shortcutHint}</div>
           <div
             role="separator"
             aria-orientation="horizontal"
@@ -960,24 +1339,34 @@ interface BookmarkRowProps {
   depth: number;
   hasChildren: boolean;
   isCollapsed: boolean;
+  isLastSibling: boolean;
+  ancestorHasNextSibling: boolean[];
   totalPages: number;
   warnings: BookmarkValidationWarning[] | undefined;
   disabled: boolean;
   inSelectionMode: boolean;
   isSelected: boolean;
+  isFocused: boolean;
+  clipboardState: "copy" | "cut" | null;
+  isClipboardRoot: boolean;
+  isEditingTitle: boolean;
+  draftTitle: string;
   isDragged: boolean;
   activeDropPos: BookmarkDropPosition | null;
   onRowPointerDown: (e: React.PointerEvent<HTMLDivElement>, path: number[], pathKey: string) => void;
   onRowClick: (e: React.MouseEvent<HTMLDivElement>, pathKey: string) => void;
   onStartDrag: (e: React.PointerEvent<HTMLElement>, path: number[]) => void;
-  onTitleFocus: () => void;
-  onTitleBlur: () => void;
-  onUpdateTitle: (path: number[], title: string) => void;
+  onStartEditTitle: (pathKey: string, currentTitle: string) => void;
+  onChangeDraftTitle: (nextTitle: string) => void;
+  onCommitEditTitle: (path: number[], draftTitle: string) => void;
+  onCancelEditTitle: () => void;
   onUpdatePage: (path: number[], pageIndex: number) => void;
   onAddChild: (path: number[]) => void;
   onDelete: (path: number[]) => void;
   onToggleCollapse: (pathKey: string) => void;
 }
+
+const TREE_INDENT_PX = 18;
 
 const BookmarkRow: React.FC<BookmarkRowProps> = React.memo(({
   title,
@@ -987,19 +1376,27 @@ const BookmarkRow: React.FC<BookmarkRowProps> = React.memo(({
   depth,
   hasChildren,
   isCollapsed,
+  isLastSibling,
+  ancestorHasNextSibling,
   totalPages,
   warnings,
   disabled,
   inSelectionMode,
   isSelected,
+  isFocused,
+  clipboardState,
+  isClipboardRoot,
+  isEditingTitle,
+  draftTitle,
   isDragged,
   activeDropPos,
   onRowPointerDown,
   onRowClick,
   onStartDrag,
-  onTitleFocus,
-  onTitleBlur,
-  onUpdateTitle,
+  onStartEditTitle,
+  onChangeDraftTitle,
+  onCommitEditTitle,
+  onCancelEditTitle,
   onUpdatePage,
   onAddChild,
   onDelete,
@@ -1016,7 +1413,45 @@ const BookmarkRow: React.FC<BookmarkRowProps> = React.memo(({
     .join(" · ");
 
   return (
-    <div style={{ marginLeft: depth * 16 }} className="relative">
+    <div style={{ paddingLeft: depth * TREE_INDENT_PX }} className="relative">
+      {depth > 0 && (
+        <div
+          aria-hidden="true"
+          data-testid={`bookmark-tree-guide-${pathKey}`}
+          className="pointer-events-none absolute inset-y-0 left-0"
+          style={{ width: depth * TREE_INDENT_PX }}
+        >
+          {Array.from({ length: depth - 1 }, (_, lvl) =>
+            ancestorHasNextSibling[lvl] ? (
+              <span
+                key={lvl}
+                className="absolute w-px bg-[#CED4DA]"
+                style={{
+                  left: lvl * TREE_INDENT_PX + 8,
+                  top: -6,
+                  bottom: -6,
+                }}
+              />
+            ) : null,
+          )}
+          <span
+            className="absolute w-px bg-[#CED4DA]"
+            style={{
+              left: (depth - 1) * TREE_INDENT_PX + 8,
+              top: -6,
+              bottom: isLastSibling ? "50%" : -6,
+            }}
+          />
+          <span
+            className="absolute h-px bg-[#CED4DA]"
+            style={{
+              left: (depth - 1) * TREE_INDENT_PX + 8,
+              top: "50%",
+              width: TREE_INDENT_PX - 8,
+            }}
+          />
+        </div>
+      )}
       {activeDropPos === "before" && (
         <div
           aria-hidden="true"
@@ -1027,18 +1462,32 @@ const BookmarkRow: React.FC<BookmarkRowProps> = React.memo(({
       <div
         data-bookmark-path={pathKey}
         data-bookmark-selected={isSelected ? "true" : "false"}
+        data-bookmark-focused={isFocused ? "true" : "false"}
+        data-bookmark-clipboard={clipboardState ?? undefined}
         onPointerDown={(e) => onRowPointerDown(e, path, pathKey)}
         onClick={(e) => onRowClick(e, pathKey)}
         className={`flex items-center gap-1.5 rounded-[4px] border px-2 py-1.5 transition-colors ${
           activeDropPos === "inside"
             ? "border-[#007BFF] bg-[#E7F1FF] ring-1 ring-[#007BFF]"
             : isSelected
-              ? "border-[#007BFF] bg-[#E7F1FF]"
-              : warnings && warnings.length > 0
-                ? "border-[#FFC107] bg-[#FFF8E1]/60"
-                : "border-[#DEE2E6] bg-[#F8F9FA]"
-        } ${inSelectionMode ? "cursor-pointer select-none" : ""} ${
-          isDragged ? "opacity-45" : "opacity-100"
+              ? `border-[#007BFF] bg-[#E7F1FF] ${clipboardState ? "border-dashed" : ""}`
+              : clipboardState === "cut"
+                ? "border-dashed border-[#ADB5BD] bg-[#E9ECEF]"
+                : clipboardState === "copy"
+                  ? "border-dashed border-[#6C757D] bg-[#E9ECEF]/90"
+                  : isFocused
+                    ? "border-[#80BDFF] bg-[#F0F7FF]"
+                    : warnings && warnings.length > 0
+                      ? "border-[#FFC107] bg-[#FFF8E1]/60"
+                      : "border-[#DEE2E6] bg-[#F8F9FA]"
+        } ${!isEditingTitle ? "select-none" : ""} ${inSelectionMode ? "cursor-pointer" : ""} ${
+          isDragged
+            ? "opacity-45"
+            : clipboardState === "cut"
+              ? "opacity-50"
+              : clipboardState === "copy"
+                ? "opacity-85"
+                : "opacity-100"
         }`}
       >
         <span
@@ -1072,17 +1521,64 @@ const BookmarkRow: React.FC<BookmarkRowProps> = React.memo(({
           </button>
         ) : null}
 
-        <input
-          type="text"
-          disabled={disabled || inSelectionMode}
-          value={title}
-          onFocus={onTitleFocus}
-          onBlur={onTitleBlur}
-          onChange={(e) => onUpdateTitle(path, e.target.value)}
-          className={`knit-control-sm min-w-0 flex-1 rounded-[4px] border border-[#CED4DA] bg-white px-2 text-sm disabled:bg-[#F1F3F5] ${
-            inSelectionMode ? "pointer-events-none opacity-75" : ""
-          }`}
-        />
+        {isEditingTitle && !inSelectionMode ? (
+          <input
+            type="text"
+            autoFocus
+            disabled={disabled}
+            value={draftTitle}
+            onChange={(e) => onChangeDraftTitle(e.target.value)}
+            onBlur={() => onCommitEditTitle(path, draftTitle)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                onCommitEditTitle(path, draftTitle);
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                onCancelEditTitle();
+              }
+            }}
+            className="knit-control-sm min-w-0 flex-1 rounded-[4px] border border-[#007BFF] bg-white px-2 text-sm text-[#212529] focus:outline-none"
+          />
+        ) : (
+          <span
+            data-bookmark-title="true"
+            title={inSelectionMode ? title : `${title} — ${t.bookmarks.editTitleHint}`}
+            onMouseDown={(e) => {
+              if (!disabled && !inSelectionMode && e.button === 0) {
+                e.preventDefault();
+              }
+            }}
+            onDoubleClick={(e) => {
+              if (disabled || inSelectionMode) return;
+              e.stopPropagation();
+              onStartEditTitle(pathKey, title);
+            }}
+            className={`knit-control-sm flex min-w-0 flex-1 items-center truncate rounded-[4px] px-1.5 text-sm font-medium text-[#212529] select-none ${
+              inSelectionMode
+                ? "cursor-pointer opacity-75"
+                : disabled
+                  ? "opacity-60"
+                  : "cursor-grab hover:bg-[#E9ECEF]/70 active:cursor-grabbing"
+            }`}
+          >
+            {title || "\u00A0"}
+          </span>
+        )}
+
+        {isClipboardRoot && clipboardState === "cut" && (
+          <Scissors
+            aria-hidden="true"
+            className="h-3 w-3 shrink-0 text-[#6C757D]"
+          />
+        )}
+        {isClipboardRoot && clipboardState === "copy" && (
+          <Copy
+            aria-hidden="true"
+            className="h-3 w-3 shrink-0 text-[#495057]"
+          />
+        )}
 
         {warnings && warnings.length > 0 && (
           <span

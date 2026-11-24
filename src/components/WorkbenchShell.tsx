@@ -16,6 +16,7 @@ import {
   Terminal,
   Upload,
   XCircle,
+  FileText,
 } from "lucide-react";
 import { useI18n } from "../i18n";
 import {
@@ -36,7 +37,7 @@ import type {
 
 interface NavMeta {
   id: ToolId;
-  key: "image2pdf" | "pdfOps" | "docs2pdf" | "archive" | "mangaPack" | "renamer";
+  key: "image2pdf" | "pdfOps" | "docs2pdf" | "pdf2md" | "archive" | "mangaPack" | "renamer";
   icon: React.ComponentType<{ className?: string }>;
 }
 
@@ -44,6 +45,7 @@ const NAV_META: NavMeta[] = [
   { id: "image2pdf", key: "image2pdf", icon: ImageIcon },
   { id: "pdf-ops", key: "pdfOps", icon: Layers },
   { id: "docs2pdf", key: "docs2pdf", icon: FileCode2 },
+  { id: "pdf2md", key: "pdf2md", icon: FileText },
   { id: "archive", key: "archive", icon: Archive },
   { id: "manga-pack", key: "mangaPack", icon: BookOpen },
   { id: "renamer", key: "renamer", icon: FolderKanban },
@@ -90,6 +92,7 @@ export const WorkbenchShell: React.FC<WorkbenchShellProps> = ({
     typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "0.2.1",
   );
   const shellRef = React.useRef<HTMLDivElement | null>(null);
+  const mainRef = React.useRef<HTMLElement | null>(null);
   const logsContainerRef = React.useRef<HTMLDivElement | null>(null);
   const logsPinnedToBottomRef = React.useRef(true);
   const [logsPinned, setLogsPinned] = React.useState(true);
@@ -158,6 +161,35 @@ export const WorkbenchShell: React.FC<WorkbenchShellProps> = ({
       el.removeAttribute("inert");
     }
   }, [nativeDialogOpen]);
+
+  // Ngăn chặn lăn chuột trong vùng có thanh cuộn riêng làm trôi trang ngoài (<main>) khi chạm đỉnh/đáy.
+  React.useEffect(() => {
+    const mainEl = mainRef.current;
+    if (!mainEl) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey || e.deltaY === 0) return;
+      let node = e.target as HTMLElement | null;
+      while (node && node !== mainEl) {
+        const style = window.getComputedStyle(node);
+        const overflowY = style.overflowY;
+        const canScrollY =
+          (overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay") &&
+          node.scrollHeight > node.clientHeight + 1;
+        if (canScrollY) {
+          const atTop = node.scrollTop <= 0 && e.deltaY < 0;
+          const atBottom =
+            node.scrollTop + node.clientHeight >= node.scrollHeight - 1 && e.deltaY > 0;
+          if (atTop || atBottom) {
+            e.preventDefault();
+          }
+          return;
+        }
+        node = node.parentElement;
+      }
+    };
+    mainEl.addEventListener("wheel", onWheel, { passive: false });
+    return () => mainEl.removeEventListener("wheel", onWheel);
+  }, []);
 
   const effectiveRunningJobs = React.useMemo<RunningJobInfo[]>(() => {
     if (runningJobs && runningJobs.length > 0) return runningJobs;
@@ -236,7 +268,7 @@ export const WorkbenchShell: React.FC<WorkbenchShellProps> = ({
             </button>
           </div>
 
-          <nav className="flex-1 space-y-1 overflow-y-auto p-2.5">
+          <nav className="overscroll-contain flex-1 space-y-1 overflow-y-auto p-2.5">
             {NAV_META.map((item) => {
               const Icon = item.icon;
               const active = item.id === activeTool;
@@ -419,7 +451,7 @@ export const WorkbenchShell: React.FC<WorkbenchShellProps> = ({
           )}
 
           {/* Active Tool Canvas */}
-          <main className="min-h-0 flex-1 overflow-y-auto p-5">{children}</main>
+          <main ref={mainRef} className="min-h-0 flex-1 overflow-y-auto p-5">{children}</main>
 
           {/* Bottom Log / History Drawer */}
           {drawerOpen && (
@@ -498,7 +530,7 @@ export const WorkbenchShell: React.FC<WorkbenchShellProps> = ({
                   }
                   lastLogScrollTopRef.current = el.scrollTop;
                 }}
-                className="flex-1 overflow-y-auto p-3"
+                className="overscroll-contain flex-1 overflow-y-auto p-3"
               >
                 {drawerTab === "logs" ? (
                   logs.length === 0 ? (

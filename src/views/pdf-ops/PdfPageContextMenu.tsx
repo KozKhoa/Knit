@@ -1,7 +1,9 @@
 import React from "react";
 import {
+  BookmarkMinus,
   BookmarkPlus,
   Copy,
+  FileSearch,
   RefreshCw,
   RotateCcw,
   RotateCw,
@@ -18,6 +20,17 @@ export type PdfContextMenuTarget =
       pageIndex: number;
       rotationDeg: number;
       filePath: string;
+      hasBookmark?: boolean;
+      x: number;
+      y: number;
+    }
+  | {
+      mode: "merge_file";
+      fileIndex: number;
+      fileOrderIdx: number;
+      targetPageIdx: number;
+      filePath: string;
+      hasBookmark?: boolean;
       x: number;
       y: number;
     }
@@ -50,6 +63,8 @@ interface PdfPageContextMenuProps {
   onRotateSplitItemBy?: (sectionId: string, uid: string, deltaDeg: number) => void;
   onDeleteSplitItem?: (sectionId: string, uid: string) => void;
   onAttachBookmark?: (idx: number, filePath: string, sourcePageIndex: number) => void;
+  onRemoveBookmark?: (outputPageIndex: number) => void;
+  onPreviewFile?: (fileIndex: number) => void;
   onZoom: (filePath: string, pageIndex: number, rotationDeg: number, outputIdx?: number) => void;
   onCopyPath: (filePath: string) => void;
 }
@@ -62,6 +77,8 @@ export const PdfPageContextMenu: React.FC<PdfPageContextMenuProps> = ({
   onRotateSplitItemBy,
   onDeleteSplitItem,
   onAttachBookmark,
+  onRemoveBookmark,
+  onPreviewFile,
   onZoom,
   onCopyPath,
 }) => {
@@ -150,13 +167,20 @@ export const PdfPageContextMenu: React.FC<PdfPageContextMenuProps> = ({
         className="mb-1 border-b border-[#E9ECEF] px-2 py-1.5 text-[11px] text-[#495057]"
       >
         <div className="truncate font-semibold text-[#212529]">
-          {t.pdfOps.ctxSourceFileInfo(target.fileIndex + 1, fileName, target.pageIndex + 1)}
+          {target.mode === "merge_file"
+            ? `${target.fileIndex + 1}. ${fileName}`
+            : t.pdfOps.ctxSourceFileInfo(target.fileIndex + 1, fileName, target.pageIndex + 1)}
         </div>
         <div className="mt-0.5 flex items-center gap-2 font-mono-code text-[10px] text-[#6C757D]">
           {target.mode === "merge" && (
             <span>{t.pdfOps.ctxOutputPageInfo(target.idx + 1)}</span>
           )}
-          {target.rotationDeg % 360 !== 0 && <span>{target.rotationDeg}°</span>}
+          {target.mode === "merge_file" && (
+            <span>{t.pdfOps.ctxOutputPageInfo(target.targetPageIdx + 1)}</span>
+          )}
+          {target.mode !== "merge_file" && target.rotationDeg % 360 !== 0 && (
+            <span>{target.rotationDeg}°</span>
+          )}
         </div>
       </div>
 
@@ -196,31 +220,50 @@ export const PdfPageContextMenu: React.FC<PdfPageContextMenuProps> = ({
         </>
       )}
 
-      <button
-        type="button"
-        role="menuitem"
-        className={itemClass}
-        onClick={() => {
-          onZoom(
-            target.filePath,
-            target.pageIndex,
-            target.rotationDeg,
-            target.mode === "merge" ? target.idx : undefined,
-          );
-          onClose();
-        }}
-      >
-        <ZoomIn className="h-3.5 w-3.5 shrink-0 text-[#17A2B8]" />
-        <span>{t.pdfOps.ctxPreviewInfo}</span>
-      </button>
-
-      {target.mode === "merge" && onAttachBookmark && (
+      {target.mode === "merge_file" ? (
         <button
           type="button"
           role="menuitem"
           className={itemClass}
           onClick={() => {
-            onAttachBookmark(target.idx, target.filePath, target.pageIndex);
+            onPreviewFile?.(target.fileIndex);
+            onClose();
+          }}
+        >
+          <FileSearch className="h-3.5 w-3.5 shrink-0 text-[#17A2B8]" />
+          <span>{t.pdfOps.ctxPreviewPdfFile}</span>
+        </button>
+      ) : (
+        <button
+          type="button"
+          role="menuitem"
+          className={itemClass}
+          onClick={() => {
+            onZoom(
+              target.filePath,
+              target.pageIndex,
+              target.rotationDeg,
+              target.mode === "merge" ? target.idx : undefined,
+            );
+            onClose();
+          }}
+        >
+          <ZoomIn className="h-3.5 w-3.5 shrink-0 text-[#17A2B8]" />
+          <span>{t.pdfOps.ctxPreviewInfo}</span>
+        </button>
+      )}
+
+      {(target.mode === "merge" || target.mode === "merge_file") && onAttachBookmark && (
+        <button
+          type="button"
+          role="menuitem"
+          className={itemClass}
+          onClick={() => {
+            if (target.mode === "merge") {
+              onAttachBookmark(target.idx, target.filePath, target.pageIndex);
+            } else {
+              onAttachBookmark(target.targetPageIdx, target.filePath, 0);
+            }
             onClose();
           }}
         >
@@ -228,6 +271,25 @@ export const PdfPageContextMenu: React.FC<PdfPageContextMenuProps> = ({
           <span>{t.pdfOps.ctxAttachBookmark}</span>
         </button>
       )}
+
+      {(target.mode === "merge" || target.mode === "merge_file") &&
+        target.hasBookmark &&
+        onRemoveBookmark && (
+          <button
+            type="button"
+            role="menuitem"
+            className={itemClass}
+            onClick={() => {
+              onRemoveBookmark(
+                target.mode === "merge" ? target.idx : target.targetPageIdx,
+              );
+              onClose();
+            }}
+          >
+            <BookmarkMinus className="h-3.5 w-3.5 shrink-0 text-[#DC3545]" />
+            <span>{t.pdfOps.ctxRemoveBookmark}</span>
+          </button>
+        )}
 
       <button
         type="button"

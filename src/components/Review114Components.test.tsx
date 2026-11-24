@@ -177,14 +177,16 @@ describe("Review 1.14 components", () => {
     fireEvent.click(screen.getByRole("button", { name: "Thêm mục chính" }));
     expect(screen.getByTestId("count").textContent).toBe("2");
 
-    // Typing Ctrl+Z inside the text input should NOT trigger bookmark tree undo
-    const inputs = screen.getAllByDisplayValue(/Ch1|Mục/) as HTMLInputElement[];
-    inputs[0].focus();
-    fireEvent.keyDown(inputs[0], { key: "z", ctrlKey: true });
+    // Double-click title to enter input mode; Ctrl+Z inside text input should NOT trigger bookmark tree undo
+    const titleSpan = screen.getByText("Ch1");
+    fireEvent.doubleClick(titleSpan);
+    const titleInput = screen.getByDisplayValue("Ch1") as HTMLInputElement;
+    titleInput.focus();
+    fireEvent.keyDown(titleInput, { key: "z", ctrlKey: true });
     expect(screen.getByTestId("count").textContent).toBe("2");
 
-    // Ctrl+Z outside text input triggers bookmark tree undo
-    inputs[0].blur();
+    // Esc exits edit mode cleanly, and Ctrl+Z outside text input triggers bookmark tree undo
+    fireEvent.keyDown(titleInput, { key: "Escape" });
     fireEvent.keyDown(window, { key: "z", ctrlKey: true });
     expect(screen.getByTestId("count").textContent).toBe("1");
 
@@ -194,14 +196,16 @@ describe("Review 1.14 components", () => {
     fireEvent.click(screen.getByRole("button", { name: /Hoàn tác/i }));
     expect(screen.getByTestId("count").textContent).toBe("1");
 
-    // When disabled=true, inputs and add button are locked
+    // When disabled=true, page inputs, add button, and double-click title editing are locked
     rerender(
       <I18nProvider>
         <Harness disabled />
       </I18nProvider>,
     );
     expect((screen.getByRole("button", { name: "Thêm mục chính" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByDisplayValue("Ch1") as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByRole("spinbutton") as HTMLInputElement).disabled).toBe(true);
+    fireEvent.doubleClick(screen.getByText("Ch1"));
+    expect(screen.queryByDisplayValue("Ch1")).toBeNull();
   });
 
   it("PdfPageContextMenu renders full actions in merge mode and preview/copy only in split mode", () => {

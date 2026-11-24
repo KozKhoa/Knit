@@ -14,7 +14,7 @@ import {
   Undo2,
   X,
 } from "lucide-react";
-import { BookmarkTreeEditor } from "../components/BookmarkTreeEditor";
+import { BookmarkTreeEditor, type BookmarkPresetOption } from "../components/BookmarkTreeEditor";
 import { CardSizeSelector } from "../components/CardSizeSelector";
 import { Dropzone } from "../components/Dropzone";
 import { ErrorBanner } from "../components/ErrorBanner";
@@ -36,7 +36,13 @@ import { useHorizontalRatioResize } from "../hooks/useHorizontalRatioResize";
 import { useThumbnailQueue } from "../hooks/useThumbnailQueue";
 import { useVirtualizedGrid } from "../hooks/useVirtualizedGrid";
 import { useI18n } from "../i18n";
-import { buildPageBookmarkMap, remapBookmarksAfterPageRemoval } from "../lib/bookmarks";
+import {
+  buildImageBookmarkPreset,
+  buildPageBookmarkMap,
+  remapBookmarksAfterPageRemoval,
+  removeBookmarksAtPage,
+  type ImageBookmarkPresetId,
+} from "../lib/bookmarks";
 import {
   findActiveExportConflicts,
   resolveUniqueNonActiveExportPath,
@@ -724,6 +730,30 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
       setShowBookmarks(true);
     },
     [pushUndoSnapshot, setShowBookmarks, t.bookmarks],
+  );
+
+  const handleRemoveBookmarkAtPage = React.useCallback(
+    (pageIndex: number) => {
+      pushUndoSnapshot();
+      setBookmarks((prev) => removeBookmarksAtPage(prev, pageIndex));
+    },
+    [pushUndoSnapshot],
+  );
+
+  const imageBookmarkPresets = React.useMemo<BookmarkPresetOption[]>(
+    () => [
+      { id: "by_parent_folder", label: t.bookmarks.presetByFolder },
+      { id: "per_page", label: t.bookmarks.presetPerPage },
+      { id: "clear", label: t.bookmarks.presetClear },
+    ],
+    [t.bookmarks],
+  );
+
+  const handleApplyImageBookmarkPreset = React.useCallback(
+    (presetId: string) => {
+      return buildImageBookmarkPreset(presetId as ImageBookmarkPresetId, pagesStateRef.current);
+    },
+    [],
   );
 
   const handleSelectSingleFromContext = React.useCallback((pageId: string) => {
@@ -1421,7 +1451,7 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
               {t.image2pdf.dismissBtn}
             </button>
           </div>
-          <ul className="mt-1.5 max-h-24 list-disc space-y-0.5 overflow-y-auto pl-5 font-mono-code text-[11px]">
+          <ul className="overscroll-contain mt-1.5 max-h-24 list-disc space-y-0.5 overflow-y-auto pl-5 font-mono-code text-[11px]">
             {scanWarnings.map((w, idx) => (
               <li key={idx}>{w}</li>
             ))}
@@ -1766,6 +1796,8 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
                     nodes={bookmarks}
                     totalPages={pages.length}
                     enableGlobalUndoShortcut={false}
+                    presets={imageBookmarkPresets}
+                    onApplyPreset={handleApplyImageBookmarkPreset}
                     onChange={setBookmarks}
                   />
                 </div>
@@ -1831,6 +1863,7 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
       <ImageContextMenu
         page={contextMenuPage}
         pageIndex={contextMenu?.pageIndex ?? 0}
+        hasBookmark={contextMenu ? pageBookmarkMap.has(contextMenu.pageIndex) : false}
         x={contextMenu?.x ?? 0}
         y={contextMenu?.y ?? 0}
         onClose={() => setContextMenu(null)}
@@ -1840,6 +1873,7 @@ export const Image2PdfView: React.FC<Image2PdfViewProps> = ({
         onCopyImagePath={handleCopyImagePath}
         onCopyFolderPath={handleCopyFolderPath}
         onAttachBookmark={handleAttachBookmarkAtPage}
+        onRemoveBookmark={handleRemoveBookmarkAtPage}
         onSelectPage={handleSelectSingleFromContext}
       />
 

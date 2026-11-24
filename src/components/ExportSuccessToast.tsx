@@ -70,7 +70,7 @@ export const ExportSuccessToast: React.FC<ExportSuccessToastProps> = ({
         <p className="text-[#495057]">{result.summary || t.common.exportSuccessSubtitle}</p>
 
         {result.outputs.length > 0 && (
-          <div className="max-h-28 space-y-1 overflow-y-auto rounded-[4px] border border-[#DEE2E6] bg-[#F8F9FA] p-1.5">
+          <div className="overscroll-contain max-h-28 space-y-1 overflow-y-auto rounded-[4px] border border-[#DEE2E6] bg-[#F8F9FA] p-1.5">
             {result.outputs.map((outPath) => (
               <div
                 key={outPath}

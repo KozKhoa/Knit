@@ -208,7 +208,7 @@ export const SplitSectionCard: React.FC<SplitSectionCardProps> = React.memo(
               ? { height: `${explicitSectionHeight}px` }
               : undefined
           }
-          className={`overflow-y-auto p-3 ${
+          className={`overscroll-contain overflow-y-auto p-3 ${
             explicitSectionHeight === undefined ? "max-h-[280px]" : ""
           }`}
         >

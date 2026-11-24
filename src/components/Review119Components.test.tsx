@@ -252,10 +252,12 @@ describe("Review 1.19 items", () => {
     expect(screen.getByTestId("bookmark-selection-bar")).toBeTruthy();
     expect(screen.getByTestId("bookmark-selection-count").textContent).toContain("1");
 
-    // Rename input, page NumberInput, and add-child button are disabled in selection mode
-    const titleInputs = row0.querySelectorAll("input");
-    expect((titleInputs[0] as HTMLInputElement).disabled).toBe(true);
-    expect((titleInputs[1] as HTMLInputElement).disabled).toBe(true);
+    // Title double-click edit, page NumberInput, and add-child button are disabled in selection mode
+    const titleSpan = row0.querySelector("[data-bookmark-title]") as HTMLElement;
+    fireEvent.doubleClick(titleSpan);
+    expect(row0.querySelectorAll("input")).toHaveLength(1);
+    const pageInput = row0.querySelector("input") as HTMLInputElement;
+    expect(pageInput.disabled).toBe(true);
     const addChildBtn = row0.querySelector('button[title*="child"], button[title*="mục con"]') as HTMLButtonElement;
     expect(addChildBtn.disabled).toBe(true);
 

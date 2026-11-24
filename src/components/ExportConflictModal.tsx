@@ -65,7 +65,7 @@ export const ExportConflictModal: React.FC<ExportConflictModalProps> = ({
               : t.common.exportConflictDesc(conflictPaths)}
           </p>
           {conflictPaths.length > 1 && (
-            <ul className="max-h-40 space-y-1 overflow-y-auto rounded-[4px] border border-[#DEE2E6] bg-[#F8F9FA] p-2.5 font-mono-code text-xs text-[#343A40]">
+            <ul className="overscroll-contain max-h-40 space-y-1 overflow-y-auto rounded-[4px] border border-[#DEE2E6] bg-[#F8F9FA] p-2.5 font-mono-code text-xs text-[#343A40]">
               {conflictPaths.map((p) => (
                 <li key={p} className="truncate" title={p}>
                   {p}

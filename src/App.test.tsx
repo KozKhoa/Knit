@@ -161,4 +161,18 @@ describe("Knit Workbench UI", () => {
     expect(formatBytes(2048)).toBe("2.0 KB");
     expect(formatBytes(5 * 1024 * 1024)).toBe("5.0 MB");
   });
+
+  it("navigates to PDF to Markdown workbench via sidebar item", () => {
+    render(
+      <I18nProvider>
+        <App />
+      </I18nProvider>,
+    );
+    const navBtn = screen.getByRole("button", { name: /PDF sang Markdown/i });
+    fireEvent.click(navBtn);
+    expect(screen.getByText("Chuyển PDF sang Markdown")).toBeTruthy();
+    expect(
+      screen.getByText("Chọn hoặc kéo thả 1 tệp PDF để chuyển sang Markdown"),
+    ).toBeTruthy();
+  });
 });

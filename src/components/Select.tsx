@@ -18,6 +18,7 @@ export interface SelectProps<T extends string = string> {
   id?: string;
   ariaLabel?: string;
   placeholder?: string;
+  dataTestId?: string;
 }
 
 export function Select<T extends string = string>({
@@ -30,6 +31,7 @@ export function Select<T extends string = string>({
   id,
   ariaLabel,
   placeholder,
+  dataTestId,
 }: SelectProps<T>) {
   const [open, setOpen] = React.useState(false);
   const [highlightedIdx, setHighlightedIdx] = React.useState<number>(-1);
@@ -203,6 +205,7 @@ export function Select<T extends string = string>({
       <button
         ref={triggerRef}
         id={id}
+        data-testid={dataTestId}
         type="button"
         role="combobox"
         aria-haspopup="listbox"
@@ -240,7 +243,7 @@ export function Select<T extends string = string>({
               transform: menuPos.openUp ? "translateY(-100%)" : undefined,
               zIndex: 9999,
             }}
-            className="max-h-64 overflow-y-auto rounded-[4px] border border-[#CED4DA] bg-white p-1 shadow-lg"
+            className="overscroll-contain max-h-64 overflow-y-auto rounded-[4px] border border-[#CED4DA] bg-white p-1 shadow-lg"
           >
             {options.map((opt, idx) => {
               const selected = opt.value === value;

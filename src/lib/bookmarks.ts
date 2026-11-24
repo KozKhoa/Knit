@@ -1,4 +1,4 @@
-import type { BookmarkNode } from "../types/ipc";
+import type { BookmarkNode, PageDraft, PageSelection, PdfInfo } from "../types/ipc";
 
 /**
  * Xây map `0-based page_index -> danh sách tiêu đề bookmark` trỏ vào trang đó.
@@ -110,12 +110,16 @@ export function bookmarkPathKey(path: readonly number[]): string {
   return path.join(".");
 }
 
-function cloneBookmarkTree(nodes: BookmarkNode[]): BookmarkNode[] {
+export function cloneBookmarkNodes(nodes: BookmarkNode[]): BookmarkNode[] {
   return nodes.map((n) => ({
     title: n.title,
     target_page_index: n.target_page_index,
-    children: cloneBookmarkTree(n.children),
+    children: cloneBookmarkNodes(n.children),
   }));
+}
+
+function cloneBookmarkTree(nodes: BookmarkNode[]): BookmarkNode[] {
+  return cloneBookmarkNodes(nodes);
 }
 
 function getListAt(
@@ -250,6 +254,8 @@ export interface FlattenedBookmarkRow {
   depth: number;
   hasChildren: boolean;
   isCollapsed: boolean;
+  isLastSibling: boolean;
+  ancestorHasNextSibling: boolean[];
 }
 
 /**
@@ -261,20 +267,35 @@ export function flattenVisibleBookmarks(
   collapsedKeys: ReadonlySet<string>,
 ): FlattenedBookmarkRow[] {
   const out: FlattenedBookmarkRow[] = [];
-  const walk = (list: BookmarkNode[], prefix: number[], depth: number) => {
+  const walk = (
+    list: BookmarkNode[],
+    prefix: number[],
+    depth: number,
+    ancestorHasNextSibling: boolean[],
+  ) => {
     for (let idx = 0; idx < list.length; idx++) {
       const node = list[idx];
       const path = [...prefix, idx];
       const key = bookmarkPathKey(path);
       const hasChildren = node.children.length > 0;
       const isCollapsed = hasChildren && collapsedKeys.has(key);
-      out.push({ node, path, pathKey: key, depth, hasChildren, isCollapsed });
+      const isLastSibling = idx === list.length - 1;
+      out.push({
+        node,
+        path,
+        pathKey: key,
+        depth,
+        hasChildren,
+        isCollapsed,
+        isLastSibling,
+        ancestorHasNextSibling,
+      });
       if (hasChildren && !isCollapsed) {
-        walk(node.children, path, depth + 1);
+        walk(node.children, path, depth + 1, [...ancestorHasNextSibling, !isLastSibling]);
       }
     }
   };
-  walk(nodes, [], 0);
+  walk(nodes, [], 0, []);
   return out;
 }
 
@@ -547,4 +568,243 @@ export function addChildBookmarkAtPath(
     };
     return copy;
   });
+}
+
+/**
+ * Thu thập và clone sâu các bookmark theo danh sách đường dẫn (tự gộp cha-con).
+ */
+export function collectBookmarkNodesAtPaths(
+  nodes: BookmarkNode[],
+  paths: readonly number[][],
+): BookmarkNode[] {
+  const pruned = pruneNestedBookmarkPaths(paths);
+  const collected: BookmarkNode[] = [];
+  for (const p of pruned) {
+    const found = getBookmarkNodeAt(nodes, p);
+    if (found) {
+      collected.push({
+        title: found.title,
+        target_page_index: found.target_page_index,
+        children: cloneBookmarkNodes(found.children),
+      });
+    }
+  }
+  return collected;
+}
+
+/**
+ * Chèn danh sách bookmark (đã clone) ngay sau `afterPath` (cùng cấp),
+ * hoặc chèn ở đầu/cuối gốc nếu `afterPath` rỗng hoặc không tồn tại.
+ */
+export function insertBookmarkNodesAt(
+  nodes: BookmarkNode[],
+  toInsert: BookmarkNode[],
+  afterPath?: readonly number[] | null,
+  prependIfRoot = false,
+): { nodes: BookmarkNode[]; insertedPaths: number[][] } {
+  if (toInsert.length === 0) return { nodes, insertedPaths: [] };
+  const clones = cloneBookmarkNodes(toInsert);
+
+  if (afterPath && afterPath.length > 0 && getBookmarkNodeAt(nodes, afterPath)) {
+    const parentPath = afterPath.slice(0, -1);
+    const targetIdx = afterPath[afterPath.length - 1];
+    const root = cloneBookmarkNodes(nodes);
+    const list = getListAt(root, parentPath);
+    if (list && targetIdx >= 0 && targetIdx < list.length) {
+      const insertAt = targetIdx + 1;
+      list.splice(insertAt, 0, ...clones);
+      const insertedPaths = clones.map((_, i) => [...parentPath, insertAt + i]);
+      return { nodes: root, insertedPaths };
+    }
+  }
+
+  if (prependIfRoot) {
+    const insertedPaths = clones.map((_, i) => [i]);
+    return { nodes: [...clones, ...cloneBookmarkNodes(nodes)], insertedPaths };
+  }
+
+  const baseIdx = nodes.length;
+  const insertedPaths = clones.map((_, i) => [baseIdx + i]);
+  return { nodes: [...cloneBookmarkNodes(nodes), ...clones], insertedPaths };
+}
+
+/**
+ * Xóa mọi bookmark đang trỏ vào `targetPageIndex` (nếu nút bị xóa có con trỏ sang trang khác thì đôn con lên).
+ */
+export function removeBookmarksAtPage(
+  nodes: BookmarkNode[],
+  targetPageIndex: number,
+): BookmarkNode[] {
+  const walk = (list: BookmarkNode[]): BookmarkNode[] => {
+    const out: BookmarkNode[] = [];
+    for (const node of list) {
+      const nextChildren = node.children.length > 0 ? walk(node.children) : [];
+      if (node.target_page_index === targetPageIndex) {
+        out.push(...nextChildren);
+      } else {
+        out.push({ ...node, children: nextChildren });
+      }
+    }
+    return out;
+  };
+  return walk(nodes);
+}
+
+export type MergeBookmarkPresetId =
+  | "file_parent_with_children"
+  | "file_only"
+  | "flat_original";
+
+function fileDisplayStem(path: string): string {
+  const base = path.split(/[\\/]/).pop() ?? path;
+  return base.replace(/\.pdf$/i, "") || base;
+}
+
+function remapSourceBookmarksToOutput(
+  nodes: BookmarkNode[],
+  sourcePageToOutputIdx: ReadonlyMap<number, number>,
+): BookmarkNode[] {
+  const out: BookmarkNode[] = [];
+  for (const node of nodes) {
+    const children =
+      node.children.length > 0
+        ? remapSourceBookmarksToOutput(node.children, sourcePageToOutputIdx)
+        : [];
+    const mapped = sourcePageToOutputIdx.get(node.target_page_index);
+    if (mapped !== undefined) {
+      out.push({
+        title: node.title,
+        target_page_index: mapped,
+        children,
+      });
+    } else if (children.length > 0) {
+      out.push({
+        title: node.title,
+        target_page_index: children[0].target_page_index,
+        children,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Tạo cây bookmark theo preset cho công cụ Merge PDF dựa trên danh sách file,
+ * thứ tự file đang chọn và danh sách trang đầu ra `selections`.
+ */
+export function buildMergeBookmarkPreset(
+  preset: MergeBookmarkPresetId,
+  files: PdfInfo[],
+  mergeFileOrder: number[],
+  selections: PageSelection[],
+): BookmarkNode[] {
+  if (files.length === 0 || selections.length === 0) return [];
+
+  const firstOutputByFile = new Map<number, number>();
+  const pageMapByFile = new Map<number, Map<number, number>>();
+  const seenFileOrderFromSelections: number[] = [];
+
+  selections.forEach((sel, outIdx) => {
+    if (!firstOutputByFile.has(sel.file_index)) {
+      firstOutputByFile.set(sel.file_index, outIdx);
+      seenFileOrderFromSelections.push(sel.file_index);
+    }
+    let pageMap = pageMapByFile.get(sel.file_index);
+    if (!pageMap) {
+      pageMap = new Map<number, number>();
+      pageMapByFile.set(sel.file_index, pageMap);
+    }
+    if (!pageMap.has(sel.page_index)) {
+      pageMap.set(sel.page_index, outIdx);
+    }
+  });
+
+  const orderedFileIndices: number[] = [];
+  const addedFiles = new Set<number>();
+  for (const fIdx of mergeFileOrder) {
+    if (firstOutputByFile.has(fIdx) && !addedFiles.has(fIdx)) {
+      orderedFileIndices.push(fIdx);
+      addedFiles.add(fIdx);
+    }
+  }
+  for (const fIdx of seenFileOrderFromSelections) {
+    if (!addedFiles.has(fIdx)) {
+      orderedFileIndices.push(fIdx);
+      addedFiles.add(fIdx);
+    }
+  }
+
+  const out: BookmarkNode[] = [];
+  for (const fIdx of orderedFileIndices) {
+    const info = files[fIdx];
+    const firstOut = firstOutputByFile.get(fIdx);
+    if (!info || firstOut === undefined) continue;
+    const title = fileDisplayStem(info.path);
+    const pageMap = pageMapByFile.get(fIdx) ?? new Map<number, number>();
+
+    if (preset === "file_only") {
+      out.push({
+        title,
+        target_page_index: firstOut,
+        children: [],
+      });
+      continue;
+    }
+
+    const remappedChildren = remapSourceBookmarksToOutput(info.bookmarks, pageMap);
+    if (preset === "file_parent_with_children") {
+      out.push({
+        title,
+        target_page_index: firstOut,
+        children: remappedChildren,
+      });
+    } else {
+      if (remappedChildren.length > 0) {
+        out.push(...remappedChildren);
+      } else {
+        out.push({
+          title,
+          target_page_index: firstOut,
+          children: [],
+        });
+      }
+    }
+  }
+  return out;
+}
+
+export type ImageBookmarkPresetId = "by_parent_folder" | "per_page" | "clear";
+
+/**
+ * Tạo cây bookmark theo preset cho công cụ Image → PDF.
+ */
+export function buildImageBookmarkPreset(
+  preset: ImageBookmarkPresetId,
+  pages: PageDraft[],
+): BookmarkNode[] {
+  if (preset === "clear" || pages.length === 0) return [];
+  if (preset === "per_page") {
+    return pages.map((p, idx) => ({
+      title: p.label.replace(/\.[^.]+$/, "") || p.label,
+      target_page_index: idx,
+      children: [],
+    }));
+  }
+
+  const out: BookmarkNode[] = [];
+  let prevFolder: string | null = null;
+  pages.forEach((p, idx) => {
+    const parts = p.source.path.split(/[\\/]/).filter(Boolean);
+    const folderName =
+      parts.length >= 2 ? parts[parts.length - 2] : p.label.replace(/\.[^.]+$/, "") || p.label;
+    if (folderName !== prevFolder) {
+      out.push({
+        title: folderName,
+        target_page_index: idx,
+        children: [],
+      });
+      prevFolder = folderName;
+    }
+  });
+  return out;
 }

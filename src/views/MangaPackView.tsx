@@ -664,7 +664,7 @@ const StoryCard: React.FC<StoryCardProps> = ({
       <div>
         <div
           style={{ height: `${liveTreeHeightPx}px` }}
-          className="overflow-y-auto rounded-[4px] border border-[#E9ECEF] bg-[#F8F9FA] p-2"
+          className="overscroll-contain overflow-y-auto rounded-[4px] border border-[#E9ECEF] bg-[#F8F9FA] p-2"
         >
           <FolderTree
             rootName={st.dir_name}

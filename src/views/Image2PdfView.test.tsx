@@ -230,21 +230,21 @@ describe("Image2PdfView functional automation (Layer 2)", () => {
     // Delete first page (p1, part of Chap 1): Chap 1 stays at idx 0 (now p2), Chap 2 shifts 2 -> 1
     fireEvent.click(screen.getAllByTitle("Xóa trang")[0]);
     expect(screen.getByText("Xuất PDF (3 trang)")).toBeTruthy();
-    expect(screen.getByText("Chap 1")).toBeTruthy();
-    expect(screen.getByText("Chap 2")).toBeTruthy();
+    expect(screen.getAllByText("Chap 1").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Chap 2").length).toBeGreaterThan(0);
 
     // Delete p2 (last remaining page of Chap 1): Chap 1 is dropped cleanly, Chap 2 shifts to idx 0
     fireEvent.click(screen.getAllByTitle("Xóa trang")[0]);
     expect(screen.getByText("Xuất PDF (2 trang)")).toBeTruthy();
     expect(screen.queryByText("Chap 1")).toBeNull();
-    expect(screen.getByText("Chap 2")).toBeTruthy();
+    expect(screen.getAllByText("Chap 2").length).toBeGreaterThan(0);
 
     // Undo twice via Ctrl+Z -> restores all 4 pages and both Chap 1 & Chap 2
     fireEvent.keyDown(window, { key: "z", ctrlKey: true });
     fireEvent.keyDown(window, { key: "z", ctrlKey: true });
     expect(screen.getByText("Xuất PDF (4 trang)")).toBeTruthy();
-    expect(screen.getByText("Chap 1")).toBeTruthy();
-    expect(screen.getByText("Chap 2")).toBeTruthy();
+    expect(screen.getAllByText("Chap 1").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Chap 2").length).toBeGreaterThan(0);
   });
 
   it("TC-ST-04: preflight checkMissingFiles blocks export, marks missing card badge, and proceeds once fixed", async () => {
@@ -371,12 +371,17 @@ describe("Image2PdfView functional automation (Layer 2)", () => {
       "p4",
     ]);
 
-    // Alt+Click on card p3 attaches bookmark "3" at page index 3
+    // Alt+Click on card p3 attaches bookmark "3" at page index 3 (page 4)
     const card3 = firstCtx.container.querySelector('[data-page-id="p3"]') as HTMLElement;
     act(() => {
       card3.dispatchEvent(makePointer("pointerdown", { altKey: true }));
     });
-    expect((screen.getByDisplayValue("3") as HTMLInputElement).value).toBe("3");
+    const bmTitles = Array.from(
+      firstCtx.container.querySelectorAll('[data-bookmark-title="true"]'),
+    ).map((el) => el.textContent);
+    expect(bmTitles).toContain("3");
+    const pageSpinbuttons = screen.getAllByRole("spinbutton", { name: "Trang" }) as HTMLInputElement[];
+    expect(pageSpinbuttons.some((el) => el.value === "4")).toBe(true);
 
     // Review 1.17 Item 2: Only ONE "Auto-update bookmarks when deleting pages" checkbox should exist
     expect(

@@ -1,5 +1,5 @@
 import React from "react";
-import { AlertTriangle, CheckCircle2, FileCode2, FileOutput, RefreshCw } from "lucide-react";
+import { AlertTriangle, CheckCircle2, FileCode2, FileOutput, RefreshCw, Trash2 } from "lucide-react";
 import { Dropzone } from "../components/Dropzone";
 import { ErrorBanner } from "../components/ErrorBanner";
 import {
@@ -668,6 +668,23 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
     }
   };
 
+  const handleClearDoc = () => {
+    setErrorMsg(null);
+    setSaveFeedback(null);
+    setManualLangLocked(false);
+    setInputPath(null);
+    setEditorText("");
+    setSavedText("");
+    setEditorLanguage("markdown");
+    setPreviewPdfBytes(null);
+    setPreviewTotalPages(0);
+    setPreviewError(null);
+    setMissingLinks([]);
+    setOfficeSourceBytes(null);
+    setExportFilename("document.pdf");
+    setPickingClickPoint(false);
+  };
+
   const handleSaveText = async (saveAs: boolean) => {
     setErrorMsg(null);
     setSaveFeedback(null);
@@ -824,12 +841,14 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
 
   const controlsCluster = (
     <>
-      <Dropzone
-        title={t.docs2pdf.dropTitle}
-        description={t.docs2pdf.dropDesc}
-        onPickFiles={() => void handlePickDoc()}
-        filesLabel={t.docs2pdf.pickDocBtn}
-      />
+      {!inputPath && (
+        <Dropzone
+          title={t.docs2pdf.dropTitle}
+          description={t.docs2pdf.dropDesc}
+          onPickFiles={() => void handlePickDoc()}
+          filesLabel={t.docs2pdf.pickDocBtn}
+        />
+      )}
 
       {inputPath && (
         <div
@@ -1031,15 +1050,39 @@ export const Docs2PdfView: React.FC<Docs2PdfViewProps> = ({
         title={t.docs2pdf.title}
         subtitle={t.docs2pdf.subtitle}
         actions={
-          <button
-            type="button"
-            disabled={!canConvert || busy || (isOfficeFile && engineStatus?.libreoffice_available === false)}
-            onClick={() => void handleConvert()}
-            className="knit-control knit-btn-primary inline-flex items-center gap-1.5 px-4 text-sm disabled:opacity-50"
-          >
-            <FileOutput className="h-4 w-4" />
-            {t.docs2pdf.convertBtn}
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            {inputPath && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => void handlePickDoc()}
+                  disabled={busy}
+                  className="knit-control knit-btn-secondary inline-flex items-center gap-1.5 px-3 text-sm disabled:opacity-50"
+                >
+                  <FileCode2 className="h-4 w-4 text-[#007BFF]" />
+                  {t.docs2pdf.changeDocBtn}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleClearDoc}
+                  disabled={busy}
+                  className="knit-control knit-btn-secondary inline-flex items-center gap-1.5 px-3 text-sm disabled:opacity-50"
+                >
+                  <Trash2 className="h-4 w-4 text-[#DC3545]" />
+                  {t.docs2pdf.clearBtn}
+                </button>
+              </>
+            )}
+            <button
+              type="button"
+              disabled={!canConvert || busy || (isOfficeFile && engineStatus?.libreoffice_available === false)}
+              onClick={() => void handleConvert()}
+              className="knit-control knit-btn-primary inline-flex items-center gap-1.5 px-4 text-sm disabled:opacity-50"
+            >
+              <FileOutput className="h-4 w-4" />
+              {t.docs2pdf.convertBtn}
+            </button>
+          </div>
         }
       />
 

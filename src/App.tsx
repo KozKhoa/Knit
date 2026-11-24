@@ -25,6 +25,7 @@ import type {
 } from "./types/ipc";
 import { ArchiveView } from "./views/ArchiveView";
 import { Docs2PdfView } from "./views/Docs2PdfView";
+import { Pdf2MdView } from "./views/Pdf2MdView";
 import { Image2PdfView, type DroppedBatch } from "./views/Image2PdfView";
 import { MangaPackView } from "./views/MangaPackView";
 import { PdfOpsView } from "./views/PdfOpsView";
@@ -281,6 +282,14 @@ const AppInner: React.FC = () => {
         </div>
         <div className={activeTool === "docs2pdf" ? "block" : "hidden"}>
           <Docs2PdfView {...sharedProps} droppedBatch={dropFor("docs2pdf")} />
+        </div>
+        <div className={activeTool === "pdf2md" ? "block" : "hidden"}>
+          <Pdf2MdView
+            {...sharedProps}
+            droppedBatch={dropFor("pdf2md")}
+            isActive={activeTool === "pdf2md"}
+            onOpenSettings={() => setActiveTool("settings")}
+          />
         </div>
         <div className={activeTool === "archive" ? "block" : "hidden"}>
           <ArchiveView {...sharedProps} droppedBatch={dropFor("archive")} />

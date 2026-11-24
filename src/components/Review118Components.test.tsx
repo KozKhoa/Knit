@@ -205,13 +205,18 @@ describe("Review 1.18 items", () => {
     expect(controlsCol.className).toContain("min-[1200px]:order-2");
     expect(controlsCol.className).toContain("min-[1200px]:col-span-5");
     expect(previewCol.textContent).toContain("Xem trước PDF trực tiếp");
-    expect(controlsCol.textContent).toContain("Chọn hoặc kéo thả tài liệu");
+    expect(controlsCol.textContent).toContain("/books/novel.epub");
+    expect(screen.queryByText("Chọn hoặc kéo thả tài liệu")).toBeNull();
+    expect(screen.getByRole("button", { name: /Đổi tài liệu/i })).toBeTruthy();
 
     const settingsCard = screen.getByTestId("docs2pdf-settings-card");
     const mainGrid = screen.getByTestId("docs2pdf-settings-main-grid");
     expect(settingsCard.className).toContain("@container");
     expect(mainGrid.className).toContain("@[380px]:grid-cols-2");
     expect(mainGrid.className).not.toContain("xl:grid-cols-8");
+
+    fireEvent.click(screen.getByRole("button", { name: /Đóng tệp/i }));
+    expect(screen.getByRole("button", { name: "Chọn tài liệu" })).toBeTruthy();
   });
 
   it("Item 7 (Review 1.18 #8): ExportSuccessToast path and Open Folder button use rem classes to scale with app font size", () => {

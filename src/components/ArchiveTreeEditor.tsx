@@ -419,7 +419,7 @@ export const ArchiveTreeEditor: React.FC<ArchiveTreeEditorProps> = React.memo(
             <div
               ref={scrollRef}
               style={{ height: `${liveHeightPx}px` }}
-              className="overflow-y-auto pr-1"
+              className="overscroll-contain overflow-y-auto pr-1"
             >
               <div
                 style={{

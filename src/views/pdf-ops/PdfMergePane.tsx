@@ -1,6 +1,9 @@
 import React from "react";
-import { GripVertical, PanelRightClose, PanelRightOpen } from "lucide-react";
-import { BookmarkTreeEditor } from "../../components/BookmarkTreeEditor";
+import { GripVertical, PanelRightClose, PanelRightOpen, Undo2 } from "lucide-react";
+import {
+  BookmarkTreeEditor,
+  type BookmarkPresetOption,
+} from "../../components/BookmarkTreeEditor";
 import { CardSizeSelector } from "../../components/CardSizeSelector";
 import { GridColumnSelector } from "../../components/GridColumnSelector";
 import { PaneResizeHandle } from "../../components/PaneResizeHandle";
@@ -34,6 +37,10 @@ interface PdfMergePaneProps {
   onChangeMergeCardSize: (size: CardSizePreset) => void;
   onToggleShowBookmarks: () => void;
   onChangeBookmarks: (next: BookmarkNode[]) => void;
+  bookmarkPresets?: BookmarkPresetOption[];
+  onApplyBookmarkPreset?: (presetId: string) => BookmarkNode[] | void;
+  mergeUndoCount?: number;
+  onMergeUndo?: () => void;
   onReorderSelection: (fromIdx: number, toIdx: number) => void;
   onReorderFileOrder: (fromOrderIdx: number, toOrderIdx: number) => void;
   onRotatePage: (idx: number) => void;
@@ -68,6 +75,10 @@ export const PdfMergePane: React.FC<PdfMergePaneProps> = ({
   onChangeMergeCardSize,
   onToggleShowBookmarks,
   onChangeBookmarks,
+  bookmarkPresets,
+  onApplyBookmarkPreset,
+  mergeUndoCount = 0,
+  onMergeUndo,
   onReorderSelection,
   onReorderFileOrder,
   onRotatePage,
@@ -356,6 +367,19 @@ export const PdfMergePane: React.FC<PdfMergePaneProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {onMergeUndo && (
+              <button
+                type="button"
+                data-testid="merge-undo-btn"
+                disabled={mergeUndoCount === 0}
+                onClick={onMergeUndo}
+                title={t.pdfOps.mergeUndoTooltip}
+                className="knit-control-sm knit-btn-secondary inline-flex items-center gap-1.5 px-2.5 text-xs disabled:opacity-40"
+              >
+                <Undo2 className="h-3.5 w-3.5 text-[#007BFF]" />
+                <span>{t.pdfOps.mergeUndoBtn}</span>
+              </button>
+            )}
             <CardSizeSelector value={mergeCardSize} onChange={onChangeMergeCardSize} />
             <GridColumnSelector
               label={t.pdfOps.gridColumnsLabel}
@@ -557,7 +581,9 @@ export const PdfMergePane: React.FC<PdfMergePaneProps> = ({
                 nodes={mergeBookmarks}
                 totalPages={selections.length}
                 disabled={bookmarksDisabled}
-                enableGlobalUndoShortcut={true}
+                enableGlobalUndoShortcut={false}
+                presets={bookmarkPresets}
+                onApplyPreset={onApplyBookmarkPreset}
                 onChange={onChangeBookmarks}
               />
             </div>

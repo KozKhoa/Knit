@@ -2,6 +2,7 @@ export type ToolId =
   | "image2pdf"
   | "pdf-ops"
   | "docs2pdf"
+  | "pdf2md"
   | "archive"
   | "manga-pack"
   | "renamer"
@@ -162,6 +163,8 @@ export interface PdfMergeConfig {
 export interface PdfSplitGroup {
   name: string;
   pages: PageSelection[];
+  preserve_bookmarks?: boolean;
+  custom_bookmarks?: BookmarkNode[] | null;
 }
 
 export type PdfSplitRule =
@@ -451,6 +454,58 @@ export interface UserPreset {
   title: string;
   description: string;
   rule: RenameRule;
+}
+
+// --- knit-docs PDF -> Markdown & Gemini Assistant ---
+export type Pdf2MdLoadMode = "full" | "md_only" | "direct_export";
+
+export interface PdfToMdOptions {
+  extract_images: boolean;
+  include_page_markers: boolean;
+}
+
+export interface PdfPageMarkdown {
+  page_index: number;
+  markdown: string;
+  word_count: number;
+  image_count: number;
+  is_likely_scanned: boolean;
+}
+
+export interface PdfToMdInspectResult {
+  source_path: string;
+  page_count: number;
+  file_size_bytes: number;
+  outlines: BookmarkNode[];
+  scanned_page_indices: number[];
+  is_scanned_document: boolean;
+  extracted_image_count: number;
+  markdown: string;
+  pages: PdfPageMarkdown[];
+}
+
+export interface PdfToMdExportResult {
+  output_path: string;
+  asset_dir: string | null;
+  written_image_count: number;
+  bytes_written: number;
+  page_count: number;
+}
+
+export interface GeminiKeyStatus {
+  configured: boolean;
+  masked_key: string | null;
+  storage_backend: string;
+  model: string;
+}
+
+export interface GeminiRefineDocumentResult {
+  markdown: string;
+  model: string;
+  total_chunks: number;
+  refined_chunks: number;
+  fallback_chunks: number;
+  warnings: string[];
 }
 
 export interface RenameExecutionResult {

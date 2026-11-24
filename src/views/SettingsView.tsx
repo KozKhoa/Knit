@@ -10,6 +10,22 @@ import {
   Settings2,
   Type,
 } from "lucide-react";
+import {
+  AlertTriangle as GeminiAlertIcon,
+  CheckCircle2 as GeminiCheckIcon,
+  KeyRound as GeminiKeyIcon,
+  Loader2 as GeminiLoaderIcon,
+  ShieldCheck as GeminiShieldIcon,
+  Sparkles as GeminiSparklesIcon,
+  Trash2 as GeminiTrashIcon,
+} from "lucide-react";
+import {
+  clearGeminiKey,
+  getGeminiKeyStatus,
+  saveGeminiKey,
+  testGeminiKey,
+} from "../lib/ipc";
+import type { GeminiKeyStatus } from "../types/ipc";
 import { NumberInput } from "../components/NumberInput";
 import { Slider } from "../components/Slider";
 import { ViewHeader } from "../components/ViewHeader";
@@ -39,6 +55,209 @@ const FONT_FAMILIES: { id: AppFontFamily; previewStyle: string }[] = [
 ];
 
 const SIZE_PRESETS = [14, 15, 16, 18, 20];
+
+const GeminiAssistantSettingsCard: React.FC = () => {
+  const { t } = useI18n();
+  const [status, setStatus] = React.useState<GeminiKeyStatus | null>(null);
+  const [apiKeyInput, setApiKeyInput] = React.useState("");
+  const [saving, setSaving] = React.useState(false);
+  const [testing, setTesting] = React.useState(false);
+  const [feedback, setFeedback] = React.useState<{
+    kind: "success" | "error";
+    text: string;
+  } | null>(null);
+
+  React.useEffect(() => {
+    let active = true;
+    void getGeminiKeyStatus()
+      .then((res) => {
+        if (active) setStatus(res);
+      })
+      .catch(() => {
+        // Bỏ qua trong môi trường non-Tauri
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const handleSave = async () => {
+    if (!apiKeyInput.trim() || saving || testing) return;
+    setSaving(true);
+    setFeedback(null);
+    try {
+      const next = await saveGeminiKey(apiKeyInput.trim());
+      setStatus(next);
+      setApiKeyInput("");
+      setFeedback({ kind: "success", text: t.settings.aiSavedStatus });
+    } catch (err) {
+      setFeedback({
+        kind: "error",
+        text: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleTest = async () => {
+    if (saving || testing) return;
+    setTesting(true);
+    setFeedback(null);
+    try {
+      const candidate = apiKeyInput.trim() || null;
+      const res = await testGeminiKey(candidate);
+      setFeedback({ kind: "success", text: t.settings.aiTestSuccess(res.model) });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setFeedback({ kind: "error", text: t.settings.aiTestError(msg) });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const handleClear = async () => {
+    if (saving || testing) return;
+    setSaving(true);
+    setFeedback(null);
+    try {
+      const next = await clearGeminiKey();
+      setStatus(next);
+      setApiKeyInput("");
+      setFeedback({ kind: "success", text: t.settings.aiClearedStatus });
+    } catch (err) {
+      setFeedback({
+        kind: "error",
+        text: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const storageText =
+    status?.storage_backend === "keychain"
+      ? t.settings.aiStorageKeychain
+      : status?.storage_backend === "config_file"
+        ? t.settings.aiStorageConfig
+        : t.settings.aiStorageNone;
+
+  return (
+    <div data-testid="settings-gemini-card" className="knit-card space-y-3 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h2 className="flex items-center gap-2 text-base font-bold text-[#212529]">
+            <GeminiSparklesIcon className="h-4 w-4 text-[#007BFF]" />
+            {t.settings.aiHeading}
+          </h2>
+          <p className="mt-0.5 text-xs text-[#6C757D]">{t.settings.aiDesc}</p>
+        </div>
+
+        <span
+          className={`inline-flex items-center gap-1 rounded-[4px] border px-2.5 py-0.5 text-xs font-semibold ${
+            status?.configured
+              ? "border-[#C3E6CB] bg-[#D4EDDA] text-[#155724]"
+              : "border-[#DEE2E6] bg-[#F8F9FA] text-[#6C757D]"
+          }`}
+        >
+          {status?.configured ? (
+            <>
+              <GeminiCheckIcon className="h-3.5 w-3.5 shrink-0" />
+              {t.settings.aiStatusConfigured(status.masked_key ?? "••••")}
+            </>
+          ) : (
+            t.settings.aiStatusUnconfigured
+          )}
+        </span>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative min-w-[240px] flex-1">
+          <GeminiKeyIcon className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-[#6C757D]" />
+          <input
+            type="password"
+            data-testid="settings-gemini-key-input"
+            value={apiKeyInput}
+            onChange={(e) => setApiKeyInput(e.target.value)}
+            placeholder={t.settings.aiKeyPlaceholder}
+            autoComplete="off"
+            className="knit-control-sm w-full rounded-[4px] border border-[#CED4DA] bg-white pr-3 pl-8 font-mono-code text-xs text-[#212529] focus:border-[#007BFF] focus:outline-none"
+          />
+        </div>
+
+        <button
+          type="button"
+          data-testid="settings-gemini-save-btn"
+          disabled={!apiKeyInput.trim() || saving || testing}
+          onClick={() => void handleSave()}
+          className="knit-control-sm knit-btn-primary inline-flex items-center gap-1.5 px-3 text-xs font-semibold disabled:opacity-50"
+        >
+          {saving ? <GeminiLoaderIcon className="h-3.5 w-3.5 animate-spin" /> : null}
+          {saving ? t.settings.aiSaving : t.settings.aiSaveBtn}
+        </button>
+
+        <button
+          type="button"
+          data-testid="settings-gemini-test-btn"
+          disabled={(!apiKeyInput.trim() && !status?.configured) || saving || testing}
+          onClick={() => void handleTest()}
+          className="knit-control-sm knit-btn-secondary inline-flex items-center gap-1.5 px-3 text-xs font-semibold disabled:opacity-50"
+        >
+          {testing ? <GeminiLoaderIcon className="h-3.5 w-3.5 animate-spin text-[#007BFF]" /> : null}
+          {testing ? t.settings.aiTesting : t.settings.aiTestBtn}
+        </button>
+
+        {status?.configured && (
+          <button
+            type="button"
+            data-testid="settings-gemini-clear-btn"
+            disabled={saving || testing}
+            onClick={() => void handleClear()}
+            className="knit-control-sm inline-flex items-center gap-1 rounded-[4px] border border-[#CED4DA] bg-white px-2.5 text-xs font-semibold text-[#DC3545] hover:bg-[#FFF5F5] disabled:opacity-50"
+          >
+            <GeminiTrashIcon className="h-3.5 w-3.5" />
+            {t.settings.aiClearBtn}
+          </button>
+        )}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-4 text-xs text-[#6C757D]">
+        <span>
+          {t.settings.aiModelLabel}{" "}
+          <strong className="font-mono-code text-[#343A40]">
+            {status?.model ?? "gemini-2.5-flash"}
+          </strong>
+        </span>
+        <span>
+          {t.settings.aiStorageLabel}{" "}
+          <strong className="text-[#343A40]">{storageText}</strong>
+        </span>
+      </div>
+
+      <div className="flex items-start gap-1.5 rounded-[4px] border border-[#DEE2E6] bg-[#F8F9FA] px-3 py-2 text-xs text-[#495057]">
+        <GeminiShieldIcon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#007BFF]" />
+        <span>{t.settings.aiPrivacyNote}</span>
+      </div>
+
+      {feedback && (
+        <div
+          className={`flex items-center gap-1.5 rounded-[4px] border px-3 py-1.5 text-xs ${
+            feedback.kind === "success"
+              ? "border-[#C3E6CB] bg-[#D4EDDA] text-[#155724]"
+              : "border-[#F5C6CB] bg-[#F8D7DA] text-[#721C24]"
+          }`}
+        >
+          {feedback.kind === "success" ? (
+            <GeminiCheckIcon className="h-3.5 w-3.5 shrink-0" />
+          ) : (
+            <GeminiAlertIcon className="h-3.5 w-3.5 shrink-0" />
+          )}
+          <span>{feedback.text}</span>
+        </div>
+      )}
+    </div>
+  );
+};
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
   fontFamily,
@@ -385,6 +604,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
         )}
       </section>
+
+      <GeminiAssistantSettingsCard />
 
       {/* Typography Preview */}
       <section className="rounded-[4px] border border-[#DEE2E6] bg-white p-4 space-y-2">

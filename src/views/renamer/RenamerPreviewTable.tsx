@@ -176,7 +176,7 @@ export const RenamerPreviewTable: React.FC<RenamerPreviewTableProps> = ({
           ref={scrollContainerRef}
           onScroll={(e) => onScrollTopChange(e.currentTarget.scrollTop)}
           style={{ height: `${livePreviewHeightPx}px` }}
-          className="overflow-auto"
+          className="overscroll-contain overflow-auto"
         >
           <table className="w-full table-fixed border-separate border-spacing-0 text-left text-sm">
             <colgroup>

@@ -1,17 +1,22 @@
 import { describe, expect, it } from "vitest";
-import type { BookmarkNode } from "../types/ipc";
+import type { BookmarkNode, PageDraft, PageSelection, PdfInfo } from "../types/ipc";
 import {
   addChildBookmarkAtPath,
   bookmarkPathKey,
+  buildImageBookmarkPreset,
+  buildMergeBookmarkPreset,
   buildPageBookmarkMap,
+  collectBookmarkNodesAtPaths,
   collectParentBookmarkKeys,
   deleteBookmarkAtPath,
   deleteBookmarkNodesAtPaths,
   flattenVisibleBookmarks,
+  insertBookmarkNodesAt,
   moveBookmarkNode,
   moveBookmarkNodesWithSelection,
   pruneNestedBookmarkPaths,
   remapBookmarksAfterPageRemoval,
+  removeBookmarksAtPage,
   updateBookmarkAtPath,
   validateBookmarks,
 } from "./bookmarks";
@@ -192,5 +197,139 @@ describe("bookmarks helpers", () => {
     // Batch delete [A, C] -> [B, D]
     const afterDelete = deleteBookmarkNodesAtPaths(tree, [[0], [0, 0], [2]]);
     expect(afterDelete.map((n) => n.title)).toEqual(["B", "D"]);
+  });
+
+  it("collects, clones, inserts after path or at root head/tail, and removes bookmarks by page", () => {
+    const tree: BookmarkNode[] = [
+      {
+        title: "Ch 1",
+        target_page_index: 0,
+        children: [{ title: "Ch 1.1", target_page_index: 1, children: [] }],
+      },
+      { title: "Ch 2", target_page_index: 2, children: [] },
+    ];
+
+    const copied = collectBookmarkNodesAtPaths(tree, [[0], [0, 0]]);
+    expect(copied).toHaveLength(1);
+    expect(copied[0].title).toBe("Ch 1");
+    expect(copied[0].children).toHaveLength(1);
+
+    // Paste after Ch 1 ([0]) -> inserts at [1]
+    const pastedAfter = insertBookmarkNodesAt(tree, copied, [0]);
+    expect(pastedAfter.nodes.map((n) => n.title)).toEqual(["Ch 1", "Ch 1", "Ch 2"]);
+    expect(pastedAfter.insertedPaths).toEqual([[1]]);
+
+    // Prepend at root when no target path
+    const prepended = insertBookmarkNodesAt(tree, [{ title: "Intro", target_page_index: 0, children: [] }], null, true);
+    expect(prepended.nodes.map((n) => n.title)).toEqual(["Intro", "Ch 1", "Ch 2"]);
+
+    // Remove bookmarks at page 0 promotes Ch 1.1 (page 1)
+    const afterRemoveP0 = removeBookmarksAtPage(tree, 0);
+    expect(afterRemoveP0).toEqual([
+      { title: "Ch 1.1", target_page_index: 1, children: [] },
+      { title: "Ch 2", target_page_index: 2, children: [] },
+    ]);
+
+    // Tree guide line metadata
+    const flat = flattenVisibleBookmarks(tree, new Set());
+    expect(flat.map((r) => ({ title: r.node.title, last: r.isLastSibling, anc: r.ancestorHasNextSibling }))).toEqual([
+      { title: "Ch 1", last: false, anc: [] },
+      { title: "Ch 1.1", last: true, anc: [true] },
+      { title: "Ch 2", last: true, anc: [] },
+    ]);
+  });
+
+  it("builds merge bookmark presets and image bookmark presets", () => {
+    const files: PdfInfo[] = [
+      {
+        path: "/tmp/Vol1.pdf",
+        page_count: 2,
+        file_size_bytes: 100,
+        bookmarks: [{ title: "Intro", target_page_index: 0, children: [] }],
+      },
+      {
+        path: "/tmp/Vol2.pdf",
+        page_count: 2,
+        file_size_bytes: 100,
+        bookmarks: [{ title: "Chapter A", target_page_index: 1, children: [] }],
+      },
+    ];
+    const selections: PageSelection[] = [
+      { file_index: 1, page_index: 0, rotation_deg: 0 },
+      { file_index: 1, page_index: 1, rotation_deg: 0 },
+      { file_index: 0, page_index: 0, rotation_deg: 0 },
+    ];
+
+    const parentPreset = buildMergeBookmarkPreset("file_parent_with_children", files, [1, 0], selections);
+    expect(parentPreset).toEqual([
+      {
+        title: "Vol2",
+        target_page_index: 0,
+        children: [{ title: "Chapter A", target_page_index: 1, children: [] }],
+      },
+      {
+        title: "Vol1",
+        target_page_index: 2,
+        children: [{ title: "Intro", target_page_index: 2, children: [] }],
+      },
+    ]);
+
+    const fileOnly = buildMergeBookmarkPreset("file_only", files, [1, 0], selections);
+    expect(fileOnly.map((n) => ({ t: n.title, p: n.target_page_index, c: n.children.length }))).toEqual([
+      { t: "Vol2", p: 0, c: 0 },
+      { t: "Vol1", p: 2, c: 0 },
+    ]);
+
+    const flatOrig = buildMergeBookmarkPreset("flat_original", files, [1, 0], selections);
+    expect(flatOrig.map((n) => ({ t: n.title, p: n.target_page_index }))).toEqual([
+      { t: "Chapter A", p: 1 },
+      { t: "Intro", p: 2 },
+    ]);
+
+    const pages: PageDraft[] = [
+      {
+        id: "1",
+        source: { kind: "image_file", path: "/manga/Ch01/001.png" },
+        rotation_deg: 0,
+        crop: null,
+        annotations: { texts: [], strokes: [] },
+        duration_ms: null,
+        label: "001.png",
+        width_px: 100,
+        height_px: 100,
+      },
+      {
+        id: "2",
+        source: { kind: "image_file", path: "/manga/Ch01/002.png" },
+        rotation_deg: 0,
+        crop: null,
+        annotations: { texts: [], strokes: [] },
+        duration_ms: null,
+        label: "002.png",
+        width_px: 100,
+        height_px: 100,
+      },
+      {
+        id: "3",
+        source: { kind: "image_file", path: "/manga/Ch02/001.png" },
+        rotation_deg: 0,
+        crop: null,
+        annotations: { texts: [], strokes: [] },
+        duration_ms: null,
+        label: "001.png",
+        width_px: 100,
+        height_px: 100,
+      },
+    ];
+    expect(buildImageBookmarkPreset("by_parent_folder", pages)).toEqual([
+      { title: "Ch01", target_page_index: 0, children: [] },
+      { title: "Ch02", target_page_index: 2, children: [] },
+    ]);
+    expect(buildImageBookmarkPreset("per_page", pages).map((n) => n.title)).toEqual([
+      "001",
+      "002",
+      "001",
+    ]);
+    expect(buildImageBookmarkPreset("clear", pages)).toEqual([]);
   });
 });

@@ -28,6 +28,7 @@ interface PdfSplitPaneProps {
   thumbs: Record<string, string>;
   thumbsRef: React.MutableRefObject<Record<string, string>>;
   splitRuleKind: "page_ranges" | "every_n_pages" | "max_bytes";
+  splitBookmarkPolicy: "keep_original" | "section_root" | "none";
   rangesStr: string;
   everyN: number;
   splitMaxMb: number;
@@ -44,6 +45,7 @@ interface PdfSplitPaneProps {
   displayedSplitSourceItems: { fileIndex: number; pageIndex: number }[];
   totalSplitSourcePages: number;
   onChangeSplitRuleKind: (kind: "page_ranges" | "every_n_pages" | "max_bytes") => void;
+  onChangeSplitBookmarkPolicy: (policy: "keep_original" | "section_root" | "none") => void;
   onChangeRangesStr: (val: string) => void;
   onChangeEveryN: (val: number) => void;
   onChangeSplitMaxMb: (val: number) => void;
@@ -95,6 +97,7 @@ export const PdfSplitPane: React.FC<PdfSplitPaneProps> = ({
   thumbs,
   thumbsRef,
   splitRuleKind,
+  splitBookmarkPolicy,
   rangesStr,
   everyN,
   splitMaxMb,
@@ -111,6 +114,7 @@ export const PdfSplitPane: React.FC<PdfSplitPaneProps> = ({
   displayedSplitSourceItems,
   totalSplitSourcePages,
   onChangeSplitRuleKind,
+  onChangeSplitBookmarkPolicy,
   onChangeRangesStr,
   onChangeEveryN,
   onChangeSplitMaxMb,
@@ -860,21 +864,42 @@ export const PdfSplitPane: React.FC<PdfSplitPaneProps> = ({
         )}
 
         {splitRuleKind !== "max_bytes" && (
-          <button
-            type="button"
-            disabled={isPopulatingSections}
-            onClick={onPopulateSectionsFromRule}
-            className="knit-control knit-btn-secondary inline-flex items-center gap-1.5 px-3 text-sm disabled:opacity-60"
-          >
-            {isPopulatingSections ? (
-              <Loader2 className="h-4 w-4 animate-spin text-[#007BFF]" />
-            ) : (
-              <Wand2 className="h-4 w-4 text-[#007BFF]" />
-            )}
-            {isPopulatingSections
-              ? t.pdfOps.populatingSectionsBtn
-              : t.pdfOps.generateSectionsBtn}
-          </button>
+          <>
+            <div className="min-w-[210px]">
+              <label className="block text-xs font-semibold uppercase text-[#6C757D]">
+                {t.pdfOps.splitBookmarkPolicyLabel}
+              </label>
+              <Select
+                ariaLabel={t.pdfOps.splitBookmarkPolicyLabel}
+                value={splitBookmarkPolicy}
+                disabled={isPopulatingSections}
+                onChange={(val) =>
+                  onChangeSplitBookmarkPolicy(val as "keep_original" | "section_root" | "none")
+                }
+                options={[
+                  { value: "keep_original", label: t.pdfOps.splitBookmarkKeepOriginal },
+                  { value: "section_root", label: t.pdfOps.splitBookmarkSectionRoot },
+                  { value: "none", label: t.pdfOps.splitBookmarkNone },
+                ]}
+                className="mt-1 w-full"
+              />
+            </div>
+            <button
+              type="button"
+              disabled={isPopulatingSections}
+              onClick={onPopulateSectionsFromRule}
+              className="knit-control knit-btn-secondary inline-flex items-center gap-1.5 px-3 text-sm disabled:opacity-60"
+            >
+              {isPopulatingSections ? (
+                <Loader2 className="h-4 w-4 animate-spin text-[#007BFF]" />
+              ) : (
+                <Wand2 className="h-4 w-4 text-[#007BFF]" />
+              )}
+              {isPopulatingSections
+                ? t.pdfOps.populatingSectionsBtn
+                : t.pdfOps.generateSectionsBtn}
+            </button>
+          </>
         )}
       </div>
 
@@ -989,7 +1014,7 @@ export const PdfSplitPane: React.FC<PdfSplitPaneProps> = ({
           <div
             ref={splitSourceScrollRef}
             style={{ height: `${liveSourceHeightPx}px` }}
-            className={`overflow-y-auto p-3.5 ${isResizingWidth ? "pointer-events-none" : ""}`}
+            className={`overscroll-contain overflow-y-auto p-3.5 ${isResizingWidth ? "pointer-events-none" : ""}`}
           >
             <div
               ref={splitSourceGridOuterRef}
@@ -1064,7 +1089,7 @@ export const PdfSplitPane: React.FC<PdfSplitPaneProps> = ({
           <div
             ref={splitSectionsScrollRef}
             style={{ height: `${liveSectionsHeightPx}px` }}
-            className={`overflow-y-auto p-3.5 ${isResizingWidth ? "pointer-events-none" : ""}`}
+            className={`overscroll-contain overflow-y-auto p-3.5 ${isResizingWidth ? "pointer-events-none" : ""}`}
           >
             <div
               style={{

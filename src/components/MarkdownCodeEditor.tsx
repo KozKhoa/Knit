@@ -294,7 +294,7 @@ export function collectSyntaxDiagnostics(
   lang: EditorLanguage,
   state?: EditorState,
 ): Diagnostic[] {
-  if (!docText.trim() || lang === "plain_text") return [];
+  if (!docText.trim() || lang === "plain_text" || docText.length > 300_000) return [];
 
   if (lang === "markdown") {
     return collectMarkdownDiagnostics(docText);
@@ -400,6 +400,8 @@ export interface MarkdownCodeEditorHandle {
   setSearchHighlights: (ranges: SourceRange[], activeIndex: number | null) => void;
   getScrollRatio: () => number;
   setScrollRatio: (ratio: number) => void;
+  getSelectedText: () => { from: number; to: number; text: string } | null;
+  replaceRange: (from: number, to: number, replacement: string) => void;
 }
 
 interface MarkdownCodeEditorProps {
@@ -465,6 +467,9 @@ const vsCodeLightHighlight = HighlightStyle.define([
 const editorBaseTheme = EditorView.theme({
   "&": {
     height: "100%",
+    minHeight: "100%",
+    display: "flex",
+    flexDirection: "column",
     backgroundColor: "#FFFFFF",
     color: "#212529",
     fontSize: "0.875rem",
@@ -473,11 +478,17 @@ const editorBaseTheme = EditorView.theme({
     outline: "none",
   },
   ".cm-scroller": {
+    flex: "1 1 auto",
+    minHeight: "0",
+    height: "100%",
     overflow: "auto",
+    alignItems: "stretch",
     fontFamily: "var(--knit-font-mono)",
     lineHeight: "1.6",
   },
   ".cm-content": {
+    minHeight: "100%",
+    flexGrow: "1",
     padding: "10px 0",
     caretColor: "#007BFF",
   },
@@ -485,6 +496,7 @@ const editorBaseTheme = EditorView.theme({
     padding: "0 12px",
   },
   ".cm-gutters": {
+    minHeight: "100%",
     backgroundColor: "#F8F9FA",
     color: "#868E96",
     borderRight: "1px solid #DEE2E6",
@@ -617,6 +629,30 @@ export const MarkdownCodeEditor = React.forwardRef<
           if (maxScroll > 0) {
             scroller.scrollTop = Math.min(1, Math.max(0, ratio)) * maxScroll;
           }
+        },
+        getSelectedText: () => {
+          const view = viewRef.current;
+          if (!view) return null;
+          const sel = view.state.selection.main;
+          if (sel.from >= sel.to) return null;
+          return {
+            from: sel.from,
+            to: sel.to,
+            text: view.state.sliceDoc(sel.from, sel.to),
+          };
+        },
+        replaceRange: (from: number, to: number, replacement: string) => {
+          const view = viewRef.current;
+          if (!view) return;
+          const max = view.state.doc.length;
+          const safeFrom = Math.max(0, Math.min(from, max));
+          const safeTo = Math.max(safeFrom, Math.min(to, max));
+          view.dispatch({
+            changes: { from: safeFrom, to: safeTo, insert: replacement },
+            selection: { anchor: safeFrom, head: safeFrom + replacement.length },
+            effects: EditorView.scrollIntoView(safeFrom, { y: "center" }),
+          });
+          view.focus();
         },
       }),
       [],

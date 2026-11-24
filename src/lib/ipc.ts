@@ -12,6 +12,8 @@ import type {
   DocConvertResult,
   DocInputKind,
   EngineStatus,
+  GeminiKeyStatus,
+  GeminiRefineDocumentResult,
   Image2PdfConfig,
   ImageScanResult,
   JobEvent,
@@ -24,6 +26,9 @@ import type {
   PdfInfo,
   PdfMergeConfig,
   PdfSplitRule,
+  PdfToMdExportResult,
+  PdfToMdInspectResult,
+  PdfToMdOptions,
   RenameExecutionResult,
   RenamePlan,
   RenameRule,
@@ -258,6 +263,23 @@ export async function readPdfFileBytes(path: string): Promise<Uint8Array> {
   return new Uint8Array(buf);
 }
 
+let cachedHomeDir: string | null | undefined;
+
+export async function getHomeDir(): Promise<string | null> {
+  if (cachedHomeDir !== undefined) return cachedHomeDir;
+  if (!isTauriRuntime()) {
+    cachedHomeDir = null;
+    return null;
+  }
+  try {
+    const res = await invoke<string | null>("get_home_dir");
+    cachedHomeDir = res ?? null;
+  } catch {
+    cachedHomeDir = null;
+  }
+  return cachedHomeDir;
+}
+
 export async function releasePdfCachedFiles(paths: string[]): Promise<void> {
   if (!isTauriRuntime()) return;
   await invoke("pdf_release_cached_files", { paths });
@@ -277,6 +299,97 @@ export async function buildImage2Pdf(
     config,
     onEvent: makeChannel(onEvent),
   });
+}
+
+// --- PDF to Markdown & Gemini Assistant ---
+export async function inspectAndExtractPdfToMd(
+  jobId: string,
+  path: string,
+  options: PdfToMdOptions,
+  onEvent?: (ev: JobEvent) => void,
+  forceReextract = false,
+): Promise<PdfToMdInspectResult> {
+  return await invoke("pdf2md_inspect_and_extract", {
+    jobId,
+    path,
+    options,
+    forceReextract,
+    onEvent: makeChannel(onEvent),
+  });
+}
+
+export async function exportPdfToMd(
+  jobId: string,
+  sourcePdfPath: string,
+  outputMdPath: string,
+  markdown: string,
+  extractImages: boolean,
+  onEvent?: (ev: JobEvent) => void,
+  imagePageIndices?: number[],
+): Promise<PdfToMdExportResult> {
+  return await invoke("pdf2md_export", {
+    jobId,
+    sourcePdfPath,
+    outputMdPath,
+    markdown,
+    extractImages,
+    imagePageIndices: imagePageIndices ?? null,
+    onEvent: makeChannel(onEvent),
+  });
+}
+
+export async function convertPdfFileToMd(
+  jobId: string,
+  sourcePdfPath: string,
+  outputMdPath: string,
+  options: PdfToMdOptions,
+  onEvent?: (ev: JobEvent) => void,
+): Promise<PdfToMdExportResult> {
+  return await invoke("pdf2md_convert_file", {
+    jobId,
+    sourcePdfPath,
+    outputMdPath,
+    options,
+    onEvent: makeChannel(onEvent),
+  });
+}
+
+export async function refinePdfMdWithGemini(
+  jobId: string,
+  markdown: string,
+  instruction?: string | null,
+  onEvent?: (ev: JobEvent) => void,
+): Promise<GeminiRefineDocumentResult> {
+  return await invoke("pdf2md_gemini_refine", {
+    jobId,
+    markdown,
+    instruction: instruction ?? null,
+    onEvent: makeChannel(onEvent),
+  });
+}
+
+export async function getGeminiKeyStatus(): Promise<GeminiKeyStatus> {
+  if (!isTauriRuntime()) {
+    return {
+      configured: false,
+      masked_key: null,
+      storage_backend: "none",
+      model: "gemini-2.5-flash",
+    };
+  }
+  return await invoke("gemini_get_key_status");
+}
+
+export async function saveGeminiKey(apiKey: string): Promise<GeminiKeyStatus> {
+  return await invoke("gemini_save_key", { apiKey });
+}
+
+export async function clearGeminiKey(): Promise<GeminiKeyStatus> {
+  return await invoke("gemini_clear_key");
+}
+
+export async function testGeminiKey(apiKey?: string | null): Promise<GeminiKeyStatus> {
+  return await invoke("gemini_test_key", { apiKey: apiKey ?? null });
 }
 
 // --- PDF Merge / Split ---

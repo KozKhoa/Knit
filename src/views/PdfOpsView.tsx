@@ -2,6 +2,7 @@ import React from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { FilePlus, Layers, Scissors } from "lucide-react";
 import { ConfirmModal } from "../components/ConfirmModal";
+import type { BookmarkPresetOption } from "../components/BookmarkTreeEditor";
 import { Dropzone } from "../components/Dropzone";
 import { ErrorBanner } from "../components/ErrorBanner";
 import {
@@ -40,6 +41,13 @@ import {
   resolveUniqueNonActiveExportPath,
   useExportFilenameCheck,
 } from "../lib/exportPath";
+import {
+  buildMergeBookmarkPreset,
+  buildPageBookmarkMap,
+  cloneBookmarkNodes,
+  removeBookmarksAtPage,
+  type MergeBookmarkPresetId,
+} from "../lib/bookmarks";
 import type { CardSizePreset } from "../lib/imageGrid";
 import { estimatePdfMergeOutput, estimatePdfSplitOutput } from "../lib/sizeEstimate";
 import { usePersistentState } from "../lib/storage";
@@ -189,6 +197,9 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
   const [splitRuleKind, setSplitRuleKind] = usePersistentState<
     "page_ranges" | "every_n_pages" | "max_bytes"
   >("knit.pdfops.splitRuleKind", "every_n_pages");
+  const [splitBookmarkPolicy, setSplitBookmarkPolicy] = usePersistentState<
+    "keep_original" | "section_root" | "none"
+  >("knit.pdfops.splitBookmarkPolicy", "keep_original");
   const [rangesStr, setRangesStr] = usePersistentState<string>("knit.pdfops.rangesStr", "1-2");
   const [everyN, setEveryN] = usePersistentState<number>("knit.pdfops.everyN", 2);
   const [splitMaxMb, setSplitMaxMb] = usePersistentState<number>("knit.pdfops.splitMaxMb", 20);
@@ -216,9 +227,74 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
   filesRef.current = files;
   const selectionsRef = React.useRef(selections);
   selectionsRef.current = selections;
+  const mergeFileOrderRef = React.useRef(mergeFileOrder);
+  mergeFileOrderRef.current = mergeFileOrder;
+  const mergeBookmarksRef = React.useRef(mergeBookmarks);
+  mergeBookmarksRef.current = mergeBookmarks;
+  const mergeModeRef = React.useRef(mergeMode);
+  mergeModeRef.current = mergeMode;
+  const tabRef = React.useRef(tab);
+  tabRef.current = tab;
   const splitSectionsRef = React.useRef(splitSections);
   splitSectionsRef.current = splitSections;
   const lastHandledDropSeq = React.useRef<number>(0);
+
+  type MergeUndoSnapshot = {
+    files: PdfInfo[];
+    mergeFileOrder: number[];
+    selections: PageSelection[];
+    mergeBookmarks: BookmarkNode[];
+    mergeMode: PdfMergeMode;
+  };
+  const mergeUndoStackRef = React.useRef<MergeUndoSnapshot[]>([]);
+  const [mergeUndoCount, setMergeUndoCount] = React.useState(0);
+
+  const pushMergeUndoSnapshot = React.useCallback(() => {
+    const stack = mergeUndoStackRef.current;
+    stack.push({
+      files: [...filesRef.current],
+      mergeFileOrder: [...mergeFileOrderRef.current],
+      selections: selectionsRef.current.map((s) => ({ ...s })),
+      mergeBookmarks: cloneBookmarkNodes(mergeBookmarksRef.current),
+      mergeMode: mergeModeRef.current,
+    });
+    if (stack.length > 50) stack.shift();
+    setMergeUndoCount(stack.length);
+  }, []);
+
+  const handleMergeUndo = React.useCallback(() => {
+    const prev = mergeUndoStackRef.current.pop();
+    if (!prev) return;
+    setMergeUndoCount(mergeUndoStackRef.current.length);
+    setFiles(prev.files);
+    setMergeFileOrder(prev.mergeFileOrder);
+    setSelections(prev.selections);
+    setMergeBookmarks(prev.mergeBookmarks);
+    setMergeMode(prev.mergeMode);
+  }, [setMergeMode]);
+
+  React.useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (tabRef.current !== "merge") return;
+      if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.key.toLowerCase() !== "z") return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable ||
+          target.closest("[data-bookmark-editor='true']"))
+      ) {
+        return;
+      }
+      if (mergeUndoStackRef.current.length === 0) return;
+      e.preventDefault();
+      handleMergeUndo();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [handleMergeUndo]);
 
   const thumbQueue = useThumbnailQueue({
     enabled: isTauriRuntime(),
@@ -438,18 +514,24 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
     [mergeFileOrder, files],
   );
 
-  const reorderMergeSelection = React.useCallback((fromIdx: number, toIdx: number) => {
-    if (fromIdx === toIdx) return;
-    setSelections((prev) => {
-      if (fromIdx < 0 || toIdx < 0 || fromIdx >= prev.length || toIdx >= prev.length) {
-        return prev;
-      }
-      const copy = [...prev];
-      const [item] = copy.splice(fromIdx, 1);
-      copy.splice(toIdx, 0, item);
-      return copy;
-    });
-  }, []);
+  const reorderMergeSelection = React.useCallback(
+    (fromIdx: number, toIdx: number) => {
+      if (fromIdx === toIdx) return;
+      const prevLen = selectionsRef.current.length;
+      if (fromIdx < 0 || toIdx < 0 || fromIdx >= prevLen || toIdx >= prevLen) return;
+      pushMergeUndoSnapshot();
+      setSelections((prev) => {
+        if (fromIdx < 0 || toIdx < 0 || fromIdx >= prev.length || toIdx >= prev.length) {
+          return prev;
+        }
+        const copy = [...prev];
+        const [item] = copy.splice(fromIdx, 1);
+        copy.splice(toIdx, 0, item);
+        return copy;
+      });
+    },
+    [pushMergeUndoSnapshot],
+  );
 
   const reorderMergeFileOrder = React.useCallback(
     (fromOrderIdx: number, toOrderIdx: number) => {
@@ -467,12 +549,13 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
       ) {
         return;
       }
+      pushMergeUndoSnapshot();
       const [moved] = base.splice(fromOrderIdx, 1);
       base.splice(toOrderIdx, 0, moved);
       setMergeFileOrder(base);
       setSelections(buildSelectionsFromFileOrder(base, currentFiles));
     },
-    [mergeFileOrder],
+    [mergeFileOrder, pushMergeUndoSnapshot],
   );
 
   const handleChangeMergeMode = React.useCallback(
@@ -495,29 +578,40 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
   );
 
   const confirmResetToPerFileMode = React.useCallback(() => {
+    pushMergeUndoSnapshot();
     const defaultOrder = filesRef.current.map((_, idx) => idx);
     setMergeFileOrder(defaultOrder);
     setSelections(buildSelectionsFromFileOrder(defaultOrder, filesRef.current));
     setMergeMode("per_file");
     setPendingMergeModeReset(false);
-  }, [setMergeMode]);
+  }, [pushMergeUndoSnapshot, setMergeMode]);
 
-  const handleRotateMergePageBy = React.useCallback((idx: number, deltaDeg: number) => {
-    setSelections((prev) =>
-      prev.map((s, i) =>
-        i === idx ? { ...s, rotation_deg: (s.rotation_deg + deltaDeg + 360) % 360 } : s,
-      ),
-    );
-  }, []);
+  const handleRotateMergePageBy = React.useCallback(
+    (idx: number, deltaDeg: number) => {
+      if (idx < 0 || idx >= selectionsRef.current.length) return;
+      pushMergeUndoSnapshot();
+      setSelections((prev) =>
+        prev.map((s, i) =>
+          i === idx ? { ...s, rotation_deg: (s.rotation_deg + deltaDeg + 360) % 360 } : s,
+        ),
+      );
+    },
+    [pushMergeUndoSnapshot],
+  );
 
   const handleRotateMergePage = React.useCallback(
     (idx: number) => handleRotateMergePageBy(idx, 90),
     [handleRotateMergePageBy],
   );
 
-  const handleRemoveMergePage = React.useCallback((idx: number) => {
-    setSelections((prev) => prev.filter((_, i) => i !== idx));
-  }, []);
+  const handleRemoveMergePage = React.useCallback(
+    (idx: number) => {
+      if (idx < 0 || idx >= selectionsRef.current.length) return;
+      pushMergeUndoSnapshot();
+      setSelections((prev) => prev.filter((_, i) => i !== idx));
+    },
+    [pushMergeUndoSnapshot],
+  );
 
   const handleAttachMergeBookmark = React.useCallback(
     (idx: number, filePath: string, sourcePageIndex: number) => {
@@ -535,6 +629,35 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
       ]);
     },
     [setPreserveBookmarks, setShowMergeBookmarks],
+  );
+
+  const handleRemoveMergeBookmark = React.useCallback((outputPageIndex: number) => {
+    setMergeBookmarks((prev) => removeBookmarksAtPage(prev, outputPageIndex));
+  }, []);
+
+  const mergeBookmarkPresets = React.useMemo<BookmarkPresetOption[]>(
+    () => [
+      { id: "file_parent_with_children", label: t.pdfOps.mergePresetFileWithChildren },
+      { id: "file_only", label: t.pdfOps.mergePresetFileOnly },
+      { id: "flat_original", label: t.pdfOps.mergePresetFlatOriginal },
+    ],
+    [t.pdfOps],
+  );
+
+  const handleApplyMergeBookmarkPreset = React.useCallback(
+    (presetId: string) => {
+      const order =
+        mergeFileOrderRef.current.length === filesRef.current.length
+          ? mergeFileOrderRef.current
+          : filesRef.current.map((_, idx) => idx);
+      return buildMergeBookmarkPreset(
+        presetId as MergeBookmarkPresetId,
+        filesRef.current,
+        order,
+        selectionsRef.current,
+      );
+    },
+    [],
   );
 
   const handleCopyPdfPath = React.useCallback(
@@ -598,6 +721,7 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
       if (!sel) return;
       const srcPath = filesRef.current[sel.file_index]?.path ?? "";
       if (!srcPath) return;
+      const bmMap = buildPageBookmarkMap(mergeBookmarksRef.current);
       setContextMenu({
         mode: "merge",
         idx,
@@ -605,6 +729,7 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
         pageIndex: sel.page_index,
         rotationDeg: sel.rotation_deg,
         filePath: srcPath,
+        hasBookmark: bmMap.has(idx),
         x: e.clientX,
         y: e.clientY,
       });
@@ -700,12 +825,21 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
     (e: React.MouseEvent<HTMLDivElement>, fileIndex: number) => {
       const src = filesRef.current[fileIndex];
       if (!src) return;
+      const order =
+        mergeFileOrderRef.current.length === filesRef.current.length
+          ? mergeFileOrderRef.current
+          : filesRef.current.map((_, i) => i);
+      const fileOrderIdx = Math.max(0, order.indexOf(fileIndex));
+      const firstSelIdx = selectionsRef.current.findIndex((s) => s.file_index === fileIndex);
+      const targetPageIdx = firstSelIdx >= 0 ? firstSelIdx : 0;
+      const bmMap = buildPageBookmarkMap(mergeBookmarksRef.current);
       setContextMenu({
-        mode: "split",
+        mode: "merge_file",
         fileIndex,
-        pageIndex: 0,
-        rotationDeg: 0,
+        fileOrderIdx,
+        targetPageIdx,
         filePath: src.path,
+        hasBookmark: bmMap.has(targetPageIdx),
         x: e.clientX,
         y: e.clientY,
       });
@@ -717,6 +851,7 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
     const removeIdx = pendingRemoveFileIdx;
     setPendingRemoveFileIdx(null);
     if (removeIdx === null || removeIdx < 0 || removeIdx >= files.length) return;
+    pushMergeUndoSnapshot();
     const removedPath = files[removeIdx]?.path;
 
     const oldIndexToNewIndex = new Map<number, number>();
@@ -1178,14 +1313,24 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
       const rule: PdfSplitRule = useCustomGroups
         ? {
             rule: "custom_groups",
-            groups: nonEmptySections.map((sec) => ({
-              name: sec.name.trim() || fallbackStem,
-              pages: sec.pages.map((p) => ({
-                file_index: p.file_index,
-                page_index: p.page_index,
-                rotation_deg: p.rotation_deg,
-              })),
-            })),
+            groups: nonEmptySections.map((sec) => {
+              const secName = sec.name.trim() || fallbackStem;
+              return {
+                name: secName,
+                pages: sec.pages.map((p) => ({
+                  file_index: p.file_index,
+                  page_index: p.page_index,
+                  rotation_deg: p.rotation_deg,
+                })),
+                preserve_bookmarks: splitBookmarkPolicy !== "none",
+                custom_bookmarks:
+                  splitBookmarkPolicy === "section_root"
+                    ? [{ title: secName, target_page_index: 0, children: [] }]
+                    : splitBookmarkPolicy === "none"
+                      ? []
+                      : null,
+              };
+            }),
           }
         : splitRuleKind === "page_ranges"
           ? { rule: "page_ranges", ranges: rangesStr }
@@ -1417,6 +1562,10 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
         onChangeMergeCardSize={setMergeCardSize}
         onToggleShowBookmarks={() => setShowMergeBookmarks((v) => !v)}
         onChangeBookmarks={setMergeBookmarks}
+        bookmarkPresets={mergeBookmarkPresets}
+        onApplyBookmarkPreset={handleApplyMergeBookmarkPreset}
+        mergeUndoCount={mergeUndoCount}
+        onMergeUndo={handleMergeUndo}
         onReorderSelection={reorderMergeSelection}
         onReorderFileOrder={reorderMergeFileOrder}
         onRotatePage={handleRotateMergePage}
@@ -1438,6 +1587,7 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
         thumbs={thumbQueue.thumbs}
         thumbsRef={thumbQueue.thumbsRef}
         splitRuleKind={splitRuleKind}
+        splitBookmarkPolicy={splitBookmarkPolicy}
         rangesStr={rangesStr}
         everyN={everyN}
         splitMaxMb={splitMaxMb}
@@ -1454,6 +1604,7 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
         displayedSplitSourceItems={displayedSplitSourceItems}
         totalSplitSourcePages={totalSplitSourcePages}
         onChangeSplitRuleKind={setSplitRuleKind}
+        onChangeSplitBookmarkPolicy={setSplitBookmarkPolicy}
         onChangeRangesStr={setRangesStr}
         onChangeEveryN={setEveryN}
         onChangeSplitMaxMb={setSplitMaxMb}
@@ -1515,6 +1666,11 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
         onRotateSplitItemBy={handleRotateSectionItemBy}
         onDeleteSplitItem={handleRemoveSectionItem}
         onAttachBookmark={handleAttachMergeBookmark}
+        onRemoveBookmark={handleRemoveMergeBookmark}
+        onPreviewFile={(fileIndex) => {
+          const src = filesRef.current[fileIndex];
+          if (src) setPreviewFileTarget(src);
+        }}
         onZoom={openZoomModal}
         onCopyPath={(p) => void handleCopyPdfPath(p)}
       />
@@ -1569,6 +1725,8 @@ export const PdfOpsView: React.FC<PdfOpsViewProps> = ({
           setMergeFileOrder([]);
           setSelections([]);
           setMergeBookmarks([]);
+          mergeUndoStackRef.current = [];
+          setMergeUndoCount(0);
           setSplitSections([]);
           setSplitSourceFilterIdx("all");
           void clearImagePreviewCache();
