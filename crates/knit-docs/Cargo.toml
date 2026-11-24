@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 knit-core = { path = "../knit-core" }
+knit-pdf = { path = "../knit-pdf" }
 serde.workspace = true
 serde_json.workspace = true
 base64.workspace = true

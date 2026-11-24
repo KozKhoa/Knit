@@ -1,10 +1,18 @@
 pub mod cdp;
+pub mod gemini;
 pub mod html_epub;
 pub mod markdown;
 pub mod models;
 pub mod office;
+pub mod pdf_to_md;
 pub mod world;
 
+pub use gemini::{
+    clear_gemini_key, get_gemini_key_status, mask_api_key, redact_api_key,
+    refine_markdown_with_gemini, refine_markdown_with_gemini_using, save_gemini_key,
+    split_markdown_into_page_chunks, test_gemini_connection, validate_refined_markdown_sanity,
+    GeminiKeyStatus, GeminiRefineDocumentResult, MarkdownChunk, DEFAULT_GEMINI_MODEL,
+};
 pub use html_epub::{
     clear_epub_cache, compile_epub_to_pdf_bytes, convert_epub_to_pdf, html_fragment_to_typst,
     html_to_typst,
@@ -20,6 +28,13 @@ pub use models::{
 pub use office::{
     clear_office_cache, compile_html_via_browser_to_pdf_bytes, compile_office_to_pdf_bytes,
     convert_office_to_pdf, detect_chromium_browser, detect_libreoffice,
+};
+pub use pdf_to_md::{
+    clear_pdf_to_md_cache, convert_pdf_to_markdown_file, count_page_markers,
+    derive_assets_dir_name, derive_package_dir_name, evict_pdf_to_md_cache_paths,
+    export_pdf_markdown_to_path, export_pdf_markdown_to_path_with_pages,
+    inspect_and_extract_pdf_to_markdown, inspect_and_extract_pdf_to_markdown_cached,
+    PdfPageMarkdown, PdfToMdExportResult, PdfToMdInspectResult, PdfToMdOptions,
 };
 pub use world::{
     compile_typst_to_pdf, compile_typst_to_pdf_with_toc,

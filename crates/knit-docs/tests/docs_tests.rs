@@ -841,3 +841,361 @@ fn missing_markdown_image_and_folder_links_render_not_found_placeholder_and_repo
     assert!(pages >= 1);
     assert!(pdf_bytes.starts_with(b"%PDF-"));
 }
+
+#[test]
+fn pdf_to_md_extracts_vietnamese_tables_lists_and_embedded_images() {
+    let dir = tempfile::tempdir().unwrap();
+    let img_path = dir.path().join("sample.png");
+    let img = image::RgbImage::from_pixel(64, 48, image::Rgb([30, 120, 200]));
+    img.save(&img_path).unwrap();
+
+    let source_md = "\
+# Tổng quan dự án
+
+Tài liệu tiếng Việt có dấu: ă, â, đ, ê, ô, ơ, ư và dấu thanh đầy đủ.
+
+- Mục kiểm thử thứ nhất
+- Mục kiểm thử thứ hai
+
+| Thành phần | Vai trò |
+| --- | --- |
+| knit-pdf | Trích xuất bố cục |
+| knit-docs | Tái cấu trúc Markdown |
+
+![Hình minh họa](sample.png)
+";
+    let (pdf_bytes, compiled_pages) = compile_text_to_pdf_bytes(
+        source_md,
+        DocInputKind::Markdown,
+        Some(dir.path()),
+        &DocConvertOptions::default(),
+    )
+    .expect("Typst must compile digital Vietnamese PDF");
+    assert!(compiled_pages >= 1);
+
+    let pdf_path = dir.path().join("input_doc.pdf");
+    std::fs::write(&pdf_path, &pdf_bytes).unwrap();
+
+    let inspected = knit_docs::inspect_and_extract_pdf_to_markdown(
+        &pdf_path,
+        &knit_docs::PdfToMdOptions::default(),
+        &CancellationToken::new(),
+        None,
+    )
+    .expect("PDF to Markdown extraction must succeed");
+
+    assert_eq!(inspected.page_count, compiled_pages);
+    assert!(!inspected.is_scanned_document);
+    assert!(inspected.scanned_page_indices.is_empty());
+    assert!(inspected.markdown.contains("<!-- page: 1 -->"));
+    assert!(inspected.markdown.contains("Tổng quan dự án"));
+    assert!(inspected.markdown.contains("Tiếng Việt") || inspected.markdown.contains("tiếng Việt"));
+    assert!(inspected.markdown.contains("knit-pdf"));
+    assert!(inspected.markdown.contains("knit-docs"));
+    assert!(inspected.extracted_image_count >= 1);
+    assert!(inspected
+        .markdown
+        .contains("input_doc_assets/page_001_img_01.png"));
+
+    let export_md_path = dir.path().join("export_custom.md");
+    let exported = knit_docs::export_pdf_markdown_to_path(
+        &pdf_path,
+        &export_md_path,
+        &inspected.markdown,
+        true,
+        &CancellationToken::new(),
+        None,
+    )
+    .expect("Exporting .md and assets must succeed");
+
+    let packaged_md_path = dir.path().join("export_custom").join("export_custom.md");
+    assert_eq!(exported.output_path, packaged_md_path);
+    assert!(packaged_md_path.exists());
+    let written_md = std::fs::read_to_string(&packaged_md_path).unwrap();
+    assert!(written_md.contains("export_custom_assets/page_001_img_01.png"));
+    let asset_dir = exported.asset_dir.expect("Asset directory must be created");
+    assert_eq!(
+        asset_dir,
+        dir.path().join("export_custom").join("export_custom_assets")
+    );
+    assert!(asset_dir.join("page_001_img_01.png").exists());
+    assert!(exported.written_image_count >= 1);
+
+    let direct_md_path = dir.path().join("direct_out.md");
+    let direct_res = knit_docs::convert_pdf_to_markdown_file(
+        &pdf_path,
+        &direct_md_path,
+        &knit_docs::PdfToMdOptions::default(),
+        &CancellationToken::new(),
+        None,
+    )
+    .expect("Direct one-pass convert_pdf_to_markdown_file must succeed");
+    let packaged_direct_md = dir.path().join("direct_out").join("direct_out.md");
+    assert_eq!(direct_res.output_path, packaged_direct_md);
+    assert!(packaged_direct_md.exists());
+    let direct_md = std::fs::read_to_string(&packaged_direct_md).unwrap();
+    assert!(direct_md.contains("Tổng quan dự án"));
+    assert!(direct_md.contains("direct_out_assets/page_001_img_01.png"));
+    assert!(direct_res.asset_dir.unwrap().join("page_001_img_01.png").exists());
+
+    let no_img_md_path = dir.path().join("no_img_out.md");
+    let no_img_res = knit_docs::export_pdf_markdown_to_path_with_pages(
+        &pdf_path,
+        &no_img_md_path,
+        &inspected.markdown,
+        true,
+        Some(&[]),
+        &CancellationToken::new(),
+        None,
+    )
+    .expect("export with empty image page list should write .md without re-parsing pages");
+    assert!(no_img_md_path.exists());
+    assert_eq!(no_img_res.written_image_count, 0);
+    assert!(no_img_res.asset_dir.is_none());
+}
+
+#[test]
+fn pdf_to_md_detects_scanned_image_only_pdf() {
+    let dir = tempfile::tempdir().unwrap();
+    let scan_img_path = dir.path().join("scan_page.png");
+    let img = image::RgbImage::from_pixel(300, 420, image::Rgb([220, 220, 220]));
+    img.save(&scan_img_path).unwrap();
+
+    let scanned_pdf = dir.path().join("scanned.pdf");
+    let drafts = vec![knit_pdf::PageDraft {
+        id: "scan-1".into(),
+        source: knit_pdf::PageSource::ImageFile {
+            path: scan_img_path,
+        },
+        rotation_deg: 0,
+        crop: None,
+        annotations: knit_pdf::AnnotationLayer::default(),
+        duration_ms: None,
+        label: "scan_page.png".into(),
+        width_px: 300,
+        height_px: 420,
+        file_size_bytes: 0,
+    }];
+    let cfg = knit_pdf::Image2PdfConfig {
+        output_path: scanned_pdf.clone(),
+        layout: knit_pdf::PageLayoutPolicy::default(),
+        jpeg_quality: 88,
+        lossless_passthrough: true,
+        animated_policy: knit_pdf::AnimatedImagePolicy::default(),
+        export_mode: knit_pdf::PdfExportMode::default(),
+        max_mb: None,
+        max_pages_per_file: None,
+    };
+    knit_pdf::build_pdf_from_drafts(
+        &drafts,
+        &[],
+        &cfg,
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .expect("build_pdf_from_drafts must build image-only PDF");
+
+    let with_imgs = knit_docs::inspect_and_extract_pdf_to_markdown(
+        &scanned_pdf,
+        &knit_docs::PdfToMdOptions {
+            extract_images: true,
+            include_page_markers: true,
+        },
+        &CancellationToken::new(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(with_imgs.page_count, 1);
+    assert!(with_imgs.is_scanned_document);
+    assert_eq!(with_imgs.scanned_page_indices, vec![0]);
+    assert_eq!(with_imgs.extracted_image_count, 1);
+
+    let without_imgs = knit_docs::inspect_and_extract_pdf_to_markdown(
+        &scanned_pdf,
+        &knit_docs::PdfToMdOptions {
+            extract_images: false,
+            include_page_markers: true,
+        },
+        &CancellationToken::new(),
+        None,
+    )
+    .unwrap();
+    assert!(without_imgs.is_scanned_document);
+    assert_eq!(without_imgs.extracted_image_count, 0);
+    assert!(without_imgs.markdown.contains("Scanned page 1"));
+}
+
+#[test]
+fn gemini_chunking_sanity_and_redacted_fallback() {
+    let mut doc = String::new();
+    for p in 1..=7 {
+        doc.push_str(&format!(
+            "<!-- page: {p} -->\n\n# Section {p}\n\nParagraph content for page {p} with enough characters to test chunking cleanly across boundaries.\n\n"
+        ));
+    }
+    let chunks = knit_docs::split_markdown_into_page_chunks(&doc, 3, 20_000);
+    assert_eq!(chunks.len(), 3);
+    assert_eq!(chunks[0].page_count_estimate, 3);
+    assert_eq!(chunks[2].page_count_estimate, 1);
+
+    let fallback_chunks = knit_docs::split_markdown_into_page_chunks("Para A.\n\nPara B.", 4, 20_000);
+    assert_eq!(fallback_chunks.len(), 1);
+
+    let fenced = "```markdown\n# Clean Title\n\nBody text ![img](a_assets/page_001_img_01.png)\n```";
+    let orig = "# Clean Title\n\nBody text ![img](a_assets/page_001_img_01.png)";
+    assert_eq!(
+        knit_docs::validate_refined_markdown_sanity(orig, fenced).unwrap(),
+        orig
+    );
+
+    let long_orig = "This is a moderately long technical paragraph discussing PDF extraction, font baselines, column detection, and Markdown generation in great detail across multiple clauses so that truncation is easily detected.";
+    assert!(knit_docs::validate_refined_markdown_sanity(long_orig, "Too short.").is_err());
+    assert!(knit_docs::validate_refined_markdown_sanity(orig, "# Clean Title\n\nBody text without image").is_err());
+
+    let two_page_doc = "<!-- page: 1 -->\n\nFirst page original text for test.\n\n<!-- page: 2 -->\n\nSecond page fallback test with plenty of words so we can verify fallback preservation cleanly.";
+    let secret = "AIzaSecretTestKey9876543210";
+    let mut call_num = 0usize;
+    let res = knit_docs::refine_markdown_with_gemini_using(
+        two_page_doc,
+        Some("Keep structure"),
+        "gemini-2.5-flash",
+        &CancellationToken::new(),
+        &NoopReporter,
+        |_prompt| {
+            call_num += 1;
+            // Trả về chuỗi quá ngắn (<55%) -> sanity validator giữ nguyên bản offline
+            Ok("Too short.".to_string())
+        },
+        secret,
+    )
+    .unwrap();
+
+    assert_eq!(res.total_chunks, 1);
+    assert_eq!(res.refined_chunks, 0);
+    assert_eq!(res.fallback_chunks, 1);
+    assert!(res.markdown.contains("Second page fallback test"));
+
+    let five_pages = (1..=5)
+        .map(|i| format!("<!-- page: {i} -->\n\nPage {i} text content with enough details to survive checks."))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let mut idx = 0usize;
+    let res_multi = knit_docs::refine_markdown_with_gemini_using(
+        &five_pages,
+        None,
+        "gemini-2.5-flash",
+        &CancellationToken::new(),
+        &NoopReporter,
+        |_prompt| {
+            idx += 1;
+            if idx == 1 {
+                Ok("<!-- page: 1 -->\n\nPage 1 text content refined cleanly with details.\n\n<!-- page: 2 -->\n\nPage 2 text content refined cleanly with details.\n\n<!-- page: 3 -->\n\nPage 3 text content refined cleanly with details.\n\n<!-- page: 4 -->\n\nPage 4 text content refined cleanly with details.".to_string())
+            } else {
+                Err(knit_core::KnitError::Internal(format!("Bad key {secret}")))
+            }
+        },
+        secret,
+    )
+    .unwrap();
+    assert_eq!(res_multi.total_chunks, 2);
+    assert_eq!(res_multi.refined_chunks, 1);
+    assert_eq!(res_multi.fallback_chunks, 1);
+    assert!(res_multi.markdown.contains("Page 1 text content refined cleanly with details."));
+    assert!(res_multi.markdown.contains("Page 5 text content"));
+    assert!(!res_multi.warnings[0].contains(secret));
+}
+
+#[test]
+fn pdf_to_md_preserves_single_column_multi_span_lines_and_toc_leaders_and_caches_options() {
+    let dir = tempfile::tempdir().unwrap();
+    let source_md = "\
+# Tập 1
+
+# Ờ, Nữ thần vô dụng-sama
+
+### Mục lục
+
+Mở đầu ................................................................................................... 10
+
+Chương 1: Nữ thần tự xưng và tái sinh ở thế giới khác! ............... 24
+
+Phần 1 .................................................................................................. 24
+
+### Mở đầu
+
+“Satou Kazuma-san, chào mừng cậu đã đến thế giới sau khi chết. Tuy mới được một lúc nhưng, cậu đã chết, thật không may. Mặc dù rất ngắn ngủi nhưng cuộc sống của cậu đã kết thúc rồi.”
+
+Trong căn phòng màu trắng, tôi đột nhiên nghe được những lời như thế.
+";
+    let (pdf_bytes, _) = compile_text_to_pdf_bytes(
+        source_md,
+        DocInputKind::Markdown,
+        None,
+        &DocConvertOptions::default(),
+    )
+    .expect("Typst must compile single-column Vietnamese novel sample");
+
+    let pdf_path = dir.path().join("novel_sample.pdf");
+    std::fs::write(&pdf_path, &pdf_bytes).unwrap();
+
+    let with_markers = knit_docs::inspect_and_extract_pdf_to_markdown_cached(
+        &pdf_path,
+        &knit_docs::PdfToMdOptions {
+            extract_images: true,
+            include_page_markers: true,
+        },
+        false,
+        &CancellationToken::new(),
+        None,
+    )
+    .unwrap();
+
+    assert!(with_markers.markdown.contains("<!-- page: 1 -->"));
+    assert!(with_markers.markdown.contains("Tập 1"));
+    assert!(with_markers.markdown.contains("Mục lục"));
+    assert!(with_markers.markdown.contains("Mở đầu"));
+    assert!(
+        !with_markers.markdown.contains("# Tậ\n"),
+        "Must not split single-column heading down the middle: {}",
+        with_markers.markdown
+    );
+    assert!(
+        !with_markers.markdown.contains("### Mở\n"),
+        "Must not split 'Mở đầu' across fake columns: {}",
+        with_markers.markdown
+    );
+    assert!(
+        with_markers
+            .markdown
+            .lines()
+            .any(|l| l.starts_with("- ") && l.contains("Mở đầu") && l.contains("10")),
+        "TOC entry should stay on its own list line: {}",
+        with_markers.markdown
+    );
+    assert!(
+        with_markers
+            .markdown
+            .lines()
+            .any(|l| l.starts_with("- ") && l.contains("Chương 1") && l.contains("24")),
+        "Second TOC entry should stay on its own list line: {}",
+        with_markers.markdown
+    );
+
+    // Toggle include_page_markers via cache without re-parsing PDF
+    let without_markers = knit_docs::inspect_and_extract_pdf_to_markdown_cached(
+        &pdf_path,
+        &knit_docs::PdfToMdOptions {
+            extract_images: false,
+            include_page_markers: false,
+        },
+        false,
+        &CancellationToken::new(),
+        None,
+    )
+    .unwrap();
+    assert!(!without_markers.markdown.contains("<!-- page: 1 -->"));
+    assert!(without_markers.markdown.contains("Mở đầu"));
+    assert_eq!(without_markers.extracted_image_count, 0);
+
+    knit_docs::evict_pdf_to_md_cache_paths(std::slice::from_ref(&pdf_path));
+}

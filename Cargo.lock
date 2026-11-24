@@ -3416,6 +3416,7 @@ dependencies = [
  "epub",
  "image",
  "knit-core",
+ "knit-pdf",
  "lopdf",
  "pulldown-cmark",
  "regex",

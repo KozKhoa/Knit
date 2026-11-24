@@ -1,10 +1,15 @@
 pub mod bookmarks;
+pub mod extract;
 pub mod imaging;
 pub mod models;
 pub mod ops;
 pub mod packer;
 
 pub use bookmarks::{read_outlines, remap_tree, write_outlines};
+pub use extract::{
+    extract_pdf_for_markdown, extract_pdf_for_markdown_with_mode, extract_pdf_images_only,
+    PdfExtractedDocument, PdfExtractedImage, PdfExtractedPage, PdfImageExtractMode, PdfTextSpan,
+};
 pub use imaging::{
     apply_edits, expand_drafts_for_animated_policy, inspect_image_dimensions,
     rasterize_annotations, render_image_thumbnail, render_image_thumbnail_jpeg,

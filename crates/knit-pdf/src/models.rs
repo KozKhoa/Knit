@@ -218,6 +218,10 @@ pub struct PdfMergeConfig {
 pub struct PdfSplitGroup {
     pub name: String,
     pub pages: Vec<PageSelection>,
+    #[serde(default)]
+    pub preserve_bookmarks: Option<bool>,
+    #[serde(default)]
+    pub custom_bookmarks: Option<Vec<BookmarkNode>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

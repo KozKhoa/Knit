@@ -31,7 +31,7 @@ struct PdfCacheKey {
     mtime_nanos: u128,
 }
 
-const HAYRO_CACHE_CAP: usize = 4;
+const HAYRO_CACHE_CAP: usize = 2;
 
 fn hayro_pdf_cache() -> &'static Mutex<Vec<(PdfCacheKey, Arc<Pdf>)>> {
     static CACHE: OnceLock<Mutex<Vec<(PdfCacheKey, Arc<Pdf>)>>> = OnceLock::new();
@@ -60,7 +60,7 @@ pub fn evict_pdf_reader_cache_paths(paths: &[PathBuf]) {
     trim_heap_if_supported();
 }
 
-fn load_cached_hayro_pdf(path: &Path) -> Result<Arc<Pdf>> {
+pub(crate) fn load_cached_hayro_pdf(path: &Path) -> Result<Arc<Pdf>> {
     let meta = fs::metadata(path)?;
     let mtime_nanos = meta
         .modified()
@@ -293,7 +293,7 @@ fn decode_hayro_pdf_string(raw: &[u8]) -> String {
     }
 }
 
-fn read_outlines_hayro(pdf: &Pdf) -> Vec<BookmarkNode> {
+pub(crate) fn read_outlines_hayro(pdf: &Pdf) -> Vec<BookmarkNode> {
     let page_map: HashMap<HayroObjId, usize> = pdf
         .pages()
         .iter()
@@ -878,12 +878,13 @@ pub fn split_pdf(
         stem.trim().to_string()
     };
 
-    let groups: Vec<(PathBuf, Vec<(usize, i32)>)> = match rule {
+    let groups: Vec<(PathBuf, Vec<(usize, i32)>, Option<Vec<BookmarkNode>>)> = match rule {
         PdfSplitRule::PageRanges { ranges } => {
             let indices = parse_page_ranges(ranges, total_pages)?;
             vec![(
                 output_dir.join(format!("{safe_stem}_extracted.pdf")),
                 indices.into_iter().map(|i| (i, 0)).collect(),
+                None,
             )]
         }
         PdfSplitRule::ExtractSelected { page_indices } => {
@@ -903,6 +904,7 @@ pub fn split_pdf(
             vec![(
                 output_dir.join(format!("{safe_stem}_selected.pdf")),
                 page_indices.iter().map(|&i| (i, 0)).collect(),
+                None,
             )]
         }
         PdfSplitRule::EveryNPages { n } => {
@@ -914,6 +916,7 @@ pub fn split_pdf(
                 groups.push((
                     output_dir.join(format!("{safe_stem}_part{part:02}.pdf")),
                     (start..end).map(|i| (i, 0)).collect(),
+                    None,
                 ));
                 part += 1;
             }
@@ -966,7 +969,16 @@ pub fn split_pdf(
                 } else {
                     format!("{base_name}_{}", *occ)
                 };
-                resolved_groups.push((output_dir.join(format!("{unique_name}.pdf")), pairs));
+                let override_bookmarks = if g.preserve_bookmarks == Some(false) {
+                    Some(Vec::new())
+                } else {
+                    g.custom_bookmarks.clone()
+                };
+                resolved_groups.push((
+                    output_dir.join(format!("{unique_name}.pdf")),
+                    pairs,
+                    override_bookmarks,
+                ));
             }
             resolved_groups
         }
@@ -977,7 +989,7 @@ pub fn split_pdf(
     let mut total_bytes = 0u64;
     let total_parts = groups.len();
 
-    for (idx, (out_path, page_items)) in groups.into_iter().enumerate() {
+    for (idx, (out_path, page_items, override_bookmarks)) in groups.into_iter().enumerate() {
         if cancel.is_cancelled() {
             return Err(KnitError::Cancelled);
         }
@@ -999,8 +1011,15 @@ pub fn split_pdf(
             bytes_total: 0,
             current_item: format!("Writing part {}/{}", idx + 1, total_parts),
         });
-        let written =
-            stream_subset_pdf_to_path(&mut doc, &all_pages, &bookmarks, &page_items, &out_path, cancel)?;
+        let written = stream_subset_pdf_to_path_with_bookmarks(
+            &mut doc,
+            &all_pages,
+            &bookmarks,
+            &page_items,
+            override_bookmarks.as_deref(),
+            &out_path,
+            cancel,
+        )?;
         total_out_pages += page_items.len();
         total_bytes += written;
         output_files.push(out_path);
@@ -1096,8 +1115,8 @@ pub fn split_multi_pdf(
                     inputs: local_inputs,
                     selected_pages: Some(remapped_pages),
                     output_path: out_path.clone(),
-                    preserve_bookmarks: true,
-                    custom_bookmarks: None,
+                    preserve_bookmarks: g.preserve_bookmarks.unwrap_or(true),
+                    custom_bookmarks: g.custom_bookmarks.clone(),
                 },
                 cancel,
                 reporter,
@@ -1296,13 +1315,30 @@ fn stream_subset_pdf_to_path(
     out_path: &Path,
     cancel: &CancellationToken,
 ) -> Result<u64> {
+    stream_subset_pdf_to_path_with_bookmarks(doc, all_pages, bookmarks, items, None, out_path, cancel)
+}
+
+fn stream_subset_pdf_to_path_with_bookmarks(
+    doc: &mut Document,
+    all_pages: &[ObjectId],
+    bookmarks: &[BookmarkNode],
+    items: &[(usize, i32)],
+    override_bookmarks: Option<&[BookmarkNode]>,
+    out_path: &Path,
+    cancel: &CancellationToken,
+) -> Result<u64> {
     let mut guard = TempFilesGuard::new();
     let tmp_path = part_temp_path(out_path, 1);
     guard.register(tmp_path.clone());
     let mut writer = StreamingPdfWriter::create(&tmp_path)?;
     stream_subset_pdf_with_writer(doc, all_pages, bookmarks, items, &mut writer, cancel)?;
-    let mapped_bookmarks = build_subset_bookmarks(bookmarks, items);
-    let total_bytes = writer.finish(&mapped_bookmarks)?;
+    let total_bytes = match override_bookmarks {
+        Some(custom) => writer.finish(custom)?,
+        None => {
+            let mapped_bookmarks = build_subset_bookmarks(bookmarks, items);
+            writer.finish(&mapped_bookmarks)?
+        }
+    };
     if out_path.exists() {
         let _ = fs::remove_file(out_path);
     }

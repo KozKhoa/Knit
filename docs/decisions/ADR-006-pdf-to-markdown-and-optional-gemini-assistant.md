@@ -1,7 +1,7 @@
 # ADR-006: Kiến trúc Chuyển đổi PDF → Markdown Thuần Rust Kèm Trợ lý Gemini Tùy chọn
 
 ## Status
-Proposed (chờ Technical Spike kiểm chứng trích xuất text/tọa độ tiếng Việt trên `hayro`/`lopdf`)
+Accepted (đã triển khai trong `crates/knit-pdf/src/extract.rs`, `crates/knit-docs/src/pdf_to_md.rs`, `crates/knit-docs/src/gemini.rs`, `src-tauri/src/lib.rs`, `src/views/Pdf2MdView.tsx`, `src/views/SettingsView.tsx`)
 
 ## Date
 2026-11-23
@@ -25,9 +25,9 @@ Người dùng cần bổ sung công cụ **`PDF → Markdown` (`pdf2md`)** tron
    - Áp dụng **Sanity Check & Safe Fallback**: kiểm tra lỗi HTTP, cắt `MAX_TOKENS`, và sụt giảm độ dài bất thường; bất kỳ chunk nào lỗi hoặc nghi ngờ bị AI cắt bớt nội dung sẽ tự động giữ nguyên bản offline của chunk đó kèm cảnh báo, không làm hỏng phần còn lại và cho phép người dùng Undo trong editor.
 
 3. **Lưu trữ & Bảo mật API Key:**
-   - Key chỉ được lưu và sử dụng ở tầng Rust: ưu tiên OS Keychain (`keyring`), có fallback sang file cấu hình riêng trong thư mục OS config với quyền truy cập chỉ dành cho user hiện tại (`0600` trên Linux).
-   - Không lưu key trong `localStorage`, không trả key trần về frontend React, và che/không ghi key vào `JobLog`.
-   - HTTP client sử dụng TLS thuần Rust (`rustls`) để tránh phụ thuộc thư viện OpenSSL hệ thống khi đóng gói `.AppImage` / `.exe`.
+   - Key chỉ được lưu và sử dụng ở tầng Rust: ưu tiên OS Keychain (`secret-tool` trên Linux), có fallback sang file cấu hình riêng tư `ai_assistant.json` trong thư mục OS config với quyền truy cập chỉ dành cho user hiện tại (`0600` trên Unix).
+   - Không lưu key trong `localStorage`, không trả key trần về frontend React, và che/khử key bằng `mask_api_key` / `redact_api_key` trước khi trả thông báo lỗi hay ghi log.
+   - Yêu cầu HTTP tới Gemini API gọi trực tiếp từ tầng Rust thông qua `curl --config -` truyền `x-goog-api-key` và payload file tạm qua `stdin` (`CREATE_NO_WINDOW` trên Windows) để không làm lộ API key trên danh sách đối số tiến trình OS và giữ kích thước binary gọn nhẹ.
 
 ## Alternatives Considered
 

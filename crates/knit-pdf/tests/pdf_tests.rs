@@ -494,6 +494,8 @@ fn split_pdf_custom_groups_supports_reordering_duplication_and_rotation() {
                         knit_pdf::PageSelection { file_index: 0, page_index: 2, rotation_deg: 90 },
                         knit_pdf::PageSelection { file_index: 0, page_index: 0, rotation_deg: 0 },
                     ],
+                    preserve_bookmarks: None,
+                    custom_bookmarks: None,
                 },
                 knit_pdf::PdfSplitGroup {
                     name: "chapter_two".into(),
@@ -501,6 +503,8 @@ fn split_pdf_custom_groups_supports_reordering_duplication_and_rotation() {
                         knit_pdf::PageSelection { file_index: 0, page_index: 0, rotation_deg: 0 },
                         knit_pdf::PageSelection { file_index: 0, page_index: 1, rotation_deg: 180 },
                     ],
+                    preserve_bookmarks: None,
+                    custom_bookmarks: None,
                 },
             ],
         },
@@ -739,10 +743,14 @@ fn split_multi_pdf_handles_cross_file_custom_groups_and_batch_rules() {
                         PageSelection { file_index: 0, page_index: 1, rotation_deg: 90 },
                         PageSelection { file_index: 1, page_index: 0, rotation_deg: 0 },
                     ],
+                    preserve_bookmarks: None,
+                    custom_bookmarks: None,
                 },
                 PdfSplitGroup {
                     name: "only_second".into(),
                     pages: vec![PageSelection { file_index: 1, page_index: 1, rotation_deg: 0 }],
+                    preserve_bookmarks: None,
+                    custom_bookmarks: None,
                 },
             ],
         },
@@ -1716,4 +1724,97 @@ fn merge_deferred_large_streams_and_evict_pdf_cache() {
     assert!(!thumb_0.is_empty());
 
     knit_pdf::evict_pdf_reader_cache_paths(&[pdf_a, pdf_b, merged]);
+}
+
+#[test]
+fn split_custom_groups_supports_custom_and_disabled_bookmarks() {
+    let tmp = tempdir().unwrap();
+    let img_path = tmp.path().join("page.png");
+    make_sample_png(&img_path, 120, 120, [50, 100, 150, 255]);
+
+    let src_pdf = tmp.path().join("src.pdf");
+    let drafts: Vec<PageDraft> = (0..2)
+        .map(|i| PageDraft {
+            id: format!("p{i}"),
+            source: PageSource::ImageFile {
+                path: img_path.clone(),
+            },
+            rotation_deg: 0,
+            crop: None,
+            annotations: AnnotationLayer::default(),
+            duration_ms: None,
+            label: format!("p{i}"),
+            width_px: 120,
+            height_px: 120,
+            file_size_bytes: 0,
+        })
+        .collect();
+    build_pdf_from_drafts(
+        &drafts,
+        &[BookmarkNode {
+            title: "Original BM".into(),
+            target_page_index: 0,
+            children: vec![],
+        }],
+        &Image2PdfConfig {
+            output_path: src_pdf.clone(),
+            layout: PageLayoutPolicy::OriginalSize { dpi: 72.0 },
+            jpeg_quality: 90,
+            lossless_passthrough: true,
+            animated_policy: AnimatedImagePolicy::FirstFrameOnly,
+            export_mode: PdfExportMode::Balanced,
+            max_mb: None,
+            max_pages_per_file: None,
+        },
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+
+    let out_dir = tmp.path().join("split_bm");
+    let res = split_multi_pdf(
+        &[src_pdf.clone()],
+        &["src".into()],
+        &out_dir,
+        &PdfSplitRule::CustomGroups {
+            groups: vec![
+                PdfSplitGroup {
+                    name: "sec_custom".into(),
+                    pages: vec![PageSelection {
+                        file_index: 0,
+                        page_index: 0,
+                        rotation_deg: 0,
+                    }],
+                    preserve_bookmarks: Some(true),
+                    custom_bookmarks: Some(vec![BookmarkNode {
+                        title: "Custom Section Root".into(),
+                        target_page_index: 0,
+                        children: vec![],
+                    }]),
+                },
+                PdfSplitGroup {
+                    name: "sec_none".into(),
+                    pages: vec![PageSelection {
+                        file_index: 0,
+                        page_index: 1,
+                        rotation_deg: 0,
+                    }],
+                    preserve_bookmarks: Some(false),
+                    custom_bookmarks: None,
+                },
+            ],
+        },
+        &CancellationToken::new(),
+        &NoopReporter,
+    )
+    .unwrap();
+
+    let info_custom = inspect_pdf(&res.output_files[0]).unwrap();
+    assert_eq!(info_custom.bookmarks.len(), 1);
+    assert_eq!(info_custom.bookmarks[0].title, "Custom Section Root");
+
+    let info_none = inspect_pdf(&res.output_files[1]).unwrap();
+    assert!(info_none.bookmarks.is_empty());
+
+    knit_pdf::evict_pdf_reader_cache_paths(&[src_pdf]);
 }
