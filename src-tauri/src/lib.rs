@@ -819,7 +819,7 @@ async fn render_pdf_page_preview_file(
     page_index.hash(&mut hasher);
     max_width.hash(&mut hasher);
     let cache_path = thumb_cache_dir().join(format!(
-        "pdf_page_{:016x}_{}_{}.png",
+        "pdf_page_{:016x}_{}_{}.jpg",
         hasher.finish(),
         page_index,
         max_width
@@ -841,7 +841,8 @@ async fn render_pdf_page_preview_file(
         if cache_path.is_file() {
             return Ok(cache_path);
         }
-        let png = render_pdf_thumbnail(&path, page_index, max_width).map_err(|e| e.to_string())?;
+        let jpg = render_pdf_thumbnail_jpeg(&path, page_index, max_width, 84)
+            .map_err(|e| e.to_string())?;
         let tmp_name = format!(
             ".{}.{}.tmp",
             cache_path
@@ -854,7 +855,7 @@ async fn render_pdf_page_preview_file(
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."))
             .join(tmp_name);
-        std::fs::write(&tmp_path, &png).map_err(|e| e.to_string())?;
+        std::fs::write(&tmp_path, &jpg).map_err(|e| e.to_string())?;
         let _ = std::fs::rename(&tmp_path, &cache_path);
         Ok(cache_path)
     })
@@ -895,9 +896,18 @@ async fn read_pdf_file_bytes(path: PathBuf) -> Result<tauri::ipc::Response, Stri
 }
 
 #[tauri::command]
+fn get_home_dir() -> Option<String> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(|s| s.to_string_lossy().into_owned())
+        .filter(|s| !s.trim().is_empty())
+}
+
+#[tauri::command]
 async fn pdf_release_cached_files(paths: Vec<PathBuf>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         evict_pdf_reader_cache_paths(&paths);
+        knit_docs::evict_pdf_to_md_cache_paths(&paths);
         trim_process_heap();
         Ok(())
     })
@@ -1192,6 +1202,161 @@ async fn docs_convert_content_to_pdf(
         .map_err(|e| e.to_string());
         state_arc.finish_job(&job_id);
         res
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// --- knit-docs PDF -> Markdown & Gemini Assistant commands ---
+#[tauri::command]
+async fn pdf2md_inspect_and_extract(
+    job_id: String,
+    path: PathBuf,
+    options: knit_docs::PdfToMdOptions,
+    force_reextract: Option<bool>,
+    on_event: Channel<JobEvent>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<knit_docs::PdfToMdInspectResult, String> {
+    let token = state.register_job(&job_id);
+    let state_arc = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || {
+        let reporter = make_reporter(&state_arc, on_event);
+        let res = knit_docs::inspect_and_extract_pdf_to_markdown_cached(
+            &path,
+            &options,
+            force_reextract.unwrap_or(false),
+            &token,
+            Some(&reporter),
+        )
+        .map_err(|e| e.to_string());
+        state_arc.finish_job(&job_id);
+        trim_process_heap();
+        res
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn pdf2md_export(
+    job_id: String,
+    source_pdf_path: PathBuf,
+    output_md_path: PathBuf,
+    markdown: String,
+    extract_images: bool,
+    image_page_indices: Option<Vec<usize>>,
+    on_event: Channel<JobEvent>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<knit_docs::PdfToMdExportResult, String> {
+    let token = state.register_job(&job_id);
+    let state_arc = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || {
+        let reporter = make_reporter(&state_arc, on_event);
+        let res = knit_docs::export_pdf_markdown_to_path_with_pages(
+            &source_pdf_path,
+            &output_md_path,
+            &markdown,
+            extract_images,
+            image_page_indices.as_deref(),
+            &token,
+            Some(&reporter),
+        )
+        .map_err(|e| e.to_string());
+        state_arc.finish_job(&job_id);
+        trim_process_heap();
+        res
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn pdf2md_convert_file(
+    job_id: String,
+    source_pdf_path: PathBuf,
+    output_md_path: PathBuf,
+    options: knit_docs::PdfToMdOptions,
+    on_event: Channel<JobEvent>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<knit_docs::PdfToMdExportResult, String> {
+    let token = state.register_job(&job_id);
+    let state_arc = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || {
+        let reporter = make_reporter(&state_arc, on_event);
+        let res = knit_docs::convert_pdf_to_markdown_file(
+            &source_pdf_path,
+            &output_md_path,
+            &options,
+            &token,
+            Some(&reporter),
+        )
+        .map_err(|e| e.to_string());
+        state_arc.finish_job(&job_id);
+        trim_process_heap();
+        res
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn pdf2md_gemini_refine(
+    job_id: String,
+    markdown: String,
+    instruction: Option<String>,
+    on_event: Channel<JobEvent>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<knit_docs::GeminiRefineDocumentResult, String> {
+    let token = state.register_job(&job_id);
+    let state_arc = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || {
+        let reporter = make_reporter(&state_arc, on_event);
+        let res = knit_docs::refine_markdown_with_gemini(
+            &markdown,
+            instruction.as_deref(),
+            &token,
+            Some(&reporter),
+        )
+        .map_err(|e| e.to_string());
+        state_arc.finish_job(&job_id);
+        trim_process_heap();
+        res
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn gemini_get_key_status() -> Result<knit_docs::GeminiKeyStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        knit_docs::get_gemini_key_status().map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn gemini_save_key(api_key: String) -> Result<knit_docs::GeminiKeyStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        knit_docs::save_gemini_key(&api_key).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn gemini_clear_key() -> Result<knit_docs::GeminiKeyStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        knit_docs::clear_gemini_key().map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn gemini_test_key(api_key: Option<String>) -> Result<knit_docs::GeminiKeyStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        knit_docs::test_gemini_connection(api_key.as_deref()).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1744,6 +1909,7 @@ pub fn run() {
             pdf_scan_images,
             pdf_sync_animated_drafts,
             pdf_release_cached_files,
+            get_home_dir,
             read_pdf_file_bytes,
             render_image_thumb,
             render_image_thumb_file,
@@ -1765,6 +1931,14 @@ pub fn run() {
             docs_preview_pdf_bytes,
             docs_preview_markdown,
             docs_convert_content_to_pdf,
+            pdf2md_inspect_and_extract,
+            pdf2md_export,
+            pdf2md_convert_file,
+            pdf2md_gemini_refine,
+            gemini_get_key_status,
+            gemini_save_key,
+            gemini_clear_key,
+            gemini_test_key,
             get_file_size_bytes,
             archive_collect_entries,
             archive_estimate_size,
